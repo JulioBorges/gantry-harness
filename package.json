@@ -1,0 +1,36 @@
+{
+  "name": "gantry-harness",
+  "version": "0.1.0",
+  "description": "Local-first interactive Host Harness and workspace manager for Gantry",
+  "type": "module",
+  "bin": {
+    "gantry-harness": "./dist/cli.js"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "start": "bun run src/cli.ts"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@types/ws": "^8.5.13",
+    "@vitejs/plugin-react": "^4.3.4",
+    "jsdom": "^25.0.1",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5",
+    "vitest": "^2.1.8"
+  }
+}
