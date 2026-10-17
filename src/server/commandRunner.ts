@@ -1,7 +1,21 @@
-import { spawn } from 'node:child_process';
+import { spawn } from 'cross-spawn';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+
+export function findExecutable(binary: string): string | null {
+  for (const directory of (process.env.PATH ?? '').split(path.delimiter)) {
+    const extensions = process.platform === 'win32' ? (path.extname(binary) ? [''] : (process.env.PATHEXT || '.EXE;.CMD;.BAT').split(';')) : [''];
+    for (const extension of extensions) {
+    const candidate = path.join(directory, binary + extension);
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      if (fs.statSync(candidate).isFile()) return candidate;
+    } catch { /* Try the next PATH entry. */ }
+    }
+  }
+  return null;
+}
 
 export interface RunCommandOptions {
   cwd?: string;
@@ -141,7 +155,9 @@ export async function runGantryScript(
     throw new Error(`Gantry skill directory not found for repository ${options.repoRoot}`);
   }
   const scriptPath = path.join(skillDir, 'scripts', scriptName);
-  return runCommand(['python3', scriptPath, ...args], {
+  const python = findExecutable('python3') ?? (process.platform === 'win32' ? findExecutable('python') : null);
+  if (!python) throw new Error('Python 3 não foi encontrado. Instale-o e adicione-o ao PATH para executar os workflows do Gantry.');
+  return runCommand([python, scriptPath, ...args], {
     cwd: options.cwd ?? options.repoRoot,
     input: options.input,
     env: options.env,

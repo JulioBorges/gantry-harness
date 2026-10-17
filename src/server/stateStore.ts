@@ -1,11 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { DEFAULT_TERMINAL_SETTINGS, shellDefinitions, validateTerminalSettings } from './terminalSettings.js';
+import type { TerminalSettings } from '../types.js';
 import { createRequire } from 'node:module';
-import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite';
-
-const requireNode = createRequire(import.meta.url);
-const { DatabaseSync } = requireNode('node:sqlite') as { DatabaseSync: typeof DatabaseSyncType };
+import type { SQLInputValue } from 'node:sqlite';
 import type {
   ChatMessageRecord,
   DecisionCardPayload,
@@ -16,6 +15,21 @@ import type {
   SanitizedProviderSettings,
   WorkspaceLayoutState,
 } from '../types.js';
+
+interface SqliteDatabase {
+  exec(sql: string): void;
+  prepare(sql: string): {
+    run(...params: SQLInputValue[]): { changes: number | bigint };
+    get(...params: SQLInputValue[]): unknown;
+    all(...params: SQLInputValue[]): unknown[];
+  };
+  close(): void;
+}
+
+const requireRuntime = createRequire(import.meta.url);
+const Database: new (filename: string) => SqliteDatabase = process.versions.bun
+  ? requireRuntime('bun:sqlite').Database
+  : requireRuntime('node:sqlite').DatabaseSync;
 
 export interface SessionRecord {
   id: string;
@@ -30,14 +44,14 @@ export class HarnessStateStore {
   public readonly harnessDir: string;
   public readonly dbPath: string;
   public readonly settingsPath: string;
-  private db: DatabaseSyncType;
+  private db: SqliteDatabase;
 
   constructor(gantryHome: string) {
     this.harnessDir = path.join(path.resolve(gantryHome), 'harness');
     fs.mkdirSync(this.harnessDir, { recursive: true });
     this.dbPath = path.join(this.harnessDir, 'harness.db');
     this.settingsPath = path.join(this.harnessDir, 'settings.json');
-    this.db = new DatabaseSync(this.dbPath);
+    this.db = new Database(this.dbPath);
     this.initSchema();
   }
 
@@ -95,7 +109,6 @@ export class HarnessStateStore {
       this.writeRawSettings({
         activeProvider: 'cli',
         mode: 'cli',
-        cliHarness: 'opencode',
         providers: {},
       });
     }
@@ -467,6 +480,20 @@ export class HarnessStateStore {
     return merged;
   }
 
+  public getTerminalSettings(): TerminalSettings {
+    const row = this.db.prepare('SELECT value_json FROM workspace_kv WHERE key = ?').get('terminal_settings') as { value_json: string } | undefined;
+    const saved = row ? JSON.parse(row.value_json) as TerminalSettings : DEFAULT_TERMINAL_SETTINGS;
+    const shell = saved.shell === 'system' || shellDefinitions(process.platform).some((option) => option.id === saved.shell) ? saved.shell : 'system';
+    return { ...saved, shell };
+  }
+
+  public updateTerminalSettings(input: unknown): TerminalSettings {
+    const settings = validateTerminalSettings(input);
+    this.db.prepare('INSERT INTO workspace_kv (key, value_json) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json')
+      .run('terminal_settings', JSON.stringify(settings));
+    return settings;
+  }
+
   private writeRawSettings(settings: ProviderSettingsInput): void {
     fs.writeFileSync(this.settingsPath, JSON.stringify(settings, null, 2) + '\n', {
       encoding: 'utf-8',
@@ -481,7 +508,6 @@ export class HarnessStateStore {
       return {
         activeProvider: 'cli',
         mode: 'cli',
-        cliHarness: 'opencode',
         providers: {},
       };
     }

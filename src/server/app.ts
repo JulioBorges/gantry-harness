@@ -1,10 +1,13 @@
+import { getTerminalEnvironment } from './terminalSettings.js';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { fileURLToPath, URL as NodeURL } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { HarnessStateStore } from './stateStore.js';
+import { resolveCoordinatorConnection } from './aiConnection.js';
 import { resolveSkillDir, runGantryScript } from './commandRunner.js';
 import {
   applyRepositorySetup,
@@ -16,6 +19,7 @@ import {
 } from './projectInspector.js';
 import {
   generateCoordinatorResponse,
+  prepareGantryCommand,
   resolveLanguagePolicy,
   type RoleDispatcher,
 } from './aiService.js';
@@ -27,6 +31,7 @@ import {
   startPlanWorkflow,
 } from './planEngine.js';
 import { PtySupervisor, readArtifactAndDiff } from './ptyManager.js';
+import { ProjectTreeError, readProjectTree } from './projectTree.js';
 import {
   authorizeRunCleanup,
   buildProjectKanban,
@@ -47,6 +52,8 @@ export interface HarnessServerOptions {
   port?: number;
   requirePairingForRemote?: boolean;
   roleDispatcher?: RoleDispatcher;
+  clientDistDir?: string;
+  commandPreparer?: typeof prepareGantryCommand;
 }
 
 export interface HarnessServerInstance {
@@ -89,6 +96,7 @@ export async function createHarnessServer(
   const profileRoot = path.resolve(options.profileRoot ?? path.join(gantryHome, 'profiles'));
   const host = options.host ?? '127.0.0.1';
   const requestedPort = options.port ?? 7400;
+  const clientDistDir = path.resolve(options.clientDistDir ?? fileURLToPath(new NodeURL('../client/', import.meta.url)));
 
   fs.mkdirSync(gantryHome, { recursive: true });
   fs.mkdirSync(stateRoot, { recursive: true });
@@ -165,7 +173,7 @@ export async function createHarnessServer(
       }
 
       if ((pathname === '/' || pathname === '/index.html') && req.method === 'GET') {
-        const distHtml = path.resolve(process.cwd(), 'dist', 'client', 'index.html');
+        const distHtml = path.join(clientDistDir, 'index.html');
         const rootHtml = path.resolve(process.cwd(), 'index.html');
         const htmlContent = fs.existsSync(distHtml)
           ? fs.readFileSync(distHtml, 'utf-8')
@@ -178,7 +186,7 @@ export async function createHarnessServer(
       }
 
       if (pathname.startsWith('/assets/') && req.method === 'GET') {
-        const distClientDir = path.resolve(process.cwd(), 'dist', 'client');
+        const distClientDir = clientDistDir;
         const assetPath = path.resolve(distClientDir, pathname.slice(1));
         if (
           assetPath.startsWith(distClientDir + path.sep) &&
@@ -232,6 +240,9 @@ export async function createHarnessServer(
         const activeProjectId = layout.activeProjectId ?? projects[0]?.id ?? null;
         const sessions = activeProjectId ? store.listSessions(activeProjectId) : [];
         const activeSessionId = layout.activeSessionId ?? sessions[0]?.id ?? null;
+        const { connection } = resolveCoordinatorConnection(
+          store.getRawProviderSettings(), projects.find((project) => project.id === activeProjectId), profileRoot,
+        );
         const messages =
           activeProjectId && activeSessionId
             ? store.listMessages(activeProjectId, activeSessionId)
@@ -240,6 +251,9 @@ export async function createHarnessServer(
           projects,
           layout,
           settings,
+          terminalSettings: store.getTerminalSettings(),
+          terminalEnvironment: getTerminalEnvironment(),
+          connection,
           sessions,
           messages,
         });
@@ -261,7 +275,11 @@ export async function createHarnessServer(
 
       if (pathname === '/api/projects' && req.method === 'POST') {
         const body = await readJsonBody(req);
-        const repoPath = path.resolve(String(body.path ?? ''));
+        const inputPath = String(body.path ?? '');
+        const expandedPath = inputPath === '~' || inputPath.startsWith('~/')
+          ? path.join(os.homedir(), inputPath.slice(2))
+          : inputPath;
+        const repoPath = path.resolve(expandedPath);
         if (!fs.existsSync(repoPath)) {
           sendJson(res, 400, { error: `Directory does not exist: ${repoPath}` });
           return;
@@ -305,6 +323,30 @@ export async function createHarnessServer(
           }
           const inspection = await inspectProject(project, { stateRoot, profileRoot });
           sendJson(res, 200, inspection);
+          return;
+        }
+      }
+
+      if (pathname.startsWith('/api/projects/') && pathname.endsWith('/tree') && req.method === 'GET') {
+        const parts = pathname.split('/').filter(Boolean);
+        if (parts.length === 4) {
+          const project = store.getProject(parts[2]);
+          if (!project) {
+            sendJson(res, 404, { error: 'Projeto não encontrado.' });
+            return;
+          }
+          try {
+            sendJson(res, 200, readProjectTree(project.path, {
+              path: url.searchParams.get('path') ?? '',
+              query: url.searchParams.get('query') ?? '',
+            }));
+          } catch (error) {
+            if (error instanceof ProjectTreeError) {
+              sendJson(res, error.status, { error: error.message });
+              return;
+            }
+            throw error;
+          }
           return;
         }
       }
@@ -419,6 +461,19 @@ export async function createHarnessServer(
         }
       }
 
+      if (pathname.startsWith('/api/projects/') && pathname.endsWith('/commands/prepare') && req.method === 'POST') {
+        const project = store.getProject(pathname.split('/')[3]);
+        if (!project) { sendJson(res, 404, { error: 'Projeto não encontrado.' }); return; }
+        const body = await readJsonBody(req);
+        const command = String(body.command);
+        if (!['plan', 'run', 'setup'].includes(command)) { sendJson(res, 400, { error: 'Comando não suportado.' }); return; }
+        const { settings, connection } = resolveCoordinatorConnection(store.getRawProviderSettings(), project, profileRoot);
+        if (!connection.ready) { sendJson(res, 400, { error: connection.detail }); return; }
+        const prepared = await (options.commandPreparer ?? prepareGantryCommand)(command as 'plan' | 'run' | 'setup', String(body.request ?? ''), settings, project.path);
+        sendJson(res, 200, { prepared, connection });
+        return;
+      }
+
       if (pathname.startsWith('/api/projects/') && pathname.endsWith('/chat') && req.method === 'POST') {
         const parts = pathname.split('/').filter(Boolean);
         if (parts.length === 4) {
@@ -431,7 +486,17 @@ export async function createHarnessServer(
           const body = await readJsonBody(req);
           const sessions = store.listSessions(projectId);
           const sessionId = String(body.sessionId ?? sessions[0]?.id ?? '');
-          const prompt = String(body.prompt ?? body.content ?? '');
+          const prompt = String(body.prompt ?? body.content ?? '').trim();
+          if (!prompt || !sessions.some((session) => session.id === sessionId)) {
+            sendJson(res, 400, { error: 'Informe uma mensagem e selecione uma sessão válida deste projeto.' });
+            return;
+          }
+          const { settings, connection } = resolveCoordinatorConnection(store.getRawProviderSettings(), project, profileRoot);
+          if (!connection.ready) {
+            sendJson(res, 400, { error: connection.detail, connection });
+            return;
+          }
+          const history = store.listMessages(projectId, sessionId);
           const userMsg = store.appendMessage({
             projectId,
             sessionId,
@@ -440,11 +505,13 @@ export async function createHarnessServer(
           });
           broadcast({ type: 'message.appended', projectId, sessionId, message: userMsg });
 
-          const replyText = await generateCoordinatorResponse(
-            prompt,
-            store.getRawProviderSettings(),
-            project.path,
-          );
+          let replyText: string;
+          try {
+            replyText = await generateCoordinatorResponse(prompt, settings, project.path, history);
+          } catch (error) {
+            sendJson(res, 502, { error: (error as Error).message, connection });
+            return;
+          }
           const assistantMsg = store.appendMessage({
             projectId,
             sessionId,
@@ -452,7 +519,7 @@ export async function createHarnessServer(
             content: replyText,
           });
           broadcast({ type: 'message.appended', projectId, sessionId, message: assistantMsg });
-          sendJson(res, 200, { userMessage: userMsg, assistantMessage: assistantMsg });
+          sendJson(res, 200, { userMessage: userMsg, assistantMessage: assistantMsg, connection });
           return;
         }
       }
@@ -610,6 +677,7 @@ export async function createHarnessServer(
               launcher:
                 (body.launcher as 'claude' | 'codex' | 'opencode' | 'agy' | 'shell') ?? 'shell',
               mode: (body.mode as 'chat' | 'terminal') ?? 'terminal',
+              shell: store.getTerminalSettings().shell,
               broadcast,
             });
             sendJson(res, 200, { pane });
@@ -624,6 +692,19 @@ export async function createHarnessServer(
         const projectId = parts[2];
         const paneId = parts[4];
         const subAction = parts[5];
+
+        if (!subAction && req.method === 'DELETE') {
+          ptySupervisor.closePane(projectId, paneId);
+          broadcast({ type: 'pane.closed', projectId, paneId });
+          sendJson(res, 200, { ok: true });
+          return;
+        }
+
+        if (subAction === 'resize' && req.method === 'POST') {
+          const body = await readJsonBody(req);
+          sendJson(res, 200, { pane: ptySupervisor.resizePane(projectId, paneId, Number(body.cols), Number(body.rows)) });
+          return;
+        }
 
         if (!subAction && req.method === 'GET') {
           const pane = ptySupervisor.getPane(projectId, paneId);
@@ -652,6 +733,23 @@ export async function createHarnessServer(
           sendJson(res, 200, { pane });
           return;
         }
+      }
+
+      if (pathname.startsWith('/api/projects/') && pathname.endsWith('/artifact-assets') && req.method === 'GET') {
+        const project = store.getProject(pathname.split('/')[3]);
+        if (!project) { sendJson(res, 404, { error: 'Projeto não encontrado.' }); return; }
+        const root = fs.realpathSync(project.path);
+        const filename = path.resolve(root, url.searchParams.get('path') ?? '');
+        const resolved = fs.existsSync(filename) ? fs.realpathSync(filename) : filename;
+        if (!resolved.startsWith(root + path.sep)) { sendJson(res, 403, { error: 'A imagem deve estar dentro do projeto.' }); return; }
+        const mimeTypes: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.avif': 'image/avif', '.svg': 'image/svg+xml' };
+        const mime = mimeTypes[path.extname(resolved).toLowerCase()];
+        if (!mime) { sendJson(res, 415, { error: 'Formato de imagem não suportado.' }); return; }
+        if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) { sendJson(res, 404, { error: 'Imagem não encontrada.' }); return; }
+        if (fs.statSync(resolved).size > 20 * 1024 * 1024) { sendJson(res, 413, { error: 'A imagem excede 20 MB.' }); return; }
+        res.writeHead(200, { 'Content-Type': mime, 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox" });
+        res.end(fs.readFileSync(resolved));
+        return;
       }
 
       if (pathname.startsWith('/api/projects/') && pathname.endsWith('/artifacts')) {
@@ -854,6 +952,17 @@ export async function createHarnessServer(
           sendJson(res, 200, out);
           return;
         }
+      }
+
+      if (pathname === '/api/settings/terminal' && req.method === 'PUT') {
+        const body = await readJsonBody(req);
+        try {
+          const settings = store.updateTerminalSettings(body);
+          sendJson(res, 200, { settings, environment: getTerminalEnvironment() });
+        } catch (error) {
+          sendJson(res, 400, { error: error instanceof Error ? error.message : 'Configurações de terminal inválidas.' });
+        }
+        return;
       }
 
       if (pathname === '/api/settings/providers' && req.method === 'GET') {

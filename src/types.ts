@@ -79,6 +79,12 @@ export type DecisionCardPayload =
 
 export type LiveBadgeState = 'working' | 'needs input' | 'done' | 'blocked' | 'idle';
 
+export interface PreparedGantryCommand {
+  command: 'plan' | 'run' | 'setup';
+  argument: string;
+  explanation: string;
+}
+
 export interface WorkspaceTab {
   id: string;
   title: string;
@@ -146,6 +152,17 @@ export interface ProviderSettingsInput {
   >;
 }
 
+export interface RoleSelection {
+  harness: string;
+  model: string;
+  effort?: string;
+}
+
+export interface ExecutionSettings {
+  hostHarness?: string;
+  roles?: Record<string, RoleSelection>;
+}
+
 export interface SanitizedProviderSettings {
   activeProvider: 'anthropic' | 'openai' | 'gemini' | 'openrouter' | 'cli';
   mode: 'sdk' | 'cli';
@@ -158,4 +175,18 @@ export interface SanitizedProviderSettings {
       baseUrl?: string;
     }
   >;
+}
+
+export type TerminalShell = 'system' | 'bash' | 'sh' | 'zsh' | 'cmd' | 'powershell' | 'pwsh';
+
+export interface TerminalSettings {
+  fontFamily: string;
+  fontSize: number;
+  shell: TerminalShell;
+}
+
+export interface TerminalEnvironment {
+  platform: string;
+  platformLabel: string;
+  shells: Array<{ id: TerminalShell; label: string; available: boolean }>;
 }

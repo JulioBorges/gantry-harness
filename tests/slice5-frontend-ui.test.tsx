@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -43,6 +43,7 @@ describe('Slice 5: React Frontend UI, Decision Cards, Chat ⇄ Terminal, Artifac
       stateRoot,
       profileRoot,
       port: 0,
+      commandPreparer: async (command, request) => ({ command, argument: request, explanation: 'Comando preparado para revisão.' }),
       roleDispatcher: async (req) => {
         if (req.role === 'requirement-critic') {
           return { blocking: [], findings: [] };
@@ -87,6 +88,7 @@ describe('Slice 5: React Frontend UI, Decision Cards, Chat ⇄ Terminal, Artifac
         return {};
       },
     });
+    server.store.updateProviderSettings({ mode: 'sdk', activeProvider: 'openai', providers: { openai: { apiKey: 'test-only', model: 'fixture' } } });
     apiBaseUrl = `http://127.0.0.1:${server.port}`;
   });
 
@@ -109,13 +111,17 @@ describe('Slice 5: React Frontend UI, Decision Cards, Chat ⇄ Terminal, Artifac
     // Wait for project to appear in sidebar
     await waitFor(() => {
       expect(screen.getByTestId('sidebar')).toBeTruthy();
-      expect(screen.getByText('ui-project')).toBeTruthy();
+      expect(within(screen.getByTestId('sidebar')).getByText('ui-project')).toBeTruthy();
     });
 
     // Initiate /plan workflow from UI
     const goalInput = screen.getByTestId('coordinator-input') as HTMLInputElement;
     fireEvent.change(goalInput, { target: { value: '/plan Build UI dashboard' } });
     fireEvent.click(screen.getByTestId('coordinator-send-btn'));
+
+    await screen.findByTestId('execute-prepared-command');
+    expect(screen.queryByTestId('decision-card-grilling_round')).toBeNull();
+    fireEvent.click(screen.getByTestId('execute-prepared-command'));
 
     // Wait for Grilling Decision Card and Alert Banner
     await waitFor(() => {
@@ -166,9 +172,11 @@ describe('Slice 5: React Frontend UI, Decision Cards, Chat ⇄ Terminal, Artifac
     fireEvent.click(screen.getAllByTestId('file-link-src/app.ts')[0]);
 
     await waitFor(() => {
-      expect(screen.getByTestId('artifact-drawer')).toBeTruthy();
-      expect(screen.getByTestId('artifact-drawer').textContent).toContain('+export const extra = true;');
+      expect(screen.getByRole('dialog', { name: 'Visualizar arquivo' })).toBeTruthy();
     });
+    fireEvent.click(screen.getByRole('tab', { name: 'Diff' }));
+    expect(screen.getByRole('dialog', { name: 'Visualizar arquivo' }).textContent).toContain('+export const extra = true;');
+    fireEvent.click(screen.getByRole('button', { name: 'Fechar visualização de arquivo' }));
 
     // Spawn shell PTY launcher and verify Terminal view + mobile virtual terminal keybar
     fireEvent.click(screen.getByTestId('launcher-shell'));
@@ -190,10 +198,12 @@ describe('Slice 5: React Frontend UI, Decision Cards, Chat ⇄ Terminal, Artifac
     });
 
     // Open Gantry Setup Panel and preview policy diff
-    fireEvent.click(screen.getByTestId('open-setup-btn'));
+    fireEvent.click(screen.getByTestId('open-settings-btn'));
+    fireEvent.click(screen.getByRole('tab', { name: 'Projeto' }));
     await waitFor(() => {
       expect(screen.getByTestId('setup-panel')).toBeTruthy();
     });
+    fireEvent.change(screen.getByLabelText(/Host do projeto/), { target: { value: 'opencode' } });
     fireEvent.click(screen.getByTestId('preview-setup-btn'));
     await waitFor(() => {
       expect(screen.getByTestId('setup-diff-preview').textContent).toContain('.gantry/config.json');

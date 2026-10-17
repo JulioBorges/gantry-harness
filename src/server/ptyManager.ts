@@ -1,7 +1,9 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type IPty } from 'node-pty';
 import fs from 'node:fs';
+import type { TerminalShell } from '../types.js';
+import { resolveTerminalShell } from './terminalSettings.js';
 import path from 'node:path';
-import { resolveSkillDir, runCommand, runGantryScript } from './commandRunner.js';
+import { findExecutable, resolveSkillDir, runCommand, runGantryScript } from './commandRunner.js';
 
 export interface StructuredTurnBlock {
   id: string;
@@ -25,10 +27,13 @@ export interface ManagedPane {
   turnBlocks: StructuredTurnBlock[];
   status: 'running' | 'exited';
   createdAt: string;
+  cols: number;
+  rows: number;
+  exitCode?: number;
 }
 
 interface InternalPaneRecord extends ManagedPane {
-  process?: ChildProcessWithoutNullStreams;
+  process?: IPty;
 }
 
 const ANSI_REGEX = /\x1b\[[0-9;?]*[a-zA-Z]/g;
@@ -47,13 +52,21 @@ export function extractClickablePaths(text: string): string[] {
   return Array.from(matches);
 }
 
-function resolveLauncherCommand(launcher: 'claude' | 'codex' | 'opencode' | 'agy' | 'shell'): string[] {
-  const shellBin = process.env.SHELL || '/bin/bash';
+function resolveLauncherCommand(launcher: 'claude' | 'codex' | 'opencode' | 'agy' | 'shell', shell: TerminalShell): string[] {
   if (launcher === 'shell') {
-    return [shellBin];
+    return resolveTerminalShell(shell);
   }
-  // Launch an interactive shell that invokes the requested CLI when available or stays interactive
-  return [shellBin, '-c', `command -v ${launcher} >/dev/null 2>&1 && exec ${shellBin} || exec ${shellBin}`];
+  if (!['claude', 'codex', 'opencode', 'agy'].includes(launcher)) {
+    throw new Error(`Launcher não suportado: ${launcher}`);
+  }
+  const executable = findExecutable(launcher);
+  if (!executable) throw new Error(`Host ${launcher} não encontrado no PATH do servidor. Instale e autentique esse host antes de abrir o terminal.`);
+  if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(executable)) {
+    // Only the resolved local launcher path is interpolated; user prompts enter via PTY input.
+    if (/["%\r\n]/.test(executable)) throw new Error('O caminho do host contém caracteres incompatíveis com o launcher do Windows. Instale-o em outro diretório.');
+    return [process.env.COMSPEC || 'cmd.exe', '/d', '/s', '/c', `""${executable}""`];
+  }
+  return [executable];
 }
 
 export class PtySupervisor {
@@ -69,9 +82,14 @@ export class PtySupervisor {
     worktreePath: string;
     launcher: 'claude' | 'codex' | 'opencode' | 'agy' | 'shell';
     mode?: 'chat' | 'terminal';
+    shell?: TerminalShell;
     broadcast: (evt: Record<string, unknown>) => void;
   }): Promise<ManagedPane> {
     const worktreePath = path.resolve(params.worktreePath);
+    if (!fs.existsSync(worktreePath) || !fs.statSync(worktreePath).isDirectory()) {
+      throw new Error(`Diretório do terminal não encontrado: ${worktreePath}`);
+    }
+    const targetCmd = resolveLauncherCommand(params.launcher, params.shell ?? 'system');
     const skillDir = resolveSkillDir(worktreePath).skillDir;
     let activeRunId: string | null = null;
     if (skillDir && fs.existsSync(worktreePath)) {
@@ -91,22 +109,16 @@ export class PtySupervisor {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       TERM: 'xterm-256color',
+      ...(params.launcher === 'shell' && process.platform !== 'win32' ? { SHELL: targetCmd[0] } : {}),
       GANTRY_LAUNCHER: params.launcher,
       ...(activeRunId ? { GANTRY_RUN_ID: activeRunId } : {}),
     };
 
-    const targetCmd = resolveLauncherCommand(params.launcher);
-    // Use Python's standard-library pty.spawn to allocate a real pseudo-terminal!
-    const ptyArgs = [
-      '-c',
-      'import pty, sys; pty.spawn(sys.argv[1:])',
-      ...targetCmd,
-    ];
-
-    const child = spawn('python3', ptyArgs, {
-      cwd: fs.existsSync(worktreePath) ? worktreePath : process.cwd(),
-      env,
-      stdio: ['pipe', 'pipe', 'pipe'],
+    if (this.panes.has(this.key(params.projectId, params.paneId))) throw new Error('Terminal já existe.');
+    const child = spawn(targetCmd[0], targetCmd.slice(1), {
+      cwd: worktreePath,
+      env: Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => typeof entry[1] === 'string')),
+      name: 'xterm-256color', cols: 100, rows: 30,
     });
 
     const banner = `[${params.launcher}] PTY attached in ${worktreePath}${activeRunId ? ` (GANTRY_RUN_ID=${activeRunId})` : ''}\r\n`;
@@ -132,6 +144,8 @@ export class PtySupervisor {
       ],
       status: 'running',
       createdAt: new Date().toISOString(),
+      cols: 100,
+      rows: 30,
       process: child,
     };
 
@@ -170,10 +184,11 @@ export class PtySupervisor {
       });
     };
 
-    child.stdout.on('data', onChunk);
-    child.stderr.on('data', onChunk);
-    child.on('close', () => {
+    child.onData(onChunk);
+    child.onExit(({ exitCode }) => {
       record.status = 'exited';
+      record.exitCode = exitCode;
+      params.broadcast({ type: 'pane.exited', projectId: params.projectId, paneId: params.paneId, exitCode });
     });
 
     this.panes.set(this.key(params.projectId, params.paneId), record);
@@ -191,7 +206,6 @@ export class PtySupervisor {
       throw new Error(`Pane not found: ${paneId}`);
     }
 
-    rec.terminalBuffer += data;
     const paths = extractClickablePaths(data);
     rec.turnBlocks.push({
       id: `blk-in-${Date.now()}`,
@@ -204,7 +218,7 @@ export class PtySupervisor {
     });
 
     if (rec.process && rec.status === 'running') {
-      rec.process.stdin.write(data);
+      rec.process.write(data);
       await new Promise((r) => setTimeout(r, 100));
     }
 
@@ -254,6 +268,23 @@ export class PtySupervisor {
     return out;
   }
 
+  public resizePane(projectId: string, paneId: string, cols: number, rows: number): ManagedPane {
+    const pane = this.panes.get(this.key(projectId, paneId));
+    if (!pane) throw new Error(`Pane not found: ${paneId}`);
+    if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 2 || rows < 1 || cols > 1000 || rows > 1000) throw new Error('Dimensões do terminal inválidas.');
+    if (pane.status === 'running') pane.process?.resize(cols, rows);
+    pane.cols = cols;
+    pane.rows = rows;
+    return this.toPublicPane(pane);
+  }
+
+  public closePane(projectId: string, paneId: string): void {
+    const pane = this.panes.get(this.key(projectId, paneId));
+    if (!pane) throw new Error(`Pane not found: ${paneId}`);
+    if (pane.status === 'running') pane.process?.kill();
+    this.panes.delete(this.key(projectId, paneId));
+  }
+
   public closeAll(): void {
     for (const rec of this.panes.values()) {
       if (rec.process && rec.status === 'running') {
@@ -276,6 +307,9 @@ export class PtySupervisor {
       turnBlocks: rec.turnBlocks,
       status: rec.status,
       createdAt: rec.createdAt,
+      cols: rec.cols,
+      rows: rec.rows,
+      exitCode: rec.exitCode,
     };
   }
 }

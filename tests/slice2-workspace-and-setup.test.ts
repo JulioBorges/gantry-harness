@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -36,6 +36,36 @@ describe('Slice 2: Multi-Project Workspace, Sidebar Topology, Bootstrap, Discove
   afterEach(() => {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   });
+
+  it.each(['~', '~/src/personal/myshoplist-saas', '~/src/personal/project with spaces'])(
+    'expands the home directory when registering %s',
+    async (inputPath) => {
+      const repoDir = path.join(tmpRoot, inputPath.slice(2));
+      fs.mkdirSync(repoDir, { recursive: true });
+      const server = await createHarnessServer({ gantryHome, stateRoot, profileRoot, port: 0 });
+      const homeMock = vi.spyOn(os, 'homedir').mockReturnValue(tmpRoot);
+      try {
+        const register = (projectPath: string) => fetch(`http://127.0.0.1:${server.port}/api/projects`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: projectPath }),
+        });
+        const response = await register(inputPath);
+        const body = await response.json();
+        expect(response.status, JSON.stringify(body)).toBe(200);
+        expect(body.project.path).toBe(repoDir);
+        expect(server.store.getProjectByPath(repoDir)?.id).toBe(body.project.id);
+
+        const absoluteResponse = await register(repoDir);
+        expect(absoluteResponse.status).toBe(200);
+        expect((await absoluteResponse.json()).project.id).toBe(body.project.id);
+        expect(server.store.listProjects()).toHaveLength(1);
+      } finally {
+        homeMock.mockRestore();
+        await server.close();
+      }
+    },
+  );
 
   it('automatically loads project policy, specs, issues, worktree topology, and live status badges', async () => {
     const repoDir = initTempGitRepo(tmpRoot, 'repo-inspect');

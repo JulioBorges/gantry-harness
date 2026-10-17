@@ -3,34 +3,50 @@
   "version": "0.1.0",
   "description": "Local-first interactive Host Harness and workspace manager for Gantry",
   "type": "module",
+  "main": "desktop/main.cjs",
   "bin": {
     "gantry-harness": "./dist/cli.js"
   },
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build && node scripts/build.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "start": "bun run src/cli.ts"
+    "start": "bun run build && electron .",
+    "start:web": "bun run build && node dist/cli.js",
+    "desktop:dev": "bun run start",
+    "desktop:pack": "electron-builder --dir --publish never",
+    "desktop:dist": "electron-builder",
+    "postinstall": "node scripts/prepare-native.mjs"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
+    "cross-spawn": "^7.0.6",
+    "node-pty": "^1.1.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
+    "rehype-slug": "^6.0.0",
+    "remark-gfm": "^4.0.1",
     "ws": "^8.18.0"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.1.0",
+    "@types/cross-spawn": "^6.0.6",
     "@types/node": "^22.10.2",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@types/ws": "^8.5.13",
     "@vitejs/plugin-react": "^4.3.4",
+    "electron": "44.7.2",
+    "electron-builder": "26.15.3",
+    "esbuild": "0.28.2",
     "jsdom": "^25.0.1",
     "typescript": "^5.7.2",
-    "vite": "^6.0.5",
-    "vitest": "^2.1.8"
-  }
+    "vite": "^6.4.4",
+    "vitest": "^4.1.11"
+  },
+  "trustedDependencies": ["electron", "node-pty", "esbuild"]
 }

@@ -70,6 +70,7 @@ export interface ProjectInspectionResult {
     dirtyFiles: string[];
   };
   remediationCards: RemediationCard[];
+  trackedFiles: string[];
 }
 
 function parseField(markdown: string, key: string): string {
@@ -353,6 +354,10 @@ export async function inspectProject(
     .map((l) => l.trim())
     .filter(Boolean);
   const dirtyWorkingTree = dirtyFiles.length > 0;
+  const tracked = await runCommand(['git', 'ls-files'], { cwd: repoRoot });
+  const trackedFiles = tracked.exitCode === 0
+    ? tracked.stdout.split('\n').filter((filename) => filename && !filename.startsWith('.')).slice(0, 40)
+    : [];
 
   const remediationCards: RemediationCard[] = [];
   if (policyIgnored) {
@@ -402,6 +407,7 @@ export async function inspectProject(
       dirtyFiles,
     },
     remediationCards,
+    trackedFiles,
   };
 }
 
