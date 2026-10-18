@@ -1,5 +1,12 @@
 export type LiveBadgeState = 'working' | 'needs input' | 'done' | 'blocked' | 'idle';
 
+// Deprecated types - kept for compatibility during migration
+export type SanitizedProviderSettings = Record<string, unknown>;
+export type CoordinatorConnection = Record<string, unknown>;
+export type PreparedGantryCommand = { command: string; args: string[] };
+export type DecisionCardPayload = { kind: string; resolved?: boolean };
+export type ProviderSettingsInput = Record<string, unknown>;
+
 export interface WorkspaceTab {
   id: string;
   title: string;
@@ -41,6 +48,7 @@ export interface ChatMessageRecord {
   sessionId: string;
   role: 'user' | 'assistant' | 'system' | 'subagent';
   content: string;
+  decisionCard?: DecisionCardPayload;  // Deprecated - kept for compatibility
   turnBlocks?: Array<{
     type: 'tool' | 'command' | 'diff' | 'text';
     title: string;
