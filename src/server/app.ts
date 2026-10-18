@@ -111,12 +111,18 @@ export async function createHarnessServer(
     });
   };
 
-  const sendJson = (res: http.ServerResponse, statusCode: number, data: unknown): void => {
+  const sendJson = (
+    res: http.ServerResponse,
+    statusCode: number,
+    data: unknown,
+    headers: Record<string, string> = {},
+  ): void => {
     res.writeHead(statusCode, {
       'Content-Type': 'application/json; charset=utf-8',
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Forwarded-For',
+      ...headers,
     });
     res.end(JSON.stringify(data));
   };
@@ -313,6 +319,48 @@ export async function createHarnessServer(
               return;
             }
             throw error;
+          }
+          return;
+        }
+      }
+
+      if (pathname.startsWith('/api/projects/') && pathname.endsWith('/board') && req.method === 'GET') {
+        const parts = pathname.split('/').filter(Boolean);
+        if (parts.length === 4) {
+          const projectId = parts[2];
+          const project = store.getProject(projectId);
+          if (!project) {
+            sendJson(res, 404, { error: `Project not found: ${projectId}` });
+            return;
+          }
+          try {
+            const { resolveGantryPack, readBoard } = await import('./packResolver.js');
+            const resolution = resolveGantryPack(project.path);
+            const noStore = { 'Cache-Control': 'no-store' };
+            if (resolution.kind === 'none') {
+              sendJson(res, 200, {
+                pack: { kind: 'none' as const },
+                execution: {
+                  enabled: false,
+                  reason: 'No Gantry pack is installed in this repository and gantry is not on PATH.',
+                },
+                issues: [],
+                specs: [],
+                frontier: [],
+              }, noStore);
+              return;
+            }
+            const boardData = await readBoard(project.path, resolution);
+            sendJson(res, 200, {
+              pack: resolution,
+              execution: { enabled: true, reason: null },
+              issues: boardData.issues,
+              specs: boardData.specs,
+              frontier: boardData.frontier,
+            }, noStore);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : 'Unknown error';
+            sendJson(res, 500, { error: `Failed to read board: ${message}` });
           }
           return;
         }

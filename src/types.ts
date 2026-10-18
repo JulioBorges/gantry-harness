@@ -83,3 +83,36 @@ export interface TerminalEnvironment {
   platformLabel: string;
   shells: Array<{ id: TerminalShell; label: string; available: boolean }>;
 }
+
+export type PackResolution =
+  | { kind: 'pinned'; cliPath: string }
+  | { kind: 'path'; executable: string }
+  | { kind: 'none' };
+
+export interface BoardIssue {
+  ref: string;
+  spec: string;
+  number: number;
+  title: string;
+  status: string;
+  path: string;
+  frontierBlocked: boolean;
+  openBlockers: string[];
+}
+
+export interface BoardSpec {
+  slug: string;
+  path: string;
+  executable: boolean;
+}
+
+export interface BoardPayload {
+  issues: BoardIssue[];
+  specs: BoardSpec[];
+  frontier: string[];
+}
+
+export interface BoardResponse extends BoardPayload {
+  pack: PackResolution;
+  execution: { enabled: boolean; reason: string | null };
+}
