@@ -1,7 +1,9 @@
 # Spec: Run Orchestration via the `gantry` CLI (`run-orchestration`)
 
 Type: spec
-Status: ready-for-agent
+Status: approved
+Map: `ROADMAP.md` (spec 01)
+Created: 2026-10-18
 
 Supersedes the orchestration model of `.scratch/gantry-harness/spec.md` for everything the PRD covers. The earlier spec remains the authority for desktop shell, project sidebar, terminal tabs, file viewer and settings; this spec replaces its conversational coordinator, TypeScript plan/round engines, subagent steering and role-replacement recovery with parent-process orchestration of the repository-pinned `gantry` command.
 
