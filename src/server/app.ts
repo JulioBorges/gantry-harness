@@ -7,7 +7,6 @@ import crypto from 'node:crypto';
 import { fileURLToPath, URL as NodeURL } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { HarnessStateStore } from './stateStore.js';
-import { resolveCoordinatorConnection } from './aiConnection.js';
 import { resolveSkillDir, runGantryScript } from './commandRunner.js';
 import {
   applyRepositorySetup,
@@ -17,32 +16,8 @@ import {
   previewRepositorySetup,
   resolveProjectRoles,
 } from './projectInspector.js';
-import {
-  generateCoordinatorResponse,
-  prepareGantryCommand,
-  resolveLanguagePolicy,
-  type RoleDispatcher,
-} from './aiService.js';
-import {
-  answerGrillingRound,
-  approvePlan,
-  editDraftIssues,
-  refineBlockedSpec,
-  startPlanWorkflow,
-} from './planEngine.js';
 import { PtySupervisor, readArtifactAndDiff } from './ptyManager.js';
 import { ProjectTreeError, readProjectTree } from './projectTree.js';
-import {
-  authorizeRunCleanup,
-  buildProjectKanban,
-  createRunDraftPullRequest,
-  decideLessonCandidate,
-  executeRunWorkflow,
-  recoverPausedIssue,
-  resumeFromTakeover,
-  steerSubagent,
-  takeoverWorktreeInTerminal,
-} from './roundEngine.js';
 
 export interface HarnessServerOptions {
   gantryHome?: string;
@@ -51,9 +26,7 @@ export interface HarnessServerOptions {
   host?: string;
   port?: number;
   requirePairingForRemote?: boolean;
-  roleDispatcher?: RoleDispatcher;
   clientDistDir?: string;
-  commandPreparer?: typeof prepareGantryCommand;
 }
 
 export interface HarnessServerInstance {
@@ -236,13 +209,9 @@ export async function createHarnessServer(
       if (pathname === '/api/workspace/state' && req.method === 'GET') {
         const projects = store.listProjects();
         const layout = store.getWorkspaceLayout();
-        const settings = store.getSanitizedProviderSettings();
         const activeProjectId = layout.activeProjectId ?? projects[0]?.id ?? null;
         const sessions = activeProjectId ? store.listSessions(activeProjectId) : [];
         const activeSessionId = layout.activeSessionId ?? sessions[0]?.id ?? null;
-        const { connection } = resolveCoordinatorConnection(
-          store.getRawProviderSettings(), projects.find((project) => project.id === activeProjectId), profileRoot,
-        );
         const messages =
           activeProjectId && activeSessionId
             ? store.listMessages(activeProjectId, activeSessionId)
@@ -250,10 +219,8 @@ export async function createHarnessServer(
         sendJson(res, 200, {
           projects,
           layout,
-          settings,
           terminalSettings: store.getTerminalSettings(),
           terminalEnvironment: getTerminalEnvironment(),
-          connection,
           sessions,
           messages,
         });
@@ -446,215 +413,6 @@ export async function createHarnessServer(
         }
       }
 
-      if (pathname.startsWith('/api/projects/') && pathname.endsWith('/language-policy') && req.method === 'GET') {
-        const parts = pathname.split('/').filter(Boolean);
-        if (parts.length === 4) {
-          const projectId = parts[2];
-          const project = store.getProject(projectId);
-          if (!project) {
-            sendJson(res, 404, { error: `Project not found: ${projectId}` });
-            return;
-          }
-          const operatorLang = url.searchParams.get('lang') ?? undefined;
-          sendJson(res, 200, resolveLanguagePolicy(project.path, operatorLang));
-          return;
-        }
-      }
-
-      if (pathname.startsWith('/api/projects/') && pathname.endsWith('/commands/prepare') && req.method === 'POST') {
-        const project = store.getProject(pathname.split('/')[3]);
-        if (!project) { sendJson(res, 404, { error: 'Projeto não encontrado.' }); return; }
-        const body = await readJsonBody(req);
-        const command = String(body.command);
-        if (!['plan', 'run', 'setup'].includes(command)) { sendJson(res, 400, { error: 'Comando não suportado.' }); return; }
-        const { settings, connection } = resolveCoordinatorConnection(store.getRawProviderSettings(), project, profileRoot);
-        if (!connection.ready) { sendJson(res, 400, { error: connection.detail }); return; }
-        const prepared = await (options.commandPreparer ?? prepareGantryCommand)(command as 'plan' | 'run' | 'setup', String(body.request ?? ''), settings, project.path);
-        sendJson(res, 200, { prepared, connection });
-        return;
-      }
-
-      if (pathname.startsWith('/api/projects/') && pathname.endsWith('/chat') && req.method === 'POST') {
-        const parts = pathname.split('/').filter(Boolean);
-        if (parts.length === 4) {
-          const projectId = parts[2];
-          const project = store.getProject(projectId);
-          if (!project) {
-            sendJson(res, 404, { error: `Project not found: ${projectId}` });
-            return;
-          }
-          const body = await readJsonBody(req);
-          const sessions = store.listSessions(projectId);
-          const sessionId = String(body.sessionId ?? sessions[0]?.id ?? '');
-          const prompt = String(body.prompt ?? body.content ?? '').trim();
-          if (!prompt || !sessions.some((session) => session.id === sessionId)) {
-            sendJson(res, 400, { error: 'Informe uma mensagem e selecione uma sessão válida deste projeto.' });
-            return;
-          }
-          const { settings, connection } = resolveCoordinatorConnection(store.getRawProviderSettings(), project, profileRoot);
-          if (!connection.ready) {
-            sendJson(res, 400, { error: connection.detail, connection });
-            return;
-          }
-          const history = store.listMessages(projectId, sessionId);
-          const userMsg = store.appendMessage({
-            projectId,
-            sessionId,
-            role: 'user',
-            content: prompt,
-          });
-          broadcast({ type: 'message.appended', projectId, sessionId, message: userMsg });
-
-          let replyText: string;
-          try {
-            replyText = await generateCoordinatorResponse(prompt, settings, project.path, history);
-          } catch (error) {
-            sendJson(res, 502, { error: (error as Error).message, connection });
-            return;
-          }
-          const assistantMsg = store.appendMessage({
-            projectId,
-            sessionId,
-            role: 'assistant',
-            content: replyText,
-          });
-          broadcast({ type: 'message.appended', projectId, sessionId, message: assistantMsg });
-          sendJson(res, 200, { userMessage: userMsg, assistantMessage: assistantMsg, connection });
-          return;
-        }
-      }
-
-      if (pathname.startsWith('/api/projects/') && pathname.endsWith('/plan/start') && req.method === 'POST') {
-        const parts = pathname.split('/').filter(Boolean);
-        if (parts.length === 5) {
-          const projectId = parts[2];
-          const project = store.getProject(projectId);
-          if (!project) {
-            sendJson(res, 404, { error: `Project not found: ${projectId}` });
-            return;
-          }
-          const body = await readJsonBody(req);
-          const out = await startPlanWorkflow({
-            project,
-            store,
-            stateRoot,
-            profileRoot,
-            goal: String(body.goal ?? ''),
-            slug: body.slug ? String(body.slug) : undefined,
-            sessionId: body.sessionId ? String(body.sessionId) : undefined,
-            broadcast,
-          });
-          sendJson(res, 200, out);
-          return;
-        }
-      }
-
-      if (pathname.startsWith('/api/projects/') && pathname.endsWith('/plan/answer') && req.method === 'POST') {
-        const parts = pathname.split('/').filter(Boolean);
-        if (parts.length === 5) {
-          const projectId = parts[2];
-          const project = store.getProject(projectId);
-          if (!project) {
-            sendJson(res, 404, { error: `Project not found: ${projectId}` });
-            return;
-          }
-          const body = await readJsonBody(req);
-          const sessions = store.listSessions(projectId);
-          const out = await answerGrillingRound({
-            project,
-            store,
-            stateRoot,
-            slug: String(body.slug ?? ''),
-            runId: String(body.runId ?? ''),
-            sessionId: String(body.sessionId ?? sessions[0]?.id ?? ''),
-            roundNumber: Number(body.roundNumber ?? 1),
-            answers: (body.answers as Record<string, string>) ?? {},
-            finishGrilling: Boolean(body.finishGrilling ?? true),
-            roleDispatcher: options.roleDispatcher,
-            broadcast,
-          });
-          sendJson(res, 200, out);
-          return;
-        }
-      }
-
-      if (pathname.startsWith('/api/projects/') && pathname.endsWith('/plan/refine-spec') && req.method === 'POST') {
-        const parts = pathname.split('/').filter(Boolean);
-        if (parts.length === 5) {
-          const projectId = parts[2];
-          const project = store.getProject(projectId);
-          if (!project) {
-            sendJson(res, 404, { error: `Project not found: ${projectId}` });
-            return;
-          }
-          const body = await readJsonBody(req);
-          const sessions = store.listSessions(projectId);
-          const out = await refineBlockedSpec({
-            project,
-            store,
-            slug: String(body.slug ?? ''),
-            sessionId: String(body.sessionId ?? sessions[0]?.id ?? ''),
-            amendment: String(body.amendment ?? ''),
-            roleDispatcher: options.roleDispatcher,
-            broadcast,
-          });
-          sendJson(res, 200, out);
-          return;
-        }
-      }
-
-      if (pathname.startsWith('/api/projects/') && pathname.endsWith('/plan/edit-issues') && req.method === 'POST') {
-        const parts = pathname.split('/').filter(Boolean);
-        if (parts.length === 5) {
-          const projectId = parts[2];
-          const project = store.getProject(projectId);
-          if (!project) {
-            sendJson(res, 404, { error: `Project not found: ${projectId}` });
-            return;
-          }
-          const body = await readJsonBody(req);
-          const sessions = store.listSessions(projectId);
-          const out = await editDraftIssues({
-            project,
-            store,
-            slug: String(body.slug ?? ''),
-            sessionId: String(body.sessionId ?? sessions[0]?.id ?? ''),
-            action: (body.action as 'split' | 'merge' | 'reorder' | 'refine') ?? 'refine',
-            targetRef: body.targetRef ? String(body.targetRef) : undefined,
-            instruction: String(body.instruction ?? ''),
-            roleDispatcher: options.roleDispatcher,
-            broadcast,
-          });
-          sendJson(res, 200, out);
-          return;
-        }
-      }
-
-      if (pathname.startsWith('/api/projects/') && pathname.endsWith('/plan/approve') && req.method === 'POST') {
-        const parts = pathname.split('/').filter(Boolean);
-        if (parts.length === 5) {
-          const projectId = parts[2];
-          const project = store.getProject(projectId);
-          if (!project) {
-            sendJson(res, 404, { error: `Project not found: ${projectId}` });
-            return;
-          }
-          const body = await readJsonBody(req);
-          const sessions = store.listSessions(projectId);
-          const out = await approvePlan({
-            project,
-            store,
-            stateRoot,
-            slug: String(body.slug ?? ''),
-            runId: body.runId ? String(body.runId) : undefined,
-            sessionId: String(body.sessionId ?? sessions[0]?.id ?? ''),
-            broadcast,
-          });
-          sendJson(res, 200, out);
-          return;
-        }
-      }
-
       if (pathname.startsWith('/api/projects/') && pathname.endsWith('/panes')) {
         const parts = pathname.split('/').filter(Boolean);
         if (parts.length === 4) {
@@ -784,176 +542,6 @@ export async function createHarnessServer(
         }
       }
 
-      if (pathname.startsWith('/api/projects/') && pathname.endsWith('/run') && req.method === 'POST') {
-        const parts = pathname.split('/').filter(Boolean);
-        if (parts.length === 4) {
-          const projectId = parts[2];
-          const project = store.getProject(projectId);
-          if (!project) {
-            sendJson(res, 404, { error: `Project not found: ${projectId}` });
-            return;
-          }
-          const body = await readJsonBody(req);
-          const sessions = store.listSessions(projectId);
-          const out = await executeRunWorkflow({
-            project,
-            store,
-            stateRoot,
-            profileRoot,
-            scope: String(body.scope ?? 'all'),
-            sessionId: String(body.sessionId ?? sessions[0]?.id ?? ''),
-            priorRunId: body.priorRunId ? String(body.priorRunId) : undefined,
-            roleDispatcher: options.roleDispatcher,
-            broadcast,
-          });
-          sendJson(res, 200, out);
-          return;
-        }
-      }
-
-      if (pathname.startsWith('/api/projects/') && pathname.endsWith('/kanban') && req.method === 'GET') {
-        const parts = pathname.split('/').filter(Boolean);
-        if (parts.length === 4) {
-          const projectId = parts[2];
-          const project = store.getProject(projectId);
-          if (!project) {
-            sendJson(res, 404, { error: `Project not found: ${projectId}` });
-            return;
-          }
-          sendJson(res, 200, buildProjectKanban(project, stateRoot));
-          return;
-        }
-      }
-
-      if (pathname.startsWith('/api/projects/') && pathname.includes('/runs/')) {
-        const parts = pathname.split('/').filter(Boolean);
-        // /api/projects/:id/runs/:runId/:action
-        const projectId = parts[2];
-        const runId = parts[4];
-        const action = parts[5];
-        const project = store.getProject(projectId);
-        if (!project) {
-          sendJson(res, 404, { error: `Project not found: ${projectId}` });
-          return;
-        }
-
-        if (action === 'steer' && req.method === 'POST') {
-          const body = await readJsonBody(req);
-          const out = await steerSubagent({
-            project,
-            ptySupervisor,
-            stateRoot,
-            runId,
-            issueRef: String(body.issueRef ?? ''),
-            mode: (body.mode as 'queue' | 'send_now') ?? 'queue',
-            instruction: String(body.instruction ?? ''),
-            broadcast,
-          });
-          sendJson(res, 200, out);
-          return;
-        }
-
-        if (action === 'takeover' && req.method === 'POST') {
-          const body = await readJsonBody(req);
-          const out = await takeoverWorktreeInTerminal({
-            project,
-            ptySupervisor,
-            runId,
-            issueRef: String(body.issueRef ?? ''),
-            worktreePath: String(body.worktreePath ?? project.path),
-            launcher:
-              (body.launcher as 'claude' | 'codex' | 'opencode' | 'agy' | 'shell') ?? 'shell',
-            broadcast,
-          });
-          sendJson(res, 200, out);
-          return;
-        }
-
-        if (action === 'resume-takeover' && req.method === 'POST') {
-          const body = await readJsonBody(req);
-          const sessions = store.listSessions(projectId);
-          const out = await resumeFromTakeover({
-            project,
-            store,
-            stateRoot,
-            profileRoot,
-            runId,
-            issueRef: String(body.issueRef ?? ''),
-            sessionId: String(body.sessionId ?? sessions[0]?.id ?? ''),
-            roleDispatcher: options.roleDispatcher,
-            broadcast,
-          });
-          sendJson(res, 200, out);
-          return;
-        }
-
-        if (action === 'recover' && req.method === 'POST') {
-          const body = await readJsonBody(req);
-          const sessions = store.listSessions(projectId);
-          const out = await recoverPausedIssue({
-            project,
-            store,
-            stateRoot,
-            profileRoot,
-            runId,
-            issueRef: String(body.issueRef ?? ''),
-            role: String(body.role ?? 'implement'),
-            replacement: (body.replacement as {
-              harness: string;
-              model: string;
-              effort?: string;
-            }) ?? { harness: 'opencode', model: 'openai/gpt-5.2-codex' },
-            sessionId: String(body.sessionId ?? sessions[0]?.id ?? ''),
-            roleDispatcher: options.roleDispatcher,
-            broadcast,
-          });
-          sendJson(res, 200, out);
-          return;
-        }
-
-        if (action === 'lessons' && req.method === 'POST') {
-          const body = await readJsonBody(req);
-          const out = await decideLessonCandidate({
-            project,
-            runId,
-            lessonId: String(body.lessonId ?? ''),
-            decision: (body.decision as 'accept' | 'dismiss') ?? 'dismiss',
-            targetFile: body.targetFile ? String(body.targetFile) : undefined,
-            draftRule: body.draftRule ? String(body.draftRule) : undefined,
-            broadcast,
-          });
-          sendJson(res, 200, out);
-          return;
-        }
-
-        if (action === 'pr' && req.method === 'POST') {
-          const body = await readJsonBody(req);
-          const out = await createRunDraftPullRequest({
-            project,
-            runId,
-            title: String(body.title ?? `feat: Gantry Run ${runId}`),
-            body: String(body.body ?? ''),
-            runBranch: String(body.runBranch ?? 'main'),
-            targetBranch: String(body.targetBranch ?? 'main'),
-            broadcast,
-          });
-          sendJson(res, 200, out);
-          return;
-        }
-
-        if (action === 'cleanup' && req.method === 'POST') {
-          const body = await readJsonBody(req);
-          const out = await authorizeRunCleanup({
-            project,
-            runId,
-            rawPlanJson: (body.rawPlanJson as Record<string, unknown>) ?? {},
-            broadcast,
-          });
-          sendJson(res, 200, out);
-          return;
-        }
-      }
-
       if (pathname === '/api/settings/terminal' && req.method === 'PUT') {
         const body = await readJsonBody(req);
         try {
@@ -962,18 +550,6 @@ export async function createHarnessServer(
         } catch (error) {
           sendJson(res, 400, { error: error instanceof Error ? error.message : 'Configurações de terminal inválidas.' });
         }
-        return;
-      }
-
-      if (pathname === '/api/settings/providers' && req.method === 'GET') {
-        sendJson(res, 200, store.getSanitizedProviderSettings());
-        return;
-      }
-
-      if (pathname === '/api/settings/providers' && req.method === 'PUT') {
-        const body = await readJsonBody(req);
-        const sanitized = store.updateProviderSettings(body as never);
-        sendJson(res, 200, sanitized);
         return;
       }
 
@@ -1018,21 +594,8 @@ export async function createHarnessServer(
               role: (body.role as 'user' | 'assistant' | 'system' | 'subagent') ?? 'user',
               content: String(body.content ?? ''),
               turnBlocks: body.turnBlocks as never,
-              decisionCard: body.decisionCard as never,
             });
             broadcast({ type: 'message.appended', projectId, sessionId, message });
-            if (message.decisionCard && !message.decisionCard.resolved) {
-              const proj = store.getProject(projectId);
-              broadcast({
-                type: 'alert.triggered',
-                projectId,
-                projectName: proj?.name ?? projectId,
-                sessionId,
-                messageId: message.id,
-                badgeState: proj?.badgeState ?? 'needs input',
-                cardKind: message.decisionCard.kind,
-              });
-            }
             sendJson(res, 200, { message });
             return;
           }
@@ -1040,19 +603,9 @@ export async function createHarnessServer(
       }
 
       if (pathname.startsWith('/api/messages/') && pathname.endsWith('/resolve') && req.method === 'POST') {
-        const parts = pathname.split('/').filter(Boolean);
-        if (parts.length === 4) {
-          const messageId = parts[2];
-          const body = await readJsonBody(req);
-          const resolvedMsg = store.resolveDecisionCard(messageId, body.resolution);
-          if (!resolvedMsg) {
-            sendJson(res, 404, { error: `Decision card message not found: ${messageId}` });
-            return;
-          }
-          broadcast({ type: 'decision_card.resolved', message: resolvedMsg });
-          sendJson(res, 200, { message: resolvedMsg });
-          return;
-        }
+        // Removed: decision card resolution (orchestrator-only)
+        sendJson(res, 404, { error: 'Decision cards no longer supported' });
+        return;
       }
 
       if (pathname === '/api/cli/dispatch' && req.method === 'POST') {

@@ -2,11 +2,8 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useActionFeedback } from './useActionFeedback.js';
 import { FileViewerDialog } from './FileViewerDialog.js';
 import { FileTree, type FileTreeEntry } from './FileTree.js';
-import type { CoordinatorConnection } from '../server/aiConnection.js';
-import type { SanitizedProviderSettings } from '../types.js';
 import type { ExecutionSettings, RoleSelection } from '../types.js';
 import type { ManagedPane } from '../server/ptyManager.js';
-import type { PreparedGantryCommand } from '../types.js';
 import type { Terminal } from '@xterm/xterm';
 import type { FitAddon } from '@xterm/addon-fit';
 import type { TerminalSettings, TerminalEnvironment } from '../types.js';
@@ -14,7 +11,6 @@ import { SettingsDialog, type SettingsTab } from './SettingsDialog.js';
 import { SystemFontSelect } from './SystemFontSelect.js';
 import type {
   ChatMessageRecord,
-  DecisionCardPayload,
   LiveBadgeState,
   RegisteredProject,
 } from '../types.js';
