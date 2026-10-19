@@ -97,8 +97,13 @@ function connect(wsUrl) {
     ws.addEventListener('open', () => resolve());
     ws.addEventListener('error', () => reject(new Error('Chrome DevTools socket failed')));
   });
+  const eventWaiters = [];
   ws.addEventListener('message', (event) => {
     const message = JSON.parse(String(event.data));
+    if (!message.id) {
+      for (const waiter of eventWaiters) waiter(message);
+      return;
+    }
     const waiter = pending.get(message.id);
     if (!waiter) return;
     pending.delete(message.id);
@@ -106,6 +111,16 @@ function connect(wsUrl) {
     else waiter.resolve(message.result);
   });
   return {
+    waitFor(method, timeoutMs = 15000) {
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`timed out waiting for ${method}`)), timeoutMs);
+        eventWaiters.push((message) => {
+          if (message.method !== method) return;
+          clearTimeout(timer);
+          resolve(message.params);
+        });
+      });
+    },
     opened,
     send(method, params = {}) {
       const id = ++next;
@@ -121,15 +136,26 @@ function connect(wsUrl) {
 }
 
 async function evaluate(session, expression) {
-  const result = await session.send('Runtime.evaluate', {
-    expression,
-    awaitPromise: true,
-    returnByValue: true,
-  });
-  if (result.exceptionDetails) {
-    throw new Error(result.exceptionDetails.text || 'page evaluation failed');
+  let lastError = new Error('page evaluation failed');
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      const result = await session.send('Runtime.evaluate', {
+        expression,
+        awaitPromise: true,
+        returnByValue: true,
+      });
+      if (result.exceptionDetails) {
+        throw new Error(result.exceptionDetails.text || 'page evaluation failed');
+      }
+      return result.result.value;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error('page evaluation failed');
+      const message = lastError.message;
+      if (!/destroyed|context|Inspector/i.test(message) || attempt === 3) throw lastError;
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    }
   }
-  return result.result.value;
+  throw lastError;
 }
 
 const chrome = findChrome();
@@ -187,7 +213,7 @@ try {
     '--remote-allow-origins=*',
     `--user-data-dir=${path.join(tmp, 'chrome-profile')}`,
     `--remote-debugging-port=${debugPort}`,
-    pageUrl,
+    'about:blank',
   ], { stdio: 'ignore' });
   await waitForJson(`http://127.0.0.1:${debugPort}/json/version`);
   const targets = await waitForJson(`http://127.0.0.1:${debugPort}/json/list`);
@@ -195,7 +221,11 @@ try {
   if (!page) throw new Error('Chrome did not open a page target');
   const session = connect(page.webSocketDebuggerUrl);
   await session.opened;
+  await session.send('Page.enable');
   await session.send('Runtime.enable');
+  const loaded = session.waitFor('Page.loadEventFired');
+  await session.send('Page.navigate', { url: pageUrl });
+  await loaded;
   await session.send('Emulation.setDeviceMetricsOverride', {
     width: 1280,
     height: 800,
