@@ -2,8 +2,6 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useActionFeedback } from './useActionFeedback.js';
 import { FileViewerDialog } from './FileViewerDialog.js';
 import { FileTree, type FileTreeEntry } from './FileTree.js';
-import type { CoordinatorConnection } from '../server/aiConnection.js';
-import type { SanitizedProviderSettings } from '../types.js';
 import type { ExecutionSettings, RoleSelection } from '../types.js';
 import type { ManagedPane } from '../server/ptyManager.js';
 import type { PreparedGantryCommand } from '../types.js';
@@ -128,17 +126,6 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   const catalogRequests = useRef(new Set<string>());
   const [roleSelections, setRoleSelections] = useState<Record<string, RoleSelection>>({});
   const setupProjectLoaded = useRef<string | null>(null);
-  const [providerMode, setProviderMode] = useState<'sdk' | 'cli'>('cli');
-  const [activeProvider, setActiveProvider] = useState<
-    'anthropic' | 'openai' | 'gemini' | 'openrouter' | 'cli'
-  >('cli');
-  const [providerApiKey, setProviderApiKey] = useState<string>('');
-  const [cliHarness, setCliHarness] = useState('');
-  const [providerModel, setProviderModel] = useState('');
-  const [providerBaseUrl, setProviderBaseUrl] = useState('');
-  const [savedSettings, setSavedSettings] = useState<SanitizedProviderSettings | null>(null);
-  const [connection, setConnection] = useState<CoordinatorConnection | null>(null);
-  const settingsLoaded = useRef(false);
   const { feedback, pendingActions, withFeedback, reportError, dismissFeedback } = useActionFeedback();
   const [terminalInput, setTerminalInput] = useState('');
   const [panes, setPanes] = useState<ManagedPane[]>([]);
@@ -232,10 +219,8 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         if (selection.harness) hosts.add(selection.harness);
       }
     }
-    if (settingsOpen && settingsTab === 'ai' && providerMode === 'cli' && cliHarness) hosts.add(cliHarness);
-    if (activeView === 'factory' && paneMode === 'chat' && connection?.mode === 'cli' && connection.host) hosts.add(connection.host);
     for (const host of hosts) void ensureModelCatalog(host);
-  }, [settingsOpen, settingsTab, activeProjectId, setupHostHarness, roleSelections, providerMode, cliHarness, activeView, paneMode, connection?.mode, connection?.host, ensureModelCatalog]);
+  }, [settingsOpen, settingsTab, activeProjectId, setupHostHarness, roleSelections, ensureModelCatalog]);
 
   const loadArtifactAsset = useCallback(async (path: string, signal: AbortSignal): Promise<Blob> => {
     if (!artifactDrawer) throw new Error('Nenhum arquivo selecionado.');
@@ -261,23 +246,11 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
       setRequiresRemotePairing(false);
       const data = await res.json();
       if (generation !== workspaceGeneration.current) return;
-      setConnection(data.connection ?? null);
-      setSavedSettings(data.settings ?? null);
       if (data.terminalEnvironment) setTerminalEnvironment(data.terminalEnvironment);
       if (!terminalSettingsLoaded.current && data.terminalSettings) {
         setTerminalSettings(data.terminalSettings);
         setTerminalDraft(data.terminalSettings);
         terminalSettingsLoaded.current = true;
-      }
-      if (!settingsLoaded.current && data.settings) {
-        const settings = data.settings as SanitizedProviderSettings;
-        setProviderMode(settings.mode);
-        setActiveProvider(settings.activeProvider);
-        setCliHarness(settings.cliHarness ?? '');
-        const config = settings.providers[settings.mode === 'cli' ? 'cli' : settings.activeProvider];
-        setProviderModel(config?.model ?? '');
-        setProviderBaseUrl(config?.baseUrl === 'enable-cli-exec' ? '' : config?.baseUrl ?? '');
-        settingsLoaded.current = true;
       }
       const projs: RegisteredProject[] = data.projects ?? [];
       setProjects(projs);
@@ -680,26 +653,6 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     }
   });
 
-  const handleApplyConversationModel = withFeedback('Salvar modelo da conversa', async (modelId: string, requestedHost?: string) => {
-    const host = requestedHost || connection?.host || '';
-    if (!host) throw new Error('Configure um host antes de escolher o modelo.');
-    const harness = discoveryHarness(host);
-    const catalog = modelsByHarness[harness] ?? [];
-    if (modelId && catalog.length > 0 && !catalog.some((model) => model.id === modelId)) throw new Error('Escolha um modelo disponível neste host.');
-    const modelsByHost = { ...(savedSettings?.providers.cli?.modelsByHost ?? {}) };
-    if (modelId) modelsByHost[host] = modelId;
-    else delete modelsByHost[host];
-    const response = await apiFetch('/api/settings/providers', {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        mode: 'cli', activeProvider: 'cli', cliHarness: host,
-        providers: { cli: { model: modelId, modelsByHost } },
-      }),
-    });
-    setSavedSettings(await response.json());
-    await loadWorkspaceState();
-  });
-
   const handleAnswerGrilling = withFeedback("Enviar decisões", async (
     card: Extract<DecisionCardPayload, { kind: 'grilling_round' }>,
   ): Promise<void> => {
@@ -989,38 +942,6 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
       }),
     });
     setupProjectLoaded.current = null;
-    await loadWorkspaceState();
-  });
-
-  const handleSaveProvider = withFeedback('Salvar conexão de IA', async () => {
-    if (providerMode === 'cli' && !cliHarness) throw new Error('Selecione um host para projetos sem configuração. O host salvo no projeto tem prioridade.');
-    if (providerMode === 'cli' && providerModel.trim()) {
-      const harness = discoveryHarness(cliHarness);
-      const catalog = modelsByHarness[harness];
-      if (!catalog) throw new Error('A lista de modelos deste host ainda não carregou.');
-      if (!catalog.some((model) => model.id === providerModel)) throw new Error('Escolha um modelo disponível neste host.');
-    }
-    const provider = providerMode === 'cli' ? 'cli' : activeProvider;
-    const modelsByHost = { ...(savedSettings?.providers.cli?.modelsByHost ?? {}) };
-    if (providerMode === 'cli' && cliHarness) {
-      if (providerModel.trim()) modelsByHost[cliHarness] = providerModel.trim();
-      else delete modelsByHost[cliHarness];
-    }
-    if (providerMode === 'sdk' && provider === 'cli') throw new Error('Selecione um provedor de API.');
-    const response = await apiFetch('/api/settings/providers', {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        mode: providerMode, activeProvider: provider, cliHarness: cliHarness || undefined,
-        providers: { [provider]: {
-          model: providerModel.trim(),
-          ...(provider === 'cli' ? { modelsByHost } : {}),
-          ...(providerBaseUrl.trim() ? { baseUrl: providerBaseUrl.trim() } : {}),
-          ...(providerApiKey.trim() ? { apiKey: providerApiKey.trim() } : {}),
-        } },
-      }),
-    });
-    setSavedSettings(await response.json());
-    setProviderApiKey('');
     await loadWorkspaceState();
   });
 
@@ -1416,16 +1337,12 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
           </div>
         </header>
 
-        <div className="workspace-context" data-testid="connection-status">
-          <span className={`status-dot ${connection?.ready ? 'done' : 'idle'}`} />
-          <span>{connection ? `${connection.mode === 'cli' ? 'Agent Host' : 'API'}: ${connection.host || 'não configurado'}` : 'Carregando conexão…'}</span>
-          <span className="context-model">{connection?.model || 'Modelo padrão do host'}</span>
-          <button title={connection?.detail} onClick={() => openSettings('ai')}>Configurar conexão</button>
+        <div className="workspace-context">
           <button className="context-help" onClick={() => setShowGuide((value) => !value)} aria-expanded={showGuide}>Ajuda</button>
         </div>
         {showGuide && <section className="workspace-guide"><strong>Do projeto à execução</strong><p>Abra uma pasta e use o terminal para executar comandos ou restaurar sessões do Codex, Claude e OpenCode. O quadro mostra as Issues e Specs do repositório.</p><button onClick={() => setShowGuide(false)}>Entendi</button></section>}
         {pendingActions.length > 0 && <div className="action-pending" role="status" aria-live="polite"><span className="working-indicator" />{pendingActions.join(' · ')}…</div>}
-        {feedback?.kind === 'error' && !projectDialogOpen && !settingsOpen && <div className="action-feedback error" role="alert"><p>{feedback.message}</p><div className="feedback-actions"><button onClick={() => openSettings(feedback.action === 'Executar plano' ? 'project' : 'ai')}>Revisar configuração</button><button aria-label="Fechar aviso" onClick={dismissFeedback}>×</button></div></div>}
+        {feedback?.kind === 'error' && !projectDialogOpen && !settingsOpen && <div className="action-feedback error" role="alert"><p>{feedback.message}</p><div className="feedback-actions"><button onClick={() => openSettings(feedback.action === 'Executar plano' ? 'project' : 'terminal')}>Revisar configuração</button><button aria-label="Fechar aviso" onClick={dismissFeedback}>×</button></div></div>}
         {alerts.length > 0 && <button className="alert-banner" data-testid="alert-banner" onClick={() => { const first = alerts[0]; void handleSelectProject(first.projectId, first.sessionId); setActiveView('factory'); }}><span>{alerts[0].projectName} · {alerts[0].summary || STATUS_LABELS[alerts[0].badgeState]}</span><span>Revisar decisão →</span></button>}
 
         {activeView === 'board' && (
@@ -1488,7 +1405,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         {settingsTab === 'project' && (activeProjectId ? (
           <div data-testid="setup-panel" style={{ padding: 16, overflowY: 'auto' }}>
             <h2>Preparar o projeto para execução</h2>
-            <p className="section-intro">Cada papel usa um host e só pode receber um modelo desse host. A lista é lida do agente instalado. A conexão da conversa é configurada separadamente.</p>
+            <p className="section-intro">Cada papel usa um host e só pode receber um modelo desse host. A lista é lida do agente instalado.</p>
             {inspection?.remediationCards.map((card) => <div key={card.kind} className="setup-diagnostic"><strong>{card.title}</strong><p>{card.description}</p><p>{card.remediation}</p></div>)}
             <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
               <button
@@ -1566,85 +1483,6 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
             )}
           </div>
         ) : <p className="settings-empty">Abra um projeto para configurar o host e os papéis de execução.</p>)}
-
-        {settingsTab === 'ai' && (
-          <section data-testid="settings-panel" className="settings-panel">
-            <h2>Conexão do coordenador</h2>
-            <p>Escolha como conversar com o agente. No modo CLI, o host salvo no projeto ou no perfil pessoal tem prioridade sobre a conexão global.</p>
-            <div className="settings-form">
-              <label htmlFor="provider-mode">Tipo de conexão</label>
-              <select id="provider-mode" value={providerMode} onChange={(event) => {
-                const mode = event.target.value as 'sdk' | 'cli';
-                setProviderMode(mode);
-                const provider = mode === 'cli' ? 'cli' : activeProvider === 'cli' ? 'openai' : activeProvider;
-                if (mode === 'sdk') setActiveProvider(provider as typeof activeProvider);
-                const config = savedSettings?.providers[provider];
-                setProviderModel(config?.model ?? '');
-                setProviderBaseUrl(config?.baseUrl === 'enable-cli-exec' ? '' : config?.baseUrl ?? '');
-                setProviderApiKey('');
-              }}>
-                <option value="cli">CLI local já autenticado</option>
-                <option value="sdk">API com chave própria</option>
-              </select>
-              {providerMode === 'cli' ? <>
-                <label htmlFor="cli-harness">Host para projetos sem configuração</label>
-                <select id="cli-harness" value={cliHarness} onChange={(event) => {
-                  const nextHost = event.target.value;
-                  setCliHarness(nextHost);
-                  setProviderModel(savedSettings?.providers.cli?.modelsByHost?.[nextHost] ?? '');
-                }}>
-                  <option value="">Selecione um host</option>
-                  <option value="codex">Codex</option><option value="claude">Claude Code</option>
-                  <option value="opencode">OpenCode</option><option value="agy">Antigravity (terminal)</option>
-                </select>
-                <p className="field-help">Usa a autenticação do CLI instalado nesta máquina. O modelo abaixo lista só o que esse host oferece; projetos com outro host usam o padrão do próprio CLI.</p>
-              </> : <>
-                <label htmlFor="api-provider">Provedor de API</label>
-                <select id="api-provider" value={activeProvider} onChange={(event) => {
-                  const provider = event.target.value as typeof activeProvider;
-                  setActiveProvider(provider);
-                  setProviderModel(savedSettings?.providers[provider]?.model ?? '');
-                  setProviderBaseUrl(savedSettings?.providers[provider]?.baseUrl ?? '');
-                  setProviderApiKey('');
-                }}>
-                  <option value="anthropic">Anthropic</option><option value="openai">OpenAI</option>
-                  <option value="gemini">Google Gemini</option><option value="openrouter">OpenRouter</option>
-                </select>
-                <label htmlFor="provider-api-key">Chave de API</label>
-                <input id="provider-api-key" type="password" autoComplete="off" placeholder={savedSettings?.providers[activeProvider]?.hasApiKey ? 'Chave salva. Preencha apenas para trocar.' : 'Informe sua chave de API'} value={providerApiKey} onChange={(event) => setProviderApiKey(event.target.value)} />
-                <label htmlFor="provider-base-url">Endereço da API (opcional)</label>
-                <input id="provider-base-url" value={providerBaseUrl} onChange={(event) => setProviderBaseUrl(event.target.value)} placeholder="Endereço padrão do provedor" />
-              </>}
-              {providerMode === 'cli' ? (
-                <ModelSelect
-                  id="provider-model"
-                  label="Modelo do coordenador"
-                  ariaLabel="Modelo do coordenador"
-                  harnessLabel={cliHarness || 'o host'}
-                  models={modelsByHarness[discoveryHarness(cliHarness)] ?? []}
-                  value={providerModel}
-                  loading={Boolean(cliHarness) && catalogLoading[discoveryHarness(cliHarness)] === true}
-                  error={cliHarness ? catalogErrors[discoveryHarness(cliHarness)] : undefined}
-                  showStatus={Boolean(cliHarness)}
-                  allowEmpty
-                  emptyLabel="Padrão do host"
-                  onChange={setProviderModel}
-                />
-              ) : (
-                <>
-                  <label htmlFor="provider-model">Modelo do coordenador</label>
-                  <input id="provider-model" value={providerModel} onChange={(event) => setProviderModel(event.target.value)} placeholder="Identificador do modelo no provedor" />
-                </>
-              )}
-              <p className="field-help">Os modelos dos papéis de planejamento e execução são configurados separadamente em Projeto, cada um com a lista do próprio host.</p>
-              <button className="btn-primary" data-testid="save-provider-settings-btn" disabled={pendingActions.includes('Salvar conexão de IA')} onClick={() => void handleSaveProvider()}>
-                {pendingActions.includes('Salvar conexão de IA') ? 'Salvando conexão…' : 'Salvar conexão'}
-              </button>
-              <button onClick={() => setSettingsOpen(false)}>Fechar configurações</button>
-            </div>
-
-          </section>
-        )}
 
           {settingsTab === 'remote' && (<section className="settings-panel remote-settings"><h2>Acesso remoto por código</h2>
               <p>Gere um código para conectar outro dispositivo pela sua rede ou Tailscale.</p>

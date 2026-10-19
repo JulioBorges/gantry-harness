@@ -30,4 +30,4 @@ The harness no longer carries a model-driven orchestrator, so the pack CLI intro
 
 ## Comments
 
-2026-10-19: Layout after the conversation removal is Quadro, Terminal and Files. The execution-tracking screen is not a separate area.
+2026-10-19: Layout after the conversation removal is Quadro, Terminal and Files. The execution-tracking screen is not a separate area. The Agent Host strip and the Conexão de IA tab are gone; role host and model stay on Projeto.

@@ -29,7 +29,7 @@ Sidebar workspace entries are **Quadro** and **Terminal**, then **Configuraçõe
 - **Terminal** is shell and agent-CLI panes. While a project phase is active, the strip offers **Ver quadro**, which returns to the board.
 - **Files** is the tree and the file viewer.
 
-There is no "Acompanhar execução" view. There is no conversation tab, no "Main Workspace Session" entry, and no composer that sends a prompt to a host. The operator talks to Codex, Claude, OpenCode or the shell in a terminal pane.
+There is no "Acompanhar execução" view. There is no conversation tab, no "Main Workspace Session" entry, and no composer that sends a prompt to a host. The operator talks to Codex, Claude, OpenCode or the shell in a terminal pane. Settings are **Terminal**, **Projeto** and **Acesso remoto**. The main screen does not show an Agent Host or coordinator model, and there is no **Conexão de IA** tab. Role host and model live on **Projeto**.
 
 ## Acceptance
 

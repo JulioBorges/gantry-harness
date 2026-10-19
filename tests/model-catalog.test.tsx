@@ -70,18 +70,12 @@ it('offers only the selected role host models and drops a model from another hos
   expect((screen.getByLabelText('Modelo para implement') as HTMLSelectElement).value).toBe('claude-opus-4-5');
 });
 
-it('lists coordinator models from the selected CLI host', async () => {
+it('does not offer a coordinator connection tab', async () => {
   mockWorkspace();
   render(<App />);
   await screen.findAllByText('My project');
   fireEvent.click(screen.getByTestId('open-settings-btn'));
-  fireEvent.click(screen.getByRole('tab', { name: 'Conexão de IA' }));
-  const model = await screen.findByLabelText('Modelo do coordenador');
-  await waitFor(() => expect(within(model).getByRole('option', { name: 'claude-sonnet-4-6' })).toBeTruthy());
-  expect(within(model).queryByRole('option', { name: /gpt-5.2-codex/ })).toBeNull();
-  fireEvent.change(screen.getByLabelText('Host para projetos sem configuração'), { target: { value: 'codex' } });
-  const codexModel = screen.getByLabelText('Modelo do coordenador');
-  await waitFor(() => expect(within(codexModel).getByRole('option', { name: /gpt-5.2-codex/ })).toBeTruthy());
-  expect(within(codexModel).queryByRole('option', { name: 'claude-sonnet-4-6' })).toBeNull();
-  expect((codexModel as HTMLSelectElement).value).toBe('');
+  expect(screen.queryByRole('tab', { name: 'Conexão de IA' })).toBeNull();
+  expect(screen.queryByLabelText('Modelo do coordenador')).toBeNull();
+  expect(screen.queryByText(/Agent Host/)).toBeNull();
 });
