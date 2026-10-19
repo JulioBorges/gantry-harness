@@ -28,6 +28,29 @@ export interface BoardSnapshot {
 
 export type IssueCardPhase = 'ready-to-agent' | 'blocked' | 'done';
 
+export const BOARD_LANES = ['specs', 'issues', 'plan', 'implement', 'review', 'critic', 'done'] as const;
+
+export type BoardLane = (typeof BOARD_LANES)[number];
+
+export type ExecutionLane = 'plan' | 'implement' | 'review' | 'critic';
+
+export interface IssueRunOverlay {
+  ref: string;
+  lane: ExecutionLane;
+  operatorWaiting: boolean;
+  runId: string;
+}
+
+export const LANE_LABEL: Record<BoardLane, string> = {
+  specs: 'Specs',
+  issues: 'Issues',
+  plan: 'Plan',
+  implement: 'Implement',
+  review: 'Review',
+  critic: 'Critic',
+  done: 'Done',
+};
+
 export const PHASE_LABEL: Record<IssueCardPhase, string> = {
   'ready-to-agent': 'ready to agent',
   blocked: 'blocked',
@@ -41,6 +64,44 @@ export function issuePhase(issue: Pick<BoardIssue, 'status' | 'frontierBlocked'>
   if (issue.status === 'done') return 'done';
   if (issue.frontierBlocked) return 'blocked';
   return 'ready-to-agent';
+}
+
+const EXECUTION_COLUMNS: Record<string, ExecutionLane> = {
+  Plan: 'plan',
+  Implement: 'implement',
+  Review: 'review',
+  Critic: 'critic',
+  Integrate: 'critic',
+};
+
+export function issueLane(issue: Pick<BoardIssue, 'status' | 'ref'>, overlays: IssueRunOverlay[]): BoardLane {
+  if (issue.status === 'done') return 'done';
+  const overlay = [...overlays].reverse().find((item) => item.ref === issue.ref);
+  return overlay?.lane ?? 'issues';
+}
+
+export function overlaysFromKanban(
+  runs: Array<{
+    runId: string;
+    finished: boolean;
+    columns: Record<string, Array<{ ref: string; operatorWaiting?: boolean }>>;
+  }>,
+): IssueRunOverlay[] {
+  const overlays: IssueRunOverlay[] = [];
+  for (const run of runs) {
+    if (run.finished) continue;
+    for (const [column, lane] of Object.entries(EXECUTION_COLUMNS)) {
+      for (const item of run.columns[column] ?? []) {
+        overlays.push({
+          ref: item.ref,
+          lane,
+          operatorWaiting: item.operatorWaiting === true,
+          runId: run.runId,
+        });
+      }
+    }
+  }
+  return overlays;
 }
 
 export function orderedIssues(board: BoardSnapshot): BoardIssue[] {

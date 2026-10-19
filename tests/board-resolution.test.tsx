@@ -8,6 +8,8 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createHarnessServer, type HarnessServerInstance } from '../src/server/app.js';
 import { App } from '../src/client/App.js';
+import { BoardView } from '../src/client/BoardView.js';
+import type { BoardSnapshot } from '../src/boardModel.js';
 
 const BOARD = {
   issues: [
@@ -225,12 +227,18 @@ describe('Pack resolution and Issues/Specs board', () => {
     expect(within(done).queryByTestId('open-blocker')).toBeNull();
 
     const cards = within(screen.getByTestId('issue-cards')).getAllByRole('article');
-    expect(cards.map((card) => card.getAttribute('data-ref'))).toEqual(['pack#02', 'pack#03', 'pack#01']);
+    expect(cards.map((card) => card.getAttribute('data-ref'))).toEqual(['pack#02', 'pack#03']);
+    expect(within(screen.getByTestId('lane-done')).getByTestId('issue-card-pack#01')).toBeTruthy();
+    for (const lane of ['specs', 'issues', 'plan', 'implement', 'review', 'critic', 'done']) {
+      expect(screen.getByTestId(`lane-${lane}`)).toBeTruthy();
+    }
+    expect(screen.getByTestId('board-lanes').className).toContain('board-lanes');
 
     const spec = screen.getByTestId('spec-card-pack');
     expect(spec.textContent).toContain('non-executable');
     expect(spec.getAttribute('data-executable')).toBe('false');
-    expect(within(spec).queryByRole('button')).toBeNull();
+    expect(within(spec).getByRole('button', { name: 'Abrir documentação' })).toBeTruthy();
+    expect(within(spec).queryByRole('button', { name: 'Run' })).toBeNull();
     expect((screen.getByTestId('run-affordance') as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByTestId('plan-affordance') as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByTestId('approve-affordance') as HTMLButtonElement).disabled).toBe(false);
@@ -240,5 +248,37 @@ describe('Pack resolution and Issues/Specs board', () => {
     fs.writeFileSync(path.join(repo, '.board.json'), JSON.stringify(revised));
     fireEvent.click(screen.getByTestId('board-refresh'));
     await waitFor(() => expect(screen.getByTestId('issue-card-pack#02').textContent).toContain('Second revised'));
+  });
+
+  it('moves a running issue into Implement and keeps the agent prompt on the card', () => {
+    const board: BoardSnapshot = {
+      resolution: 'pinned',
+      executionEnabled: true,
+      explanation: null,
+      issues: BOARD.issues,
+      specs: BOARD.specs,
+      frontier: BOARD.frontier,
+    };
+    const followed: string[] = [];
+    const opened: string[] = [];
+    render(
+      <BoardView
+        board={board}
+        hasProject
+        overlays={[{ ref: 'pack#02', lane: 'implement', operatorWaiting: true, runId: 'run-2' }]}
+        issueInteractions={{ 'pack#02': <button type="button">continuar</button> }}
+        onRefresh={() => undefined}
+        onOpenPath={(path) => opened.push(path)}
+        onFollow={(ref) => followed.push(ref)}
+      />,
+    );
+    const lane = screen.getByTestId('lane-implement');
+    expect(within(lane).getByTestId('issue-card-pack#02')).toBeTruthy();
+    expect(within(lane).getByRole('button', { name: 'continuar' })).toBeTruthy();
+    fireEvent.click(within(lane).getByRole('button', { name: 'Acompanhar agente' }));
+    expect(followed).toEqual(['pack#02']);
+    fireEvent.click(screen.getByTestId('open-spec-pack'));
+    expect(opened).toEqual(['.scratch/pack/spec.md']);
+    expect(within(screen.getByTestId('lane-issues')).queryByTestId('issue-card-pack#02')).toBeNull();
   });
 });

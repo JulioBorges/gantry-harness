@@ -13,7 +13,7 @@ import type { TerminalSettings, TerminalEnvironment } from '../types.js';
 import { SettingsDialog, type SettingsTab } from './SettingsDialog.js';
 import { SystemFontSelect } from './SystemFontSelect.js';
 import { BoardView } from './BoardView.js';
-import { coerceBoard, unavailableBoard, type BoardSnapshot } from '../boardModel.js';
+import { coerceBoard, overlaysFromKanban, unavailableBoard, type BoardSnapshot } from '../boardModel.js';
 import type {
   ChatMessageRecord,
   DecisionCardPayload,
@@ -822,6 +822,17 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   };
   const handleOpenArtifact = withFeedback("Abrir arquivo", loadArtifact);
 
+  const handleFollowAgent = (ref: string, runId?: string): void => {
+    const pane = panes.find((item) => item.status === 'running' && (item.activeRunId === runId || item.worktreePath.includes(ref.split('#')[0] ?? ref)));
+    setActiveView('factory');
+    if (pane) {
+      setPaneMode('terminal');
+      setActivePaneId(pane.paneId);
+      return;
+    }
+    setPaneMode('chat');
+  };
+
   const handleSaveArtifact = async (content: string): Promise<void> => {
     if (!artifactDrawer) return;
     const { projectId, path } = artifactDrawer;
@@ -1188,6 +1199,20 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     );
   };
 
+  const specInteractions: Record<string, React.ReactNode> = {};
+  const issueInteractions: Record<string, React.ReactNode> = {};
+  for (const message of messages) {
+    const card = message.decisionCard;
+    if (!card || card.resolved) continue;
+    if (card.kind === 'issue_recovery') {
+      issueInteractions[card.issueRef] = renderDecisionCard(card);
+      continue;
+    }
+    if (card.kind === 'grilling_round' || card.kind === 'spec_blocked' || card.kind === 'plan_approval') {
+      specInteractions[card.slug] = renderDecisionCard(card);
+    }
+  }
+
   const handleVerifyPairingCode = withFeedback("Conectar dispositivo", async (): Promise<void> => {
     const res = await apiFetch(`/api/auth/pair/verify`, {
       method: 'POST',
@@ -1311,7 +1336,16 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         {alerts.length > 0 && <button className="alert-banner" data-testid="alert-banner" onClick={() => { const first = alerts[0]; void handleSelectProject(first.projectId, first.sessionId); setActiveView('factory'); }}><span>{alerts[0].projectName} · {alerts[0].summary || STATUS_LABELS[alerts[0].badgeState]}</span><span>Revisar decisão →</span></button>}
 
         {activeView === 'board' && (
-          <BoardView board={board} hasProject={Boolean(activeProjectId)} onRefresh={() => setBoardGeneration((value) => value + 1)} />
+          <BoardView
+            board={board}
+            hasProject={Boolean(activeProjectId)}
+            overlays={overlaysFromKanban(kanbanRuns)}
+            specInteractions={specInteractions}
+            issueInteractions={issueInteractions}
+            onRefresh={() => setBoardGeneration((value) => value + 1)}
+            onOpenPath={(path) => void handleOpenArtifact(path)}
+            onFollow={handleFollowAgent}
+          />
         )}
 
         {activeView === 'factory' && <div className="workspace-content">
