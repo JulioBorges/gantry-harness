@@ -19,7 +19,7 @@ Make `gantry-harness` the orchestrator's parent process and the screen of the Ru
 
 Concretely:
 
-1. **Board from the pack CLI.** When a project has the pack installed, the board lists every Issue and Spec from `gantry board` (issues with `ref`, `spec`, `number`, `title`, `status`, `path`, `frontierBlocked`, `openBlockers`; specs with `slug`, `path`, `executable: false`; plus the `frontier` ordering). Every Issue and Spec card's baseline phase is **ready to agent**. Run-time phases shown during a Run exist only in the harness; the Issue and Spec files do not change when a Run starts, when setup fails, or when a plan is rejected.
+1. **Board from the pack CLI.** When a project has the pack installed, the board lists every Issue and Spec from `gantry board` (issues with `ref`, `spec`, `number`, `title`, `status`, `path`, `frontierBlocked`, `openBlockers`; specs with `slug`, `path`, `executable: false`; plus the `frontier` ordering). The board is a horizontal-scrolling Kanban with seven lanes, in this order: **Specs**, **Issues**, **Plan**, **Implement**, **Review**, **Critic**, **Done**. Spec cards always sit in Specs. An Issue sits in Done when its status is done on the target; in Plan, Implement, Review or Critic while a live Run overlay places it in that phase (the pack's Integrate column counts as Critic); otherwise in Issues, including ready to agent and blocked. The phase label on the card (ready to agent, blocked, done) comes from repository truth. Run-time lane placement exists only in the harness; the Issue and Spec files do not change when a Run starts, when setup fails, or when a plan is rejected.
 2. **One `gantry execute` child per Run.** Executing an Issue card spawns `execute <slug>#<NN>`; executing a wave enqueues one Run per Issue in frontier order; starting a Plan spawns `execute <slug>` for work that has no Spec or Issue yet. Each Run gets its own Issue branch and worktree, and multiple Runs proceed in parallel when none depends on another. The harness stores its own local Run record (child handle, ref, branch, worktree, paused state, PR url) outside the pull request and outside the repository's tracked files.
 3. **JSONL pause protocol.** While a child runs, the harness parses each stdout line as an event. `pause` events carry a `reason` and `choices`; the harness renders them and pipes the chosen word back on the child's stdin. Reasons surfaced to the operator: `plan-approval` (approve/reject), `corrections-exhausted` (continue/stop), `plan-dirty` (try-again/reject). `stopped`, `ready-for-approval`, `rejected`, `discarded`, `pull-request` and `error` payloads drive the Run record and card state.
 4. **Approval and PR watching.** A finished Run (`ready-for-approval`) offers the approval action, which runs `gantry approve <ref>` in the same worktree — creating the closing commit when needed, pushing and opening the PR, then storing the returned URL. The harness then monitors approved cards that are not yet done: it re-reads the target branch to detect merge (card becomes done, worktree and local branch are removed, nothing else is written) or a closed-unmerged PR (Run ends without done, card stays visible outside ready to agent, local worktree leaves; reopening the PR repeats only the approval).
@@ -31,69 +31,72 @@ Concretely:
 
 ### Project loading and board
 
-1. As an operator, I want to open a code directory and, when the pack is installed, immediately see its Issues and Specs board, so that I never have to bootstrap through a chat.
+1. As an operator, I want to open a code directory and, when the pack is installed, immediately see its Issues and Specs as a horizontal Kanban, so that I never have to bootstrap through a chat.
 2. As an operator, I want the harness to offer no execution affordance when the opened directory lacks the pack, so that I cannot start a Run the repository cannot support.
-3. As an operator, I want every Issue card and Spec card to display **ready to agent** before any Run touches it, so that the board reflects the repository's files rather than harness bookkeeping.
+3. As an operator, I want every Issue that no Run is executing to sit in the Issues lane and display **ready to agent** or **blocked**, and every Spec to sit in the Specs lane, so that the board reflects the repository's files rather than harness bookkeeping.
 4. As an operator, I want the board to be read by deterministic commands from the repository's files, so that a refreshed board never depends on a model or on harness-side state.
-5. As an operator, I want Spec cards to be visibly non-executable support documents attached to their Issues, so that I never mistake a Spec for work that can run.
-6. As an operator, I want each Issue card to show its open blockers, so that I understand why a card is unavailable before I try to run it.
+5. As an operator, I want Spec cards to be visibly non-executable support documents in the Specs lane, so that I never mistake a Spec for work that can run.
+6. As an operator, I want each blocked Issue card, still in the Issues lane, to show its open blockers, so that I understand why a card is unavailable before I try to run it.
 7. As an operator, I want a card whose blockers are all done on the target to become available again on the next board read, so that unblocking never needs a manual refresh ritual beyond reloading the board.
+8. As an operator, I want the lanes Specs, Issues, Plan, Implement, Review, Critic and Done to stay visible in that order and to scroll horizontally, so that a Run's phase is a column and not a second board.
+9. As an operator, I want an Issue in a live Run to move into the Plan, Implement, Review or Critic lane that matches the role in progress, and into Done only when the target says the Issue is done, so that I can see where work sits without opening a separate Kanban.
+10. As an operator, I want each Spec card to open its documentation and each Issue card to open its Spec, and I want a card in an execution lane to let me follow the running agent and answer prompts, pauses and blockers inside that card, so that interaction stays on the board.
 
 ### Executing Issues and waves
 
-8. As an operator, I want to select one Issue card and start a Run for it, so that the pack creates the Issue branch and worktree and begins work without me composing a command.
-9. As an operator, I want to execute a whole wave so that one Run is enqueued per Issue in frontier order, letting independent Issues progress together.
-10. As an operator, I want an Issue with an open blocker to refuse starting while staying visible on the board without a worktree or Run, so that dependencies are enforced by the pack rather than by my memory.
-11. As an operator, I want each running Issue to have its own Run, branch and worktree, so that parallel work never shares a checkout.
-12. As an operator, I want several Runs to advance at the same time when none depends on another, so that a board of independent Issues finishes sooner.
-13. As an operator, I want each Run's harness-side record kept in harness state rather than in the repository or the PR, so that restarts and UI state never pollute the tracked files.
+11. As an operator, I want to select one Issue card and start a Run for it, so that the pack creates the Issue branch and worktree and begins work without me composing a command.
+12. As an operator, I want to execute a whole wave so that one Run is enqueued per Issue in frontier order, letting independent Issues progress together.
+13. As an operator, I want an Issue with an open blocker to refuse starting while staying in the Issues lane without a worktree or Run, so that dependencies are enforced by the pack rather than by my memory.
+14. As an operator, I want each running Issue to have its own Run, branch and worktree, so that parallel work never shares a checkout.
+15. As an operator, I want several Runs to advance at the same time when none depends on another, each card in its own execution lane, so that a board of independent Issues finishes sooner.
+16. As an operator, I want each Run's harness-side record kept in harness state rather than in the repository or the PR, so that restarts and UI state never pollute the tracked files.
 
 ### Plan runs
 
-14. As an operator, I want to start a Plan for work that has no Spec or Issue yet by giving a slug, so that the pack reserves the next number and creates the branch with its final name.
-15. As an operator, I want the Run to pause for my approval once the plan has written the Spec and Issue, so that nothing proceeds to implementation without my review.
-16. As an operator, I want approval to continue in the same worktree through implement, review and critic, so that an accepted plan flows into delivery without a new checkout.
-17. As an operator, I want rejection to delete the worktree and branch, discard the Run and leave no card behind, so that a refused plan leaves no residue.
-18. As an operator, I want a plan that ended with loose files to surface its pause only after the executor already retried once, and to let me try again or reject without spending correction budget, so that transient dirt does not cost a correction.
-19. As an operator, I want plan-time edits to the Spec or Issue to require a commit before approval, so that the approved baseline is always committed content.
+17. As an operator, I want to start a Plan for work that has no Spec or Issue yet by giving a slug, so that the pack reserves the next number and creates the branch with its final name.
+18. As an operator, I want the Run to pause inside the card once the plan has written the Spec and Issue, with the Spec in the Specs lane and the Issue in the Plan lane, so that nothing proceeds to implementation without my review.
+19. As an operator, I want approval to continue in the same worktree and move the card through Implement, Review and Critic, so that an accepted plan flows into delivery without a new checkout.
+20. As an operator, I want rejection to delete the worktree and branch, discard the Run and leave no card in any lane, so that a refused plan leaves no residue.
+21. As an operator, I want a plan that ended with loose files to surface its pause inside the card only after the executor already retried once, and to let me try again or reject without spending correction budget, so that transient dirt does not cost a correction.
+22. As an operator, I want plan-time edits to the Spec or Issue to require a commit before approval, so that the approved baseline is always committed content.
 
 ### Pauses during execution
 
-20. As an operator, I want a clear, actionable prompt whenever a role asks for an answer, so that human input happens only where the process requests it.
-21. As an operator, I want a corrections-exhausted pause to offer continuing with one more correction for that Run only, or stopping without merge, so that budget decisions stay scoped and explicit.
-22. As an operator, I want stopping at exhausted budget to leave the Run interrupted with its worktree and branch, without the card returning to ready to agent, so that partial work is preserved honestly.
-23. As an operator, I want the run screen — not a model conversation — to remain my surface while roles execute windowless under the configured `execution.roles`, so that I always know where control lives.
+23. As an operator, I want a clear, actionable prompt inside the card whenever a role asks for an answer, so that human input happens only where the process requests it.
+24. As an operator, I want a corrections-exhausted pause to offer continuing with one more correction for that Run only, or stopping without merge, so that budget decisions stay scoped and explicit.
+25. As an operator, I want stopping at exhausted budget to leave the Run interrupted with its worktree and branch, without the card returning to the ready-to-agent label, so that partial work is preserved honestly.
+26. As an operator, I want the board card — not a model conversation — to remain my surface while roles execute windowless under the configured `execution.roles`, so that I always know where control lives.
 
 ### Resume and discard
 
-24. As an operator, I want resuming an interrupted Run to continue in the same worktree, so that prior work is never thrown away.
-25. As an operator, I want resuming a Run whose budget is at zero to re-open its pause rather than call a role, so that the process never burns budget I have not granted.
-26. As an operator, I want resuming a Run with remaining budget to continue from the last incomplete role, so that progress is not replayed.
-27. As an operator, I want discarding a Run to remove its worktree and local branch, so that abandoned work does not accumulate.
-28. As an operator, I want discarding a plan-born Issue that never reached the target to leave no card, while discarding a Run for an Issue already on the target returns that card to ready to agent, so that the board always reflects repository truth.
+27. As an operator, I want resuming an interrupted Run to continue in the same worktree and return the card to the lane of its last phase, so that prior work is never thrown away.
+28. As an operator, I want resuming a Run whose budget is at zero to re-open its pause inside the card rather than call a role, so that the process never burns budget I have not granted.
+29. As an operator, I want resuming a Run with remaining budget to continue from the last incomplete role, so that progress is not replayed.
+30. As an operator, I want discarding a Run to remove its worktree and local branch, so that abandoned work does not accumulate.
+31. As an operator, I want discarding a plan-born Issue that never reached the target to leave no card in any lane, while discarding a Run for an Issue already on the target returns that card to the Issues lane as ready to agent, so that the board always reflects repository truth.
 
 ### Approval, pull request and done
 
-29. As an operator, I want a finished Run to offer the approval command without calling any role, so that finalizing is one explicit deterministic action.
-30. As an operator, I want approval to run in the same worktree, create the closing commit marking the Issue and roadmap done when it does not yet exist, push and open the PR — or only open the PR when the closing commit is already on the branch — so that the close is never duplicated.
-31. As an operator, I want the Run to store the opened PR's URL and keep the card visible outside done, so that approval is a tracked step, not the end of the story.
-32. As an operator, I want the harness to monitor approved-but-not-done cards, so that merge detection is automatic.
-33. As an operator, I want a merged PR to move the card to done because the target already contains the closing commit, and the harness to delete the worktree and local branch while writing nothing more, so that cleanup follows repository truth.
-34. As an operator, I want a PR closed without merge to end the Run without done, keep the card visible outside ready to agent, remove the local worktree, and let reopening the PR repeat only the approval step, so that an unmerged close is never mistaken for delivery.
-35. As an operator, I want the remote branch's fate left to the forge, so that the harness never deletes remote refs.
+32. As an operator, I want a finished Run to offer the approval command on its card without calling any role and without a new lane, so that finalizing is one explicit deterministic action.
+33. As an operator, I want approval to run in the same worktree, create the closing commit marking the Issue and roadmap done when it does not yet exist, push and open the PR — or only open the PR when the closing commit is already on the branch — so that the close is never duplicated.
+34. As an operator, I want the Run to store the opened PR's URL and keep the card out of the Done lane, so that approval is a tracked step, not the end of the story.
+35. As an operator, I want the harness to monitor approved-but-not-done cards, so that merge detection is automatic.
+36. As an operator, I want a merged PR to move the card to the Done lane because the target already contains the closing commit, and the harness to delete the worktree and local branch while writing nothing more, so that cleanup follows repository truth.
+37. As an operator, I want a PR closed without merge to end the Run without done, keep the card in the Issues lane outside the ready-to-agent label, remove the local worktree, and let reopening the PR repeat only the approval step, so that an unmerged close is never mistaken for delivery.
+38. As an operator, I want the remote branch's fate left to the forge, so that the harness never deletes remote refs.
 
 ### Process lifecycle and reattachment
 
-36. As an operator, I want in-flight Runs discovered after a harness restart from the repository's run records and Issue branch names, so that a restarted app can reattach and re-render state truthfully.
-37. As an operator, I want done state always re-read from the target rather than from stale harness bookkeeping, so that external merges are honored.
-38. As an operator, I want closing the harness to leave each Run's repository-side record intact, so that resuming later works even when the child process is gone.
-39. As an operator, I want an `execute` child that exits unexpectedly or emits an unreadable line to surface as a failed/paused Run rather than a silent drop, so that I can always resume or discard deliberately.
+39. As an operator, I want in-flight Runs discovered after a harness restart from the repository's run records and Issue branch names, and their cards placed back in the matching lane, so that a restarted app can reattach and re-render state truthfully.
+40. As an operator, I want done state always re-read from the target rather than from stale harness bookkeeping, so that external merges move the card to Done.
+41. As an operator, I want closing the harness to leave each Run's repository-side record intact, so that resuming later works even when the child process is gone.
+42. As an operator, I want an `execute` child that exits unexpectedly or emits an unreadable line to surface as a failed/paused Run on its card rather than a silent drop, so that I can always resume or discard deliberately.
 
 ### Board state correctness
 
-40. As an operator, I want card phases derived per card — ready to agent from repository state, running/paused/finished/done from live Runs and target reads — so that a card is never stuck showing a phase the repository contradicts.
-41. As an operator, I want the board to re-read the repository after Run events, so that card state tracks file truth instead of event history alone.
-42. As an operator, I want parallel Runs from different cards never to share stdin, stdout parsing or worktree state, so that one Run's pause can never consume another Run's answer.
+43. As an operator, I want lane placement derived per card — Specs for every Spec, Done only from target status, Plan/Implement/Review/Critic only from a live Run, Issues otherwise — and the phase label taken from repository state, so that a card is never stuck in a lane the repository contradicts.
+44. As an operator, I want the board to re-read the repository after Run events, so that card state tracks file truth instead of event history alone.
+45. As an operator, I want parallel Runs from different cards never to share stdin, stdout parsing or worktree state, so that one Run's pause can never consume another Run's answer.
 
 ## Implementation Decisions
 
@@ -103,10 +106,21 @@ Concretely:
 - **Fallback**: when the repo-pinned `cli.py` is absent but a `gantry` executable resolves on `PATH`, the harness may invoke `gantry <subcommand>` instead — the npm bin already routes these subcommands into the installed pack's `cli.py`. Detection and availability are reported per project.
 - **No pack, no execution**: when neither resolution succeeds, the board shows what `issues`/`specs`/`board` could read (typically nothing) and every run/plan/approve affordance is disabled with an explanatory state.
 
-### 2. Board reads
+### 2. Board reads and lanes
 
 - The board data source is `cli.py board --cwd <repo>` (equivalently `issues`, `specs`, `frontier` subcommands), parsed from its single JSON object on stdout: `issues[]` (`ref`, `spec`, `number`, `title`, `status`, `path`, `frontierBlocked`, `openBlockers`), `specs[]` (`slug`, `path`, `executable`), `frontier[]` (refs in execution order).
-- Card phase mapping: every card defaults to **ready to agent** when its Issue is not done and has no open blockers; **blocked** while `frontierBlocked` is true; **done** when the Issue is done on the target; Run-time overlays (running, paused, interrupted, awaiting approval, approved-pending-merge) come only from the harness's own Run registry, never written to the Issue or Spec files.
+- The only columns are the seven lanes, left to right: `specs`, `issues`, `plan`, `implement`, `review`, `critic`, `done`. The lane strip scrolls horizontally. Empty lanes stay on the strip.
+- **Lane placement** (first match wins):
+  1. Spec → `specs`.
+  2. Issue `status` done on the target → `done`.
+  3. Live unfinished Run overlay whose column is Plan, Implement, Review or Critic → that lane. Integrate maps to `critic` and is not its own lane.
+  4. Otherwise → `issues`. That includes ready to agent, blocked, interrupted with no live column, and approved-pending-merge. None of those states adds a column.
+- **Phase label** on an Issue card, independent of lane: **ready to agent** when the Issue is not done and `frontierBlocked` is false; **blocked** while `frontierBlocked` is true, with `openBlockers` listed on the card; **done** when the Issue is done on the target. Overlays never rewrite Issue or Spec files.
+- **Card actions**:
+  - Spec card: open the spec file in the file viewer (`Abrir documentação`).
+  - Issue card: open the attached spec in the file viewer when one exists (`Abrir spec`).
+  - Issue card in `plan`, `implement`, `review` or `critic`: follow the executing agent (`Acompanhar agente`), which opens that Run's terminal or conversation.
+  - When that Run is waiting on the operator, the prompt, pause, question or blocker is rendered inside the card and the answer is written to that Run. If the Run is waiting and no interaction payload is mounted yet, the card says the agent is waiting for an answer.
 
 ### 3. Run supervisor and JSONL protocol
 
@@ -133,7 +147,7 @@ type GantryEvent =
 ### 4. Run registry and card overlay
 
 - The harness persists a Run record per `(projectId, ref)` in its existing state store: ref, slug, kind (`issue` | `plan`), child pid/handle, `branch`, `worktree`, paused reason + choices, last terminal event, PR url, and derived card phase. Records live under the harness home, outside the repository.
-- Card phase is computed `repositoryState ∪ runOverlay`: repository truth (done on target, open blockers) always wins for the baseline; the overlay supplies in-flight and interrupted phases. Board re-reads happen on Run terminal events and on explicit refresh.
+- Card lane is computed `repositoryState ∪ runOverlay`: done on the target always wins the Done lane; a live overlay supplies Plan, Implement, Review or Critic; everything else stays in Issues. The phase label still comes from repository truth. Board re-reads happen on Run terminal events and on explicit refresh. Pauses render inside the card in its current lane.
 
 ### 5. Plan flow
 
@@ -163,7 +177,7 @@ type GantryEvent =
 - **New `runSupervisor.ts`** (server): child lifecycle, JSONL line parsing, pause registry (`awaitingAnswer`), stdin answer writer, terminal-event application to the Run registry, reattach scan of `.git/gantry-cli/*.json` records plus `git worktree list`/`branch` verification on startup and project open.
 - **Run registry**: extends `HarnessStateStore` with per-project run records (keyed by ref) rather than a parallel store.
 - **HTTP/WS surface**: `GET /api/projects/:id/board`; `POST /api/projects/:id/runs` (body: ref or slug + kind); `POST /api/projects/:id/runs/:ref/answer` (`{choice}`); `POST /api/projects/:id/runs/:ref/resume|discard|approve`; `POST /api/projects/:id/waves/execute`. WS events `run.event`, `run.paused`, `run.finished`, `board.changed` replace `runlog.event` for this flow.
-- **Client**: the board becomes the primary surface; the Run screen lists active/interrupted/approved Runs per card with their pauses and actions; the old conversation tab and "Main Workspace session" flows the PRD calls confusing are removed from the primary navigation.
+- **Client**: the board is the primary surface and renders the seven lanes with horizontal scroll. Pauses and operator answers live inside the card of the Run they belong to. Following an agent opens that Run's terminal or conversation. The old conversation tab and "Main Workspace session" flows the PRD calls confusing are removed from the primary navigation.
 - `planEngine.ts`, `roundEngine.ts`, `aiService.ts`, `aiConnection.ts` and provider settings are excised or reduced to dead code; `types.ts` drops `DecisionCardPayload`, `RunLifecycleState` and provider types in favor of the Run/card model above.
 
 ## Testing Decisions
@@ -176,7 +190,7 @@ type GantryEvent =
 ### Primary testing seam
 
 - **Server integration (Vitest)**: spawn the harness server against a temp repo. Cover: board read with pack present/absent; `execute` issue → worktree event → role fixtures produce `ready-for-approval`; `plan-approval` pause answered via stdin; `corrections-exhausted` continue/stop; `plan-dirty` try-again/reject; `approve` stores PR url (fixture `gh` or `push` stub); `resume` reattaches after server restart by reading `.git/gantry-cli` records; `discard` removes worktree/branch and returns the card to ready to agent; parallel runs on independent refs never cross answers.
-- **Browser (Playwright)**: board renders ready to agent/blocked/done; wave execution enqueues per frontier order; pause cards render the pack's choices and write answers; approved-pending-merge cards show the PR url; done flips after target read.
+- **Browser (Playwright)**: the board renders the seven lanes in order with horizontal scroll; Specs stay in Specs and are non-executable; Issues show ready to agent or blocked with open blockers; a live overlay moves a card into Plan, Implement, Review or Critic and offers follow-agent plus in-card answers; done status places the card in Done after a target read; approved-pending-merge stays out of Done and shows the PR url.
 
 ### Prior art
 
