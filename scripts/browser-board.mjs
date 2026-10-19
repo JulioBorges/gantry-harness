@@ -272,6 +272,7 @@ try {
   });
   const refreshed = await evaluate(session, `(async () => {
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    for (let attempt = 0; attempt < 40 && document.querySelector('.action-pending'); attempt += 1) await sleep(250);
     const packed = [...document.querySelectorAll('[data-testid="sidebar"] button')].find((entry) => entry.textContent.includes('packed-repo'));
     if (packed) packed.click();
     for (let attempt = 0; attempt < 40; attempt += 1) {
