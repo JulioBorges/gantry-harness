@@ -21,6 +21,7 @@ The harness no longer carries a model-driven orchestrator, so the pack CLI intro
 - [x] Project sidebar, terminal panes, file viewer, terminal settings and remote access still pass their existing observable behaviors (updated to compile without the deleted modules).
 - [x] The conversation tab and "Main Workspace session" entry points are removed from primary navigation.
 - [x] The conversation session and its host connection are absent. The terminal remains the agent surface.
+- [x] Workspace areas are Quadro, Terminal and Files. "Acompanhar execução" is not a navigation entry.
 - [x] `bun run typecheck` and the surviving test suite pass.
 
 ## Blocked by
@@ -28,3 +29,5 @@ The harness no longer carries a model-driven orchestrator, so the pack CLI intro
 - None (can start immediately)
 
 ## Comments
+
+2026-10-19: Layout after the conversation removal is Quadro, Terminal and Files. The execution-tracking screen is not a separate area.

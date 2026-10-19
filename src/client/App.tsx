@@ -35,18 +35,6 @@ declare global {
 const STATUS_LABELS: Record<string, string> = { working: 'Em execução', 'needs input': 'Aguardando você', done: 'Concluído', blocked: 'Bloqueado', idle: 'Pronto' };
 const PHASE_LABELS: Record<string, string> = { idle: 'Pronto para começar', bootstrapping_skills: 'Preparando Gantry', setup_review: 'Revisando configuração', grilling_interview: 'Definindo o objetivo', spec_validation: 'Validando especificação', requirement_review: 'Revisando requisitos', slicing_and_critique: 'Preparando tarefas', awaiting_plan_approval: 'Aguardando aprovação do plano', round_preflight: 'Verificando execução', round_executing: 'Executando tarefas', awaiting_recovery_decision: 'Aguardando recuperação', awaiting_handoff_decisions: 'Aguardando revisão da entrega', completed: 'Execução concluída' };
 
-const KANBAN_COLUMNS = [
-  'Ready',
-  'Plan',
-  'Implement',
-  'Review',
-  'Critic',
-  'Integrate',
-  'Done',
-  'Blocked',
-] as const;
-const COLUMN_LABELS: Record<string, string> = { Ready: 'Prontas', Plan: 'Planejamento', Implement: 'Implementação', Review: 'Revisão', Critic: 'Validação', Integrate: 'Integração', Done: 'Concluídas', Blocked: 'Bloqueadas' };
-
 const CLICKABLE_PATH_RE = /\b([A-Za-z0-9_./-]+\.(?:ts|tsx|js|jsx|py|md|json|css|html))\b/g;
 
 export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
@@ -90,7 +78,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     }>;
   } | null>(null);
 
-  const [activeView, setActiveView] = useState<'factory' | 'kanban' | 'files' | 'board'>('board');
+  const [activeView, setActiveView] = useState<'factory' | 'files' | 'board'>('board');
   const [board, setBoard] = useState<BoardSnapshot | null>(null);
   const [boardGeneration, setBoardGeneration] = useState(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -1409,9 +1397,8 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         <button className="new-project-link" onClick={() => setProjectDialogOpen(true)}>+ Abrir projeto</button>
         <div className="sidebar-bottom">
           <div className="sidebar-heading">Workspace</div>
-          <button className={`btn-nav ${activeView === 'board' ? 'btn-nav-active' : ''}`} data-testid="open-board-btn" onClick={() => changeView('board')}><span>Quadro</span></button>
+          <button className={`btn-nav ${activeView === 'board' ? 'btn-nav-active' : ''}`} data-testid="open-board-btn" onClick={() => changeView('board')}><span>Quadro</span>{alerts.length > 0 && <span className="count-badge">{alerts.length}</span>}</button>
           <button className={`btn-nav ${activeView === 'factory' ? 'btn-nav-active' : ''}`} data-testid="open-factory-btn" onClick={() => { setPaneMode('terminal'); changeView('factory'); }}><span>Terminal</span><kbd>⌘ B</kbd></button>
-          <button className={`btn-nav ${activeView === 'kanban' ? 'btn-nav-active' : ''}`} data-testid="open-kanban-btn" onClick={() => changeView('kanban')}><span>Acompanhar execução</span>{alerts.length > 0 && <span className="count-badge">{alerts.length}</span>}</button>
           <div className="sidebar-divider" />
           <button className="btn-nav" data-testid="open-settings-btn" onClick={() => openSettings('terminal')}>Configurações</button>
           <div className="local-caption">Armazenamento local · v0.1.0</div>
@@ -1421,7 +1408,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
       <main className="main-area">
         <header className="workspace-header">
           <button className="icon-button navigation-toggle" aria-label="Alternar navegação" aria-expanded={sidebarOpen} onClick={() => setSidebarOpen((value) => !value)}>☰</button>
-          <div className="workspace-title"><strong>{activeProject?.name ?? 'Gantry Harness'}</strong><span title={activeProject?.path}>{activeView === 'board' ? 'Issues e Specs' : activeView === 'kanban' ? 'Execuções' : activeProject?.path ?? 'Seu workspace de desenvolvimento'}</span></div>
+          <div className="workspace-title"><strong>{activeProject?.name ?? 'Gantry Harness'}</strong><span title={activeProject?.path}>{activeView === 'board' ? 'Issues e Specs' : activeProject?.path ?? 'Seu workspace de desenvolvimento'}</span></div>
           <div className="view-selector" aria-label="Área de trabalho">
             <button aria-pressed={activeView === 'board'} onClick={() => setActiveView('board')}>Quadro</button>
             <button data-testid="chat-terminal-toggle" aria-pressed={activeView === 'factory'} disabled={!activeProjectId || pendingActions.includes('Abrir terminal')} onClick={() => { setPaneMode('terminal'); setActiveView('factory'); if (activeTerminal?.launcher !== 'shell' || activeTerminal?.status !== 'running') void handleToggleChatTerminal(); }}>Terminal</button>
@@ -1461,7 +1448,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
             </div>
             <button className="new-terminal-button" data-testid="launcher-shell" disabled={!activeProjectId || pendingActions.includes('Abrir terminal')} onClick={() => void handleOpenTerminal()}>+ Terminal</button>
           </div>
-          {activeProject?.lifecycleState && activeProject.lifecycleState !== 'idle' && <div className="run-strip"><span className={`status-dot ${activeProject.badgeState?.replace(/\s+/g, '-')}`} /><strong>{PHASE_LABELS[activeProject.lifecycleState] ?? activeProject.lifecycleState}</strong>{activeRunId && <code>{activeRunId}</code>}<button onClick={() => setActiveView('kanban')}>Ver execução →</button></div>}
+          {activeProject?.lifecycleState && activeProject.lifecycleState !== 'idle' && <div className="run-strip"><span className={`status-dot ${activeProject.badgeState?.replace(/\s+/g, '-')}`} /><strong>{PHASE_LABELS[activeProject.lifecycleState] ?? activeProject.lifecycleState}</strong>{activeRunId && <code>{activeRunId}</code>}<button onClick={() => setActiveView('board')}>Ver quadro →</button></div>}
           {approvedSlug && <div className="run-strip"><span>Plano aprovado: <strong>{approvedSlug}</strong></span><button className="btn-primary" data-testid="start-run-btn" disabled={pendingActions.includes('Executar plano')} onClick={() => void handleStartRun(approvedSlug)}>Executar plano</button></div>}
 
           <div className="terminal-workspace" data-testid="terminal-view">
@@ -1476,39 +1463,6 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
             {wideWorkspace && activeProjectId && (inlineArtifact
               ? <FileViewerDialog key={`${inlineArtifact.projectId}:${inlineArtifact.path}`} presentation="pane" artifact={inlineArtifact} onClose={() => setArtifactDrawer(null)} onSave={handleSaveArtifact} onOpenFile={loadArtifact} onLoadAsset={loadArtifactAsset} />
               : <section className="file-viewer-placeholder" data-testid="file-viewer-placeholder"><p>Selecione um arquivo para ver o conteúdo.</p></section>)}
-          </div>
-        )}
-
-        {activeView === 'kanban' && (
-          <div data-testid="kanban-board" style={{ flex: 1, overflow: 'auto' }}>
-            <div className="execution-heading"><h2>Execuções do projeto</h2><p>Acompanhe cada tarefa, sua etapa atual e as decisões que precisam de você.</p></div>
-            {kanbanRuns.length === 0 && <div className="execution-empty"><strong>Nenhuma execução registrada</strong><p>Use o terminal do projeto para executar o agente. As tarefas em andamento aparecem aqui.</p><button onClick={() => { setPaneMode('terminal'); setActiveView('factory'); }}>Abrir terminal</button></div>}
-            {kanbanRuns.map((run) => <div key={run.runId} className="run-summary"><code>{run.runId}</code><strong>{run.finished ? 'Concluído' : 'Em andamento'}</strong><span>{run.columns.Done?.length ?? 0} de {Object.values(run.columns).reduce((total, items) => total + items.length, 0)} tarefas concluídas</span>{Object.values(run.columns).flat().some((item) => item.operatorWaiting) && <button onClick={() => setActiveView('factory')}>Aguardando sua decisão →</button>}</div>)}
-            <div className="kanban-grid">
-              {KANBAN_COLUMNS.map((col) => (
-                <div key={col} className="kanban-col" data-testid={`kanban-col-${col}`}>
-                  <h4>{COLUMN_LABELS[col]} <span>{kanbanRuns.reduce((count, run) => count + (run.columns[col]?.length ?? 0), 0)}</span></h4>
-                  {kanbanRuns.map((run) =>
-                    (run.columns[col] ?? []).map((item) => (
-                      <div
-                        key={`${run.runId}-${item.ref}`}
-                        style={{
-                          padding: 6,
-                          border: '1px solid var(--obsidian-700)',
-                          borderRadius: 4,
-                          marginBottom: 6,
-                        }}
-                      >
-                        <div>
-                          <strong>{item.ref}</strong><small className="issue-run-id">{run.runId}</small><span className="issue-phase">{COLUMN_LABELS[item.phase] ?? item.phase}</span>
-                        </div>
-                        {item.operatorWaiting && <button className="decision-link" onClick={() => setActiveView('factory')}>Aguardando sua decisão →</button>}
-                      </div>
-                    )),
-                  )}
-                </div>
-              ))}
-            </div>
           </div>
         )}
 

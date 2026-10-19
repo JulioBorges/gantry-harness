@@ -25,7 +25,8 @@ Concretely:
 4. **Approval and PR watching.** A finished Run (`ready-for-approval`) offers the approval action, which runs `gantry approve <ref>` in the same worktree — creating the closing commit when needed, pushing and opening the PR, then storing the returned URL. The harness then monitors approved cards that are not yet done: it re-reads the target branch to detect merge (card becomes done, worktree and local branch are removed, nothing else is written) or a closed-unmerged PR (Run ends without done, card stays visible outside ready to agent, local worktree leaves; reopening the PR repeats only the approval).
 5. **Resume, discard and reattach.** An interrupted Run (`stopped`) keeps its worktree and branch and does not return to ready to agent. `resume <ref>` continues in the same worktree — re-opening the pause when budget is zero, continuing the last incomplete role otherwise. `discard <ref>` removes worktree and local branch: a card born from a plan that never reached the target disappears; a card already on the target returns to ready to agent. After a restart the harness finds each interrupted or in-flight Run again from the pack's own run records and branch names, and re-reads done state from the target.
 6. **No binary reliance beyond the repo.** The harness locates `cli.py` inside the repository's pinned pack (`<repo>/.agents/skills/gantry/scripts/cli.py`) and executes it with `python3`; a shared downloads directory or a `gantry` on PATH is only a fallback convenience, never the primary resolution. When no pack copy exists, the project shows whatever the deterministic board read can and does not offer execution.
-7. **Total replacement of the conversational orchestrator.** The coordinator chat, host-assisted command preparation, TypeScript plan engine and round engine, LLM provider settings, role dispatch, subagent steering, worktree takeover, role-replacement recovery, lesson candidates and cleanup authorization are removed from the orchestration path. What remains: project sidebar, the Issues/Specs board, the Run screen with its pauses and actions, standalone terminals, the file viewer, and settings for terminal and remote access. The harness never calls a model on its own behalf; roles run windowless inside the `execute` child per `execution.roles`, project config overriding global.
+7. **Total replacement of the conversational orchestrator.** The coordinator chat, host-assisted command preparation, TypeScript plan engine and round engine, LLM provider settings, role dispatch, subagent steering, worktree takeover, role-replacement recovery, lesson candidates and cleanup authorization are removed from the orchestration path. What remains: project sidebar, the Issues/Specs board as the only execution surface, standalone terminals, the file viewer, and settings for terminal and remote access. The harness never calls a model on its own behalf; roles run windowless inside the `execute` child per `execution.roles`, project config overriding global.
+8. **One workspace, one board.** Primary navigation is **Quadro**, **Terminal** and **Files**. The Quadro is the seven-lane board; pauses and actions live on its cards. There is no second execution view ("Acompanhar execução") and no conversation view. A live terminal offers **Ver quadro**, which returns to that board. A pending-decision count sits on the Quadro entry.
 
 ## User Stories
 
@@ -119,7 +120,7 @@ Concretely:
 - **Card actions**:
   - Spec card: open the spec file in the file viewer (`Abrir documentação`).
   - Issue card: open the attached spec in the file viewer when one exists (`Abrir spec`).
-  - Issue card in `plan`, `implement`, `review` or `critic`: follow the executing agent (`Acompanhar agente`), which opens that Run's terminal or conversation.
+  - Issue card in `plan`, `implement`, `review` or `critic`: follow the executing agent (`Acompanhar agente`), which opens that Run's terminal pane.
   - When that Run is waiting on the operator, the prompt, pause, question or blocker is rendered inside the card and the answer is written to that Run. If the Run is waiting and no interaction payload is mounted yet, the card says the agent is waiting for an answer.
 
 ### 3. Run supervisor and JSONL protocol
@@ -162,13 +163,13 @@ type GantryEvent =
 
 ### 7. Wave execution and parallelism
 
-- Executing a wave reads `frontier` and enqueues one `execute` per ref in that order. Each child is independent: separate stdin/stdout, separate worktree, separate registry entry. The supervisor imposes no artificial cap but surfaces each pause independently in the Run screen.
+- Executing a wave reads `frontier` and enqueues one `execute` per ref in that order. Each child is independent: separate stdin/stdout, separate worktree, separate registry entry. The supervisor imposes no artificial cap but surfaces each pause independently on its board card.
 - An Issue whose `frontierBlocked` is true on the current board read cannot start; the UI explains the open blockers and the pack would refuse anyway (`open-blocker` error).
 
 ### 8. Removal of the conversational orchestrator
 
 - Deleted from the orchestration path (and from required tests): coordinator chat, `commands/prepare` host-assisted preparation, the TypeScript plan workflow (grilling rounds, spec synthesis, draft-issue editing, plan approval card driven by harness-side LLM), the TypeScript round engine (frontier computation, worktree creation, role dispatch and result-contract validation, budget tracking, learner, cleanup authorization), subagent steering, worktree takeover, and role-replacement recovery. Their endpoints and UI stop being exercised; the code may be excised in the same pass or left unreachable, but this spec's acceptance treats them as absent.
-- Kept: project registration and sidebar, board rendering, terminal panes (standalone shells/agent CLIs untouched by orchestration), file viewer, terminal settings, pairing/remote access, workspace layout persistence. The conversation session and the host connected to that screen are absent. The terminal pane is how the operator runs an agent CLI. Setup configuration of `execution.roles` remains through the existing settings surfaces since the pack consumes them.
+- Kept: project registration and sidebar, board rendering, terminal panes (standalone shells/agent CLIs untouched by orchestration), file viewer, terminal settings, pairing/remote access, workspace layout persistence. The conversation session and the host connected to that screen are absent. The separate execution Kanban ("Acompanhar execução", columns Ready through Blocked) is absent. The terminal pane is how the operator runs an agent CLI. Setup configuration of `execution.roles` remains through the existing settings surfaces since the pack consumes them.
 - The harness never dispatches a role, never picks the next role, never calls a model. All role execution happens inside the `execute` child from the repository's `execution.roles` (project config over global).
 
 ### 9. Module boundaries
@@ -177,7 +178,7 @@ type GantryEvent =
 - **New `runSupervisor.ts`** (server): child lifecycle, JSONL line parsing, pause registry (`awaitingAnswer`), stdin answer writer, terminal-event application to the Run registry, reattach scan of `.git/gantry-cli/*.json` records plus `git worktree list`/`branch` verification on startup and project open.
 - **Run registry**: extends `HarnessStateStore` with per-project run records (keyed by ref) rather than a parallel store.
 - **HTTP/WS surface**: `GET /api/projects/:id/board`; `POST /api/projects/:id/runs` (body: ref or slug + kind); `POST /api/projects/:id/runs/:ref/answer` (`{choice}`); `POST /api/projects/:id/runs/:ref/resume|discard|approve`; `POST /api/projects/:id/waves/execute`. WS events `run.event`, `run.paused`, `run.finished`, `board.changed` replace `runlog.event` for this flow.
-- **Client**: the board is the primary surface and renders the seven lanes with horizontal scroll. Pauses and operator answers live inside the card of the Run they belong to. Following an agent opens that Run's terminal or conversation. The old conversation tab and "Main Workspace session" flows the PRD calls confusing are removed from the primary navigation.
+- **Client**: the board is the primary surface and renders the seven lanes with horizontal scroll. Workspace areas are Quadro, Terminal and Files. Pauses and operator answers live inside the card of the Run they belong to. Following an agent opens that Run's terminal pane. The terminal's phase strip returns to the Quadro. The old conversation tab, "Main Workspace session" and "Acompanhar execução" are absent from navigation.
 - `planEngine.ts`, `roundEngine.ts`, `aiService.ts`, `aiConnection.ts` and provider settings are excised or reduced to dead code; `types.ts` drops `DecisionCardPayload`, `RunLifecycleState` and provider types in favor of the Run/card model above.
 
 ## Testing Decisions
@@ -204,6 +205,7 @@ type GantryEvent =
 - A second PR/change to update the roadmap after merge.
 - Remote branch deletion — the forge's rule applies.
 - Coordinator chat, host-assisted command preparation, subagent steering, worktree takeover, role-replacement recovery, lesson candidates and cleanup authorization (removed, not redesigned).
+- A second execution board ("Acompanhar execução"). Phase lives on the Quadro.
 - Non-interactive/headless harness CLI modes (`plan`/`run`/`setup` subcommands of `gantry-harness` CLI itself).
 
 ## Further Notes

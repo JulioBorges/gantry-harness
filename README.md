@@ -19,7 +19,7 @@ The packaged desktop app includes its runtime; end users do not need Bun or Node
 
 - **Conversa** talks to the Gantry coordinator. `/plan`, `/run` and `/setup` shortcuts ask the configured host to prepare a command. Review the proposal before starting it. Preparing a command never approves or executes a plan.
 - **Terminal** opens the system shell in the project directory. Run any CLI yourself, including session restore commands and custom flags. Use **+ Terminal** to add shell tabs. Closing a tab terminates that terminal process.
-- **Acompanhar execução** shows Gantry's task phases and operator decisions.
+- **Quadro** shows repository Issues and Specs, and moves an Issue through Plan, Implement, Review, Critic and Done while a run is active.
 - Files open in a modal viewer. Markdown opens in a rendered preview with tables, checklists, repository images and heading links; **Código** and **Diff** remain available, with explicit saving of edits.
 - **Configurações** opens one tabbed modal for **Terminal**, **Conexão de IA**, **Projeto** and **Acesso remoto**. The **Projeto** tab preserves repository/personal host and per-role model choices, with policy previews.
 - **Terminal** preferences persist locally: font family, font size (8–40 px) and shell. The font selector lists installed families on the current device, alphabetically and without style duplicates, with a live preview and list refresh. In browser mode, listing requires Local Font Access support and permission; saved preferences are preserved if access is unavailable. Choices follow the server OS: Bash/Sh on Linux, Zsh/Bash/Sh on macOS, and CMD/Windows PowerShell/PowerShell 7 on Windows. Unavailable shells are disabled. Font changes apply to open terminals; shell changes apply to new tabs.

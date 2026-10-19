@@ -97,7 +97,7 @@ describe('Slice 5: React Frontend UI, Decision Cards, Chat ⇄ Terminal, Artifac
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   });
 
-  it('renders the sidebar, opens a terminal instead of a conversation, and keeps kanban and setup available', async () => {
+  it('renders the sidebar, opens a terminal instead of a conversation, and keeps the board and setup available', async () => {
     const repoDir = initTestRepo(tmpRoot, 'ui-project');
 
     await fetch(`${apiBaseUrl}/api/projects`, {
@@ -127,14 +127,10 @@ describe('Slice 5: React Frontend UI, Decision Cards, Chat ⇄ Terminal, Artifac
       expect(screen.getByText('^C')).toBeTruthy();
     });
 
-    // Open Embedded Kanban Board and verify all 8 Gantry columns
-    fireEvent.click(screen.getByTestId('open-kanban-btn'));
+    expect(screen.queryByTestId('open-kanban-btn')).toBeNull();
+    fireEvent.click(screen.getByTestId('open-board-btn'));
     await waitFor(() => {
-      const board = screen.getByTestId('kanban-board');
-      expect(board).toBeTruthy();
-      for (const col of ['Ready', 'Plan', 'Implement', 'Review', 'Critic', 'Integrate', 'Done', 'Blocked']) {
-        expect(screen.getByTestId(`kanban-col-${col}`)).toBeTruthy();
-      }
+      expect(screen.getByTestId('issue-board')).toBeTruthy();
     });
 
     // Open Gantry Setup Panel and preview policy diff

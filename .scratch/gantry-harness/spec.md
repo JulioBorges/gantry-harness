@@ -3,6 +3,8 @@
 Type: spec
 Status: ready-for-agent
 
+Workspace layout, as of 2026-10-19: primary areas are **Quadro**, **Terminal** and **Files**. The Quadro is the only board (Specs, Issues, Plan, Implement, Review, Critic, Done). There is no separate "Acompanhar execução" Kanban and no conversation session. Terminal panes are the agent surface. Sections below that describe Chat ⇄ Terminal, the eight-column embedded Kanban, coordinator chat and the conversational orchestrator are superseded by `.scratch/run-orchestration/spec.md` and `.scratch/desktop-experience/spec.md`.
+
 ## Problem Statement
 
 Operating Gantry today requires the developer to manually coordinate an external Host Harness (such as Claude Code, Codex CLI, OpenCode, or Antigravity), invoke slash skills inside separate terminal sessions, mentally track multiple Issue Worktrees, and switch between terminal windows, markdown files, and a read-only Dashboard when an agent awaits input or encounters a Protocol Failure or Execution Failure.
@@ -117,6 +119,7 @@ Within `gantry-harness`, the operator can:
 - **Language Policy Resolver**: Before starting a session in a project, the Coordinator inspects the repository's `AGENTS.md`, `CONTEXT.md` / `GLOSSARY.md`, and project settings. If the repository mandates a specific language in `AGENTS.md`, the Coordinator follows that mandate; otherwise, it converses with the operator in the operator's language while synthesizing all Gantry-validated artifacts (`Spec`, `Issue` files, `AGENTS.md` policy blocks, `Result Contract` JSON, and `Run Pull Request` bodies) in English so that `spec.py --check`, `Requirement Critic`, and `Plan Critic` validations succeed.
 - **Host-scoped model catalog**: Role models and the coordinator model are selects of the models `discovery.py` reports for the host on that control. `claude` maps to `claude-code` and `agy` to `antigravity`. A Codex control cannot save an Anthropic model id. `providers.cli.modelsByHost` remembers one model per CLI host. When the conversation host comes from the project or profile and differs from the global `cliHarness`, the connection uses `modelsByHost` for the resolved host and does not send the other host's model. The conversation composer shows that resolved host and its model list, and a pending reply names the host and model in use.
 - **No conversation session**: The workspace has no conversation transcript and does not connect a host to a conversation screen. `POST /api/projects/:id/chat` is absent. The operator uses a terminal pane for the agent CLI.
+- **No second execution board**: "Acompanhar execução" is not a workspace area. Run phase is a lane on the Quadro. Following an agent opens a terminal pane, and the terminal returns to the Quadro.
 
 ### 4. PTY Manager, Live Role Streaming, `Chat ⇄ Terminal` & Steering
 - **Unified PTY & Process Supervisor**: Both standalone user-launched terminals (`claude`, `codex`, `opencode`, `agy`, shell) and Gantry role dispatches run under a server-side PTY/process supervisor keyed by `(projectId, worktreePath, paneId)`.

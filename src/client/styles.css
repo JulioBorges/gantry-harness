@@ -177,9 +177,6 @@ kbd { color: var(--slate-400); font-size: 10px; }
 .decision-card button { white-space: normal; font-size: 12px; margin-block: 3px; }
 .decision-card input { max-width: 100%; }
 .decision-card ul { padding-left: 20px; }
-.kanban-grid { display: grid; grid-template-columns: repeat(8, minmax(180px, 1fr)); gap: 12px; padding: 24px; }
-.kanban-col { min-height: 260px; padding: 12px; border: 1px solid var(--obsidian-700); border-radius: 8px; background: var(--obsidian-950); }
-.kanban-col h4 { margin-bottom: 16px; font-size: 12px; color: var(--slate-300); }
 .settings-panel, [data-testid='setup-panel'] { min-height: 0; min-width: 0; flex: 1; padding: 28px 32px !important; overflow-y: auto; }
 .settings-panel > p, .section-intro { max-width: 70ch; color: var(--slate-400); margin: 10px 0 24px; }
 .settings-form { display: grid; gap: 10px; max-width: 620px; }
@@ -265,18 +262,8 @@ kbd { color: var(--slate-400); font-size: 10px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
-.execution-heading { padding: 24px 24px 12px; }
-.execution-heading p { color: var(--slate-400); font-size: 13px; margin-top: 8px; }
 .execution-empty { padding: 16px 24px; }
 .execution-empty p { color: var(--slate-400); max-width: 70ch; margin: 8px 0 16px; }
-.run-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 12px 24px; border-bottom: 1px solid var(--obsidian-700); font-size: 12px; }
-.run-summary code, .run-summary span { color: var(--slate-400); }
-.run-summary button { margin-left: auto; font-size: 11px; }
-.kanban-col h4 { display: flex; justify-content: space-between; gap: 12px; }
-.kanban-col h4 span { color: var(--slate-400); }
-.issue-run-id { display: block; overflow-wrap: anywhere; color: var(--slate-400); font: 10px var(--font-mono); margin: 5px 0; }
-.issue-phase { font-size: 11px; color: var(--slate-300); }
-.decision-link { color: var(--amber-accent); font-size: 11px; white-space: normal; }
 .project-dialog .dialog-error { color: #ffceca; }
 
 .file-workspace { display: flex; flex: 1; min-height: 0; min-width: 0; background: #141412; }
