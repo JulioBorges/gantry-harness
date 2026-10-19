@@ -26,5 +26,7 @@ Selecting an Issue card's run action spawns one `execute <ref>` child against th
 ## Blocked by
 
 - `run-orchestration#02`
+- `run-orchestration#08`
+- `run-orchestration#09`
 
 ## Comments
