@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { resolveSkillDir, runCommand, runGantryScript } from './commandRunner.js';
+import { findExecutable, resolveSkillDir, runCommand, runGantryScript } from './commandRunner.js';
 import type { LiveBadgeState, RegisteredProject } from '../types.js';
 
 export interface SpecSummary {
@@ -433,6 +433,75 @@ export async function bootstrapProjectSkills(
   };
 }
 
+export interface DiscoveredModel {
+  id: string;
+  name?: string;
+  contextWindow?: number;
+  supportedEfforts?: string[];
+}
+
+export function codexModelsFromDebugCatalog(value: unknown): DiscoveredModel[] {
+  const record = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  const entries = Array.isArray(record.models) ? record.models : [];
+  const models: DiscoveredModel[] = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object') continue;
+    const model = entry as Record<string, unknown>;
+    if (model.visibility === 'hide') continue;
+    const id = typeof model.slug === 'string' ? model.slug : typeof model.id === 'string' ? model.id : '';
+    if (!id) continue;
+    const efforts = Array.isArray(model.supported_reasoning_levels)
+      ? model.supported_reasoning_levels.flatMap((level) => {
+          if (typeof level === 'string') return [level];
+          if (level && typeof level === 'object' && typeof (level as { effort?: unknown }).effort === 'string') {
+            return [(level as { effort: string }).effort];
+          }
+          return [];
+        })
+      : [];
+    models.push({
+      id,
+      ...(typeof model.display_name === 'string' ? { name: model.display_name } : {}),
+      ...(typeof model.context_window === 'number' ? { contextWindow: model.context_window } : {}),
+      ...(efforts.length ? { supportedEfforts: efforts } : {}),
+    });
+  }
+  return models;
+}
+
+function discoveryFailureText(stdout: string, stderr: string): string {
+  const raw = (stderr || stdout || '').trim();
+  try {
+    const parsed = JSON.parse(raw) as { error?: unknown };
+    if (typeof parsed.error === 'string') return parsed.error;
+  } catch {
+    // The pack also reports plain text.
+  }
+  return raw;
+}
+
+async function discoverCodexModelsFromDebugCommand(): Promise<Record<string, unknown>> {
+  const codex = findExecutable('codex');
+  if (!codex) throw new Error('Codex não está no PATH. Instale e autentique o CLI para listar os modelos.');
+  const result = await runCommand([codex, 'debug', 'models'], { timeoutMs: 30_000 });
+  if (result.exitCode !== 0) {
+    throw new Error(result.stderr.trim() || result.stdout.trim() || 'codex debug models falhou.');
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result.stdout);
+  } catch {
+    throw new Error('codex debug models não retornou um catálogo JSON.');
+  }
+  const models = codexModelsFromDebugCatalog(parsed);
+  if (!models.length) throw new Error('O Codex não retornou modelos visíveis.');
+  return {
+    harness: 'codex',
+    models,
+    provenance: { source: 'codex debug models' },
+  };
+}
+
 export async function discoverHarnessModels(
   repoRoot: string,
   harness: string,
@@ -448,7 +517,11 @@ export async function discoverHarnessModels(
   if (res.exitCode === 0) {
     return JSON.parse(res.stdout) as Record<string, unknown>;
   }
-  throw new Error(res.stderr || res.stdout || `Model discovery failed for ${harness}`);
+  const failure = discoveryFailureText(res.stdout, res.stderr);
+  if (harness === 'codex' && /stdin is not a terminal|unrecognized subcommand/i.test(failure)) {
+    return discoverCodexModelsFromDebugCommand();
+  }
+  throw new Error(failure || `Model discovery failed for ${harness}`);
 }
 
 export async function resolveProjectRoles(
