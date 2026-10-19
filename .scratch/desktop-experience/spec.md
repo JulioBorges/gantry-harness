@@ -28,6 +28,8 @@ The composer shows the host that will answer the next message. A project or pers
 
 While the host is replying, the thread shows the operator message and a pending line that names the host and model. A failed send puts the draft back in the composer. The caption under the composer repeats the host, the model or `modelo padrão`, and whether the host came from the project, the profile, or the global connection.
 
+Opening the workspace for a project with no sessions creates one titled `Main Workspace Session`. The saved session id is used only when it belongs to that project; otherwise the workspace selects the project's first session and saves that layout. The composer sends `sessionId` only when the selected id is one of the sessions loaded for the open project. An empty message is rejected and does not call the host. A session id that is missing or belongs to another project does not reject the message: it is stored on this project's current session.
+
 ## Acceptance
 
 - Desktop starts its backend and opens its own window without requiring a separately installed Bun or Node runtime.
