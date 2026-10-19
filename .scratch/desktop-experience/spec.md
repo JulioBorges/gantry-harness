@@ -4,7 +4,7 @@ Status: implemented; macOS verified; Windows/Linux verification pending CI
 
 ## Confirmed requirements
 
-Desktop application for macOS, Windows and Linux. Follow the supplied herdr recording's simple workspace interaction. The Gantry coordinator conversation and standalone terminal sessions are separate. Gantry command shortcuts consult the configured Agent Host to help format commands before execution.
+Desktop application for macOS, Windows and Linux. The workspace is three areas: **Quadro**, **Terminal** and **Files**. The Quadro is the only board of Issues, Specs and run phases. The terminal is the agent surface. There is no conversation session and no separate "Acompanhar execução" view.
 
 ## Current gaps
 
@@ -14,21 +14,29 @@ Desktop application for macOS, Windows and Linux. Follow the supplied herdr reco
 - Python `pty.spawn` requires Unix and has no viewport resize protocol.
 - Frontend remembers one active pane and exposes no terminal tab management.
 - Sidebar and persistent onboarding consume working space; the mobile layout stacks navigation above the workspace.
-- Chat/Terminal switching is ambiguous about coordinator versus CLI context.
 
 ## Implementation
 
 Electron owns the desktop window and local server lifecycle. Keep React and xterm; use node-pty for Unix PTYs and Windows ConPTY. Resolve bundled assets independently of the selected repository. Provide desktop package targets for all three operating systems.
 
-Replace the busy workspace shell with compact project navigation, session tabs, context header and focused conversation/terminal views. Expose command shortcuts with a host-assisted preparation step; retain explicit execution. Show pending decisions and phase context without permanently expanding advanced settings.
+Replace the busy workspace shell with compact project navigation and one focused area at a time.
+
+## Workspace layout
+
+Sidebar workspace entries are **Quadro** and **Terminal**, then **Configurações**. Each project row has its own settings button. The header switches **Quadro**, **Terminal** and **Files**. Opening a project lands on the Quadro.
+
+- **Quadro** lists Specs and Issues and moves an Issue through Plan, Implement, Review, Critic and Done while a run is active. Pauses stay on the card. The pending-decision count sits on this entry.
+- **Terminal** is shell and agent-CLI panes. While a project phase is active, the strip offers **Ver quadro**, which returns to the board.
+- **Files** is the tree and the file viewer.
+
+There is no "Acompanhar execução" view. There is no conversation tab, no "Main Workspace Session" entry, and no composer that sends a prompt to a host. The operator talks to Codex, Claude, OpenCode or the shell in a terminal pane. Harness settings are **Terminal**, **Gantry** and **Acesso remoto**. **Gantry** holds the optional global pack configuration. Each project configures its own host and roles from the button on its row. Project configuration overrides the global one. The harness alerts only when neither a project pack nor a global pack exists.
 
 ## Acceptance
 
 - Desktop starts its backend and opens its own window without requiring a separately installed Bun or Node runtime.
 - Directory selection is available through the desktop file picker.
 - Multiple terminal tabs preserve output when switching; closing a tab stops its process; resizing changes PTY dimensions.
-- Coordinator and terminal inputs identify their distinct destinations.
-- Host-assisted command preparation cannot itself start a plan, run or resume.
+- Navigation offers Quadro, Terminal and Files, and does not offer a conversation or a second execution board.
 - Layout is usable at 390px width and short desktop window heights; navigation is dismissible.
 - Existing planning, setup, artifacts, recovery and approval flows remain functional.
 - Build, type checks and relevant tests pass. Report local macOS verification separately from unverified Windows/Linux runtime behavior.

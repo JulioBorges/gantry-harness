@@ -23,6 +23,16 @@ function mockWorkspace(chat?: () => Promise<Response>) {
     if (route.endsWith('/api/projects') && init?.method === 'POST') return Response.json({ error: 'Directory does not exist: /missing' }, { status: 400 });
     if (route.endsWith('/workspace/state')) return Response.json(state);
     if (route.endsWith('/inspect')) return Response.json({ specs: [], issues: [], worktrees: [], remediationCards: [], policy: { execution: { hostHarness: 'codex' } }, operatorProfile: {}, skillPack: { found: true }, hasTrackedPolicy: true });
+    if (route.includes('/discovery')) {
+      const harness = new URL(route, 'http://127.0.0.1').searchParams.get('harness');
+      const catalogs: Record<string, Array<{ id: string }>> = {
+        'claude-code': [{ id: 'saved-model' }, { id: 'claude-sonnet-4-6' }],
+        codex: [{ id: 'gpt-5.2-codex' }],
+        opencode: [{ id: 'openai/gpt-5.2-codex' }],
+        antigravity: [{ id: 'gemini-2.5-pro' }],
+      };
+      return Response.json({ harness, models: catalogs[harness ?? ''] ?? [] });
+    }
     if (route.endsWith('/alerts')) return Response.json({ alerts: [] });
     if (route.endsWith('/kanban')) return Response.json({ runs: [] });
     return Response.json({});
@@ -42,48 +52,15 @@ it('shows a project-registration error instead of silently ignoring the button',
   expect((screen.getByPlaceholderText('/path/to/repo') as HTMLInputElement).value).toBe('/missing');
 });
 
-it('shows the saved host, pending reply, and an actionable error while preserving the message', async () => {
-  let finish!: (response: Response) => void;
-  mockWorkspace(() => new Promise((resolve) => { finish = resolve; }));
+it('opens settings without a coordinator connection', async () => {
+  mockWorkspace();
   render(<App />);
   await screen.findAllByText('My project');
-  expect(screen.getByTestId('connection-status').textContent).toContain('codex');
-  fireEvent.change(screen.getByTestId('coordinator-input'), { target: { value: 'Como executo o projeto?' } });
-  fireEvent.click(screen.getByTestId('coordinator-send-btn'));
-  await waitFor(() => expect((screen.getByTestId('coordinator-send-btn') as HTMLButtonElement).disabled).toBe(true));
-  finish(Response.json({ error: 'Host codex: authentication required' }, { status: 502 }));
-  await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('authentication required'));
-  expect((screen.getByTestId('coordinator-input') as HTMLInputElement).value).toBe('Como executo o projeto?');
-  expect((screen.getByTestId('coordinator-send-btn') as HTMLButtonElement).disabled).toBe(false);
-});
-
-it('loads saved provider fields and preserves a stored API key when saving with an empty key field', async () => {
-  const fetchMock = mockWorkspace();
-  render(<App />);
-  await screen.findAllByText('My project');
+  expect(screen.queryByText(/Agent Host/)).toBeNull();
   fireEvent.click(screen.getByTestId('open-settings-btn'));
-  fireEvent.click(screen.getByRole('tab', { name: 'Conexão de IA' }));
-  expect((screen.getByLabelText('Host para projetos sem configuração') as HTMLSelectElement).value).toBe('claude');
-  expect((screen.getByLabelText('Modelo do coordenador') as HTMLInputElement).value).toBe('saved-model');
-  fireEvent.click(screen.getByTestId('save-provider-settings-btn'));
-  await waitFor(() => {
-    const request = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith('/settings/providers') && init?.method === 'PUT');
-    expect(request).toBeTruthy();
-    const body = JSON.parse(request![1]!.body as string);
-    expect(body.cliHarness).toBe('claude');
-    expect(body.providers.cli.apiKey).toBeUndefined();
-  });
-});
-
-it('keeps malformed Gantry command prefixes in conversation instead of bypassing preparation', async () => {
-  const fetchMock = mockWorkspace(async () => Response.json({}));
-  render(<App />);
-  await screen.findAllByText('My project');
-  fireEvent.change(screen.getByTestId('coordinator-input'), { target: { value: '/runner project' } });
-  fireEvent.click(screen.getByTestId('coordinator-send-btn'));
-  await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/chat'))).toBe(true));
-  expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/run'))).toBe(false);
-  expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/plan/start'))).toBe(false);
+  expect(screen.queryByRole('tab', { name: 'Conexão de IA' })).toBeNull();
+  expect(screen.getByRole('tab', { name: 'Gantry' })).toBeTruthy();
+  expect(screen.queryByRole('tab', { name: 'Projeto' })).toBeNull();
 });
 
 it('returns to a CLI terminal in one click without toggling the coordinator into a different backend mode', async () => {
@@ -95,8 +72,9 @@ it('returns to a CLI terminal in one click without toggling the coordinator into
   await screen.findAllByText('My project');
   fireEvent.click(screen.getByTestId('chat-terminal-toggle'));
   await screen.findByTestId('terminal-view');
-  fireEvent.click(screen.getByRole('button', { name: /^Conversa$/ }));
-  expect(screen.getByTestId('chat-view')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: /^Conversa$/ })).toBeNull();
+  expect(screen.queryByTestId('chat-view')).toBeNull();
+  expect(screen.queryByLabelText('Nova conversa')).toBeNull();
   fireEvent.click(screen.getByTestId('chat-terminal-toggle'));
   await screen.findByTestId('terminal-view');
   expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/toggle'))).toBe(false);
@@ -127,12 +105,14 @@ it('puts all settings in one modal, loads server OS options, saves terminal pref
     ? Response.json({ settings: JSON.parse(init!.body as string), environment }) : fallback(url, init));
   render(<App />);
   await screen.findAllByText('My project');
+  fireEvent.click(screen.getByTestId('open-factory-btn'));
   const open = screen.getByTestId('open-settings-btn');
   expect(screen.queryByTestId('open-setup-btn')).toBeNull();
   open.focus();
   fireEvent.click(open);
   const dialog = screen.getByRole('dialog', { name: 'Configurações' });
-  expect(within(dialog).getAllByRole('tab')).toHaveLength(4);
+  expect(within(dialog).getAllByRole('tab')).toHaveLength(3);
+  expect(within(dialog).queryByRole('tab', { name: 'Conexão de IA' })).toBeNull();
   expect((screen.getByLabelText('Tamanho da fonte (px)') as HTMLInputElement).value).toBe('15');
   expect(within(dialog).queryByRole('option', { name: /Zsh|PowerShell|CMD/ })).toBeNull();
   expect((within(dialog).getByRole('option', { name: 'Sh (indisponível)' }) as HTMLOptionElement).disabled).toBe(true);
@@ -148,12 +128,15 @@ it('puts all settings in one modal, loads server OS options, saves terminal pref
   fireEvent.keyDown(within(dialog).getByRole('tab', { name: 'Terminal' }), { key: 'End' });
   expect(screen.getByRole('tab', { name: 'Acesso remoto' }).getAttribute('aria-selected')).toBe('true');
   expect(within(dialog).getByRole('button', { name: 'Gerar código de acesso' })).toBeTruthy();
-  fireEvent.click(screen.getByRole('tab', { name: 'Projeto' }));
-  expect(within(dialog).getByTestId('setup-panel')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Configurações de My project' }));
+  expect(screen.getByTestId('setup-panel')).toBeTruthy();
+  expect(screen.queryByRole('tab', { name: 'Projeto' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Fechar configurações do projeto' }));
   fireEvent(dialog, new Event('cancel', { cancelable: true }));
   expect(screen.queryByRole('dialog')).toBeNull();
   expect(document.activeElement).toBe(open);
-  expect(screen.getByTestId('chat-view')).toBeTruthy();
+  expect(screen.queryByTestId('chat-view')).toBeNull();
+  expect(screen.getByTestId('terminal-view')).toBeTruthy();
   expect(fetchMock.mock.calls.some(([url, init]) => String(url).includes('/panes') && init?.method === 'DELETE')).toBe(false);
 });
 

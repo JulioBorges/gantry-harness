@@ -6,9 +6,11 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { fileURLToPath, URL as NodeURL } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
+import type { ExecutionSettings } from '../types.js';
 import { HarnessStateStore } from './stateStore.js';
 import { resolveCoordinatorConnection } from './aiConnection.js';
 import { resolveSkillDir, runGantryScript } from './commandRunner.js';
+import { readBoard } from './gantryCli.js';
 import {
   applyRepositorySetup,
   bootstrapProjectSkills,
@@ -18,7 +20,6 @@ import {
   resolveProjectRoles,
 } from './projectInspector.js';
 import {
-  generateCoordinatorResponse,
   prepareGantryCommand,
   resolveLanguagePolicy,
   type RoleDispatcher,
@@ -48,6 +49,7 @@ export interface HarnessServerOptions {
   gantryHome?: string;
   stateRoot?: string;
   profileRoot?: string;
+  homeDir?: string;
   host?: string;
   port?: number;
   requirePairingForRemote?: boolean;
@@ -88,12 +90,23 @@ export async function resolveUnitId(repoPath: string, skillDir?: string | null):
   return crypto.createHash('sha256').update(fs.realpathSync(repoPath)).digest('hex').slice(0, 12);
 }
 
+function sessionsForProject(store: HarnessStateStore, projectId: string, requestedSessionId: unknown) {
+  let sessions = store.listSessions(projectId);
+  if (sessions.length === 0) {
+    sessions = [store.createSession(projectId, 'Main Workspace Session')];
+  }
+  const requested = typeof requestedSessionId === 'string' ? requestedSessionId : '';
+  const sessionId = sessions.some((session) => session.id === requested) ? requested : sessions[0].id;
+  return { sessions, sessionId };
+}
+
 export async function createHarnessServer(
   options: HarnessServerOptions = {},
 ): Promise<HarnessServerInstance> {
   const gantryHome = path.resolve(options.gantryHome ?? path.join(os.homedir(), '.gantry'));
   const stateRoot = path.resolve(options.stateRoot ?? path.join(gantryHome, 'state'));
   const profileRoot = path.resolve(options.profileRoot ?? path.join(gantryHome, 'profiles'));
+  const homeDir = path.resolve(options.homeDir ?? os.homedir());
   const host = options.host ?? '127.0.0.1';
   const requestedPort = options.port ?? 7400;
   const clientDistDir = path.resolve(options.clientDistDir ?? fileURLToPath(new NodeURL('../client/', import.meta.url)));
@@ -141,6 +154,7 @@ export async function createHarnessServer(
   const sendJson = (res: http.ServerResponse, statusCode: number, data: unknown): void => {
     res.writeHead(statusCode, {
       'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store',
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Forwarded-For',
@@ -235,11 +249,19 @@ export async function createHarnessServer(
 
       if (pathname === '/api/workspace/state' && req.method === 'GET') {
         const projects = store.listProjects();
-        const layout = store.getWorkspaceLayout();
+        let layout = store.getWorkspaceLayout();
         const settings = store.getSanitizedProviderSettings();
         const activeProjectId = layout.activeProjectId ?? projects[0]?.id ?? null;
-        const sessions = activeProjectId ? store.listSessions(activeProjectId) : [];
-        const activeSessionId = layout.activeSessionId ?? sessions[0]?.id ?? null;
+        let sessions: ReturnType<HarnessStateStore['listSessions']> = [];
+        let activeSessionId: string | null = null;
+        if (activeProjectId) {
+          const resolved = sessionsForProject(store, activeProjectId, layout.activeSessionId);
+          sessions = resolved.sessions;
+          activeSessionId = resolved.sessionId;
+          if (activeSessionId !== layout.activeSessionId || activeProjectId !== layout.activeProjectId) {
+            layout = store.saveWorkspaceLayout({ activeProjectId, activeSessionId });
+          }
+        }
         const { connection } = resolveCoordinatorConnection(
           store.getRawProviderSettings(), projects.find((project) => project.id === activeProjectId), profileRoot,
         );
@@ -252,6 +274,7 @@ export async function createHarnessServer(
           layout,
           settings,
           terminalSettings: store.getTerminalSettings(),
+          globalExecution: store.getGlobalExecution(),
           terminalEnvironment: getTerminalEnvironment(),
           connection,
           sessions,
@@ -262,7 +285,15 @@ export async function createHarnessServer(
 
       if (pathname === '/api/workspace/state' && req.method === 'PUT') {
         const body = await readJsonBody(req);
-        const updated = store.saveWorkspaceLayout(body);
+        const current = store.getWorkspaceLayout();
+        const requestedProjectId = body.activeProjectId !== undefined ? body.activeProjectId : current.activeProjectId;
+        const activeProjectId = typeof requestedProjectId === 'string' || requestedProjectId === null ? requestedProjectId : current.activeProjectId;
+        const requestedSessionId = body.activeSessionId !== undefined ? body.activeSessionId : current.activeSessionId;
+        const sessionCandidate = typeof requestedSessionId === 'string' || requestedSessionId === null ? requestedSessionId : current.activeSessionId;
+        const activeSessionId = typeof activeProjectId === 'string' && activeProjectId
+          ? sessionsForProject(store, activeProjectId, sessionCandidate).sessionId
+          : sessionCandidate;
+        const updated = store.saveWorkspaceLayout({ ...body, activeProjectId, activeSessionId });
         broadcast({ type: 'workspace.layout.updated', layout: updated });
         sendJson(res, 200, { layout: updated });
         return;
@@ -310,6 +341,19 @@ export async function createHarnessServer(
       if (pathname === '/api/alerts' && req.method === 'GET') {
         sendJson(res, 200, { alerts: store.listPendingAlerts() });
         return;
+      }
+
+      if (pathname.startsWith('/api/projects/') && pathname.endsWith('/board') && req.method === 'GET') {
+        const parts = pathname.split('/').filter(Boolean);
+        if (parts.length === 4) {
+          const project = store.getProject(parts[2]);
+          if (!project) {
+            sendJson(res, 404, { error: 'Projeto não encontrado.' });
+            return;
+          }
+          sendJson(res, 200, await readBoard(project.path, homeDir));
+          return;
+        }
       }
 
       if (pathname.startsWith('/api/projects/') && pathname.endsWith('/inspect') && req.method === 'GET') {
@@ -472,56 +516,6 @@ export async function createHarnessServer(
         const prepared = await (options.commandPreparer ?? prepareGantryCommand)(command as 'plan' | 'run' | 'setup', String(body.request ?? ''), settings, project.path);
         sendJson(res, 200, { prepared, connection });
         return;
-      }
-
-      if (pathname.startsWith('/api/projects/') && pathname.endsWith('/chat') && req.method === 'POST') {
-        const parts = pathname.split('/').filter(Boolean);
-        if (parts.length === 4) {
-          const projectId = parts[2];
-          const project = store.getProject(projectId);
-          if (!project) {
-            sendJson(res, 404, { error: `Project not found: ${projectId}` });
-            return;
-          }
-          const body = await readJsonBody(req);
-          const sessions = store.listSessions(projectId);
-          const sessionId = String(body.sessionId ?? sessions[0]?.id ?? '');
-          const prompt = String(body.prompt ?? body.content ?? '').trim();
-          if (!prompt || !sessions.some((session) => session.id === sessionId)) {
-            sendJson(res, 400, { error: 'Informe uma mensagem e selecione uma sessão válida deste projeto.' });
-            return;
-          }
-          const { settings, connection } = resolveCoordinatorConnection(store.getRawProviderSettings(), project, profileRoot);
-          if (!connection.ready) {
-            sendJson(res, 400, { error: connection.detail, connection });
-            return;
-          }
-          const history = store.listMessages(projectId, sessionId);
-          const userMsg = store.appendMessage({
-            projectId,
-            sessionId,
-            role: 'user',
-            content: prompt,
-          });
-          broadcast({ type: 'message.appended', projectId, sessionId, message: userMsg });
-
-          let replyText: string;
-          try {
-            replyText = await generateCoordinatorResponse(prompt, settings, project.path, history);
-          } catch (error) {
-            sendJson(res, 502, { error: (error as Error).message, connection });
-            return;
-          }
-          const assistantMsg = store.appendMessage({
-            projectId,
-            sessionId,
-            role: 'assistant',
-            content: replyText,
-          });
-          broadcast({ type: 'message.appended', projectId, sessionId, message: assistantMsg });
-          sendJson(res, 200, { userMessage: userMsg, assistantMessage: assistantMsg, connection });
-          return;
-        }
       }
 
       if (pathname.startsWith('/api/projects/') && pathname.endsWith('/plan/start') && req.method === 'POST') {
@@ -952,6 +946,16 @@ export async function createHarnessServer(
           sendJson(res, 200, out);
           return;
         }
+      }
+
+      if (pathname === '/api/settings/execution' && req.method === 'PUT') {
+        const body = await readJsonBody(req);
+        const execution = store.updateGlobalExecution({
+          hostHarness: typeof body.hostHarness === 'string' ? body.hostHarness : undefined,
+          roles: body.roles && typeof body.roles === 'object' ? body.roles as ExecutionSettings['roles'] : {},
+        });
+        sendJson(res, 200, { execution });
+        return;
       }
 
       if (pathname === '/api/settings/terminal' && req.method === 'PUT') {

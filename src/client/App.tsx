@@ -2,8 +2,6 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useActionFeedback } from './useActionFeedback.js';
 import { FileViewerDialog } from './FileViewerDialog.js';
 import { FileTree, type FileTreeEntry } from './FileTree.js';
-import type { CoordinatorConnection } from '../server/aiConnection.js';
-import type { SanitizedProviderSettings } from '../types.js';
 import type { ExecutionSettings, RoleSelection } from '../types.js';
 import type { ManagedPane } from '../server/ptyManager.js';
 import type { PreparedGantryCommand } from '../types.js';
@@ -12,6 +10,9 @@ import type { FitAddon } from '@xterm/addon-fit';
 import type { TerminalSettings, TerminalEnvironment } from '../types.js';
 import { SettingsDialog, type SettingsTab } from './SettingsDialog.js';
 import { SystemFontSelect } from './SystemFontSelect.js';
+import { BoardView } from './BoardView.js';
+import { EXECUTION_HOSTS, ModelSelect, discoveryHarness, type CatalogModel } from './ModelSelect.js';
+import { NO_PACK_EXPLANATION, coerceBoard, overlaysFromKanban, unavailableBoard, type BoardSnapshot } from '../boardModel.js';
 import type {
   ChatMessageRecord,
   DecisionCardPayload,
@@ -31,18 +32,6 @@ declare global {
 
 const STATUS_LABELS: Record<string, string> = { working: 'Em execução', 'needs input': 'Aguardando você', done: 'Concluído', blocked: 'Bloqueado', idle: 'Pronto' };
 const PHASE_LABELS: Record<string, string> = { idle: 'Pronto para começar', bootstrapping_skills: 'Preparando Gantry', setup_review: 'Revisando configuração', grilling_interview: 'Definindo o objetivo', spec_validation: 'Validando especificação', requirement_review: 'Revisando requisitos', slicing_and_critique: 'Preparando tarefas', awaiting_plan_approval: 'Aguardando aprovação do plano', round_preflight: 'Verificando execução', round_executing: 'Executando tarefas', awaiting_recovery_decision: 'Aguardando recuperação', awaiting_handoff_decisions: 'Aguardando revisão da entrega', completed: 'Execução concluída' };
-
-const KANBAN_COLUMNS = [
-  'Ready',
-  'Plan',
-  'Implement',
-  'Review',
-  'Critic',
-  'Integrate',
-  'Done',
-  'Blocked',
-] as const;
-const COLUMN_LABELS: Record<string, string> = { Ready: 'Prontas', Plan: 'Planejamento', Implement: 'Implementação', Review: 'Revisão', Critic: 'Validação', Integrate: 'Integração', Done: 'Concluídas', Blocked: 'Bloqueadas' };
 
 const CLICKABLE_PATH_RE = /\b([A-Za-z0-9_./-]+\.(?:ts|tsx|js|jsx|py|md|json|css|html))\b/g;
 
@@ -87,9 +76,9 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     }>;
   } | null>(null);
 
-  const [activeView, setActiveView] = useState<'factory' | 'kanban' | 'files'>(
-    'factory',
-  );
+  const [activeView, setActiveView] = useState<'factory' | 'files' | 'board'>('board');
+  const [board, setBoard] = useState<BoardSnapshot | null>(null);
+  const [boardGeneration, setBoardGeneration] = useState(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('terminal');
   const openSettings = (tab: SettingsTab) => { setSettingsTab(tab); setSettingsOpen(true); };
@@ -100,10 +89,11 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   const terminalAppearance = useRef(terminalSettings);
   terminalAppearance.current = terminalSettings;
   const fitAddonRef = useRef<FitAddon | null>(null);
-  const [paneMode, setPaneMode] = useState<'chat' | 'terminal'>('chat');
+  const [paneMode, setPaneMode] = useState<'chat' | 'terminal'>('terminal');
   const [activePaneId, setActivePaneId] = useState<string | null>(null);
   const [terminalBuffer, setTerminalBuffer] = useState<string>('');
   const [coordinatorInput, setCoordinatorInput] = useState('');
+  const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
   const [newProjectPath, setNewProjectPath] = useState('');
   const [activeRunId, setActiveRunId] = useState<string>('');
   const [approvedSlug, setApprovedSlug] = useState<string | null>(null);
@@ -129,21 +119,17 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   >([]);
 
   const [setupDiffPreview, setSetupDiffPreview] = useState<string>('');
+  const [projectSettingsId, setProjectSettingsId] = useState<string | null>(null);
   const [setupHostHarness, setSetupHostHarness] = useState<string>('opencode');
-  const [discoveredModels, setDiscoveredModels] = useState<Array<{ id: string }>>([]);
+  const [globalHost, setGlobalHost] = useState('');
+  const [globalRoles, setGlobalRoles] = useState<Record<string, RoleSelection>>({});
+  const globalExecutionLoaded = useRef(false);
+  const [modelsByHarness, setModelsByHarness] = useState<Record<string, CatalogModel[]>>({});
+  const [catalogLoading, setCatalogLoading] = useState<Record<string, boolean>>({});
+  const [catalogErrors, setCatalogErrors] = useState<Record<string, string>>({});
+  const catalogRequests = useRef(new Set<string>());
   const [roleSelections, setRoleSelections] = useState<Record<string, RoleSelection>>({});
   const setupProjectLoaded = useRef<string | null>(null);
-  const [providerMode, setProviderMode] = useState<'sdk' | 'cli'>('cli');
-  const [activeProvider, setActiveProvider] = useState<
-    'anthropic' | 'openai' | 'gemini' | 'openrouter' | 'cli'
-  >('cli');
-  const [providerApiKey, setProviderApiKey] = useState<string>('');
-  const [cliHarness, setCliHarness] = useState('');
-  const [providerModel, setProviderModel] = useState('');
-  const [providerBaseUrl, setProviderBaseUrl] = useState('');
-  const [savedSettings, setSavedSettings] = useState<SanitizedProviderSettings | null>(null);
-  const [connection, setConnection] = useState<CoordinatorConnection | null>(null);
-  const settingsLoaded = useRef(false);
   const { feedback, pendingActions, withFeedback, reportError, dismissFeedback } = useActionFeedback();
   const [terminalInput, setTerminalInput] = useState('');
   const [panes, setPanes] = useState<ManagedPane[]>([]);
@@ -170,6 +156,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   selectedPane.current = { projectId: activeProjectId, paneId: activePaneId, sessionId: activeSessionId };
   const workspaceLoading = useRef(false);
   const workspaceReloadRequested = useRef(false);
+  const workspaceGeneration = useRef(0);
 
   const base = apiBaseUrl.replace(/\/$/, '');
 
@@ -194,6 +181,57 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     return response;
   }, [base, authToken]);
 
+  const ensureModelCatalog = useCallback(async (host: string) => {
+    const harness = discoveryHarness(host);
+    if (!activeProjectId || !harness || catalogRequests.current.has(harness)) return;
+    catalogRequests.current.add(harness);
+    setCatalogLoading((current) => ({ ...current, [harness]: true }));
+    try {
+      const response = await apiFetch(`/api/projects/${activeProjectId}/discovery?harness=${encodeURIComponent(harness)}`);
+      const data = await response.json();
+      const models = Array.isArray(data.models) ? data.models as CatalogModel[] : [];
+      setModelsByHarness((current) => ({ ...current, [harness]: models }));
+      setCatalogErrors((current) => ({
+        ...current,
+        [harness]: models.length ? '' : 'O host não retornou modelos. Verifique instalação e autenticação.',
+      }));
+    } catch (error) {
+      catalogRequests.current.delete(harness);
+      setModelsByHarness((current) => ({ ...current, [harness]: [] }));
+      setCatalogErrors((current) => ({
+        ...current,
+        [harness]: error instanceof Error ? error.message : 'Falha ao consultar os modelos deste host.',
+      }));
+    } finally {
+      setCatalogLoading((current) => ({ ...current, [harness]: false }));
+    }
+  }, [activeProjectId, apiFetch]);
+
+  useEffect(() => {
+    catalogRequests.current.clear();
+    setModelsByHarness({});
+    setCatalogErrors({});
+    setCatalogLoading({});
+  }, [activeProjectId]);
+
+  useEffect(() => {
+    if (!activeProjectId) return;
+    const hosts = new Set<string>();
+    if (projectSettingsId && setupHostHarness) hosts.add(setupHostHarness);
+    if (projectSettingsId) {
+      for (const selection of Object.values(roleSelections)) {
+        if (selection.harness) hosts.add(selection.harness);
+      }
+    }
+    if (settingsOpen && settingsTab === 'gantry' && globalHost) hosts.add(globalHost);
+    if (settingsOpen && settingsTab === 'gantry') {
+      for (const selection of Object.values(globalRoles)) {
+        if (selection.harness) hosts.add(selection.harness);
+      }
+    }
+    for (const host of hosts) void ensureModelCatalog(host);
+  }, [settingsOpen, settingsTab, projectSettingsId, activeProjectId, setupHostHarness, roleSelections, globalHost, globalRoles, ensureModelCatalog]);
+
   const loadArtifactAsset = useCallback(async (path: string, signal: AbortSignal): Promise<Blob> => {
     if (!artifactDrawer) throw new Error('Nenhum arquivo selecionado.');
     const response = await apiFetch(`/api/projects/${artifactDrawer.projectId}/artifact-assets?path=${encodeURIComponent(path)}`, { signal });
@@ -201,6 +239,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   }, [apiFetch, artifactDrawer?.projectId]);
 
   const loadWorkspaceState = async (): Promise<void> => {
+    const generation = ++workspaceGeneration.current;
     if (workspaceLoading.current) {
       workspaceReloadRequested.current = true;
       return;
@@ -208,6 +247,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     workspaceLoading.current = true;
     try {
       const res = await apiFetch('/api/workspace/state');
+      if (generation !== workspaceGeneration.current) return;
       if (res.status === 401) {
         setRequiresRemotePairing(true);
         return;
@@ -215,32 +255,31 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
       if (!res.ok) return;
       setRequiresRemotePairing(false);
       const data = await res.json();
-      setConnection(data.connection ?? null);
-      setSavedSettings(data.settings ?? null);
+      if (generation !== workspaceGeneration.current) return;
       if (data.terminalEnvironment) setTerminalEnvironment(data.terminalEnvironment);
+      if (!globalExecutionLoaded.current && data.globalExecution) {
+        const execution = data.globalExecution as ExecutionSettings;
+        setGlobalHost(execution.hostHarness ?? '');
+        setGlobalRoles(execution.roles ?? {});
+        globalExecutionLoaded.current = true;
+      }
       if (!terminalSettingsLoaded.current && data.terminalSettings) {
         setTerminalSettings(data.terminalSettings);
         setTerminalDraft(data.terminalSettings);
         terminalSettingsLoaded.current = true;
       }
-      if (!settingsLoaded.current && data.settings) {
-        const settings = data.settings as SanitizedProviderSettings;
-        setProviderMode(settings.mode);
-        setActiveProvider(settings.activeProvider);
-        setCliHarness(settings.cliHarness ?? '');
-        const config = settings.providers[settings.mode === 'cli' ? 'cli' : settings.activeProvider];
-        setProviderModel(config?.model ?? '');
-        setProviderBaseUrl(config?.baseUrl === 'enable-cli-exec' ? '' : config?.baseUrl ?? '');
-        settingsLoaded.current = true;
-      }
       const projs: RegisteredProject[] = data.projects ?? [];
       setProjects(projs);
       const actProj = data.layout?.activeProjectId ?? projs[0]?.id ?? null;
       setActiveProjectId(actProj);
-      setSessions(data.sessions ?? []);
-      const actSess = data.layout?.activeSessionId ?? data.sessions?.[0]?.id ?? null;
+      const loadedSessions = data.sessions ?? [];
+      setSessions(loadedSessions);
+      const requestedSessionId = data.layout?.activeSessionId;
+      const actSess = loadedSessions.some((session: any) => session.id === requestedSessionId)
+        ? requestedSessionId
+        : loadedSessions[0]?.id ?? null;
       setActiveSessionId(actSess);
-      setMessages(data.messages ?? []);
+      setMessages((data.messages ?? []).filter((message: ChatMessageRecord) => message.projectId === actProj));
 
       const alertRes = await apiFetch('/api/alerts');
       if (alertRes.ok) {
@@ -248,6 +287,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         setAlerts(alertData.alerts ?? []);
       }
 
+      if (generation !== workspaceGeneration.current) return;
       if (actProj) {
         const paneResponse = await apiFetch(`/api/projects/${actProj}/panes`);
         const available: ManagedPane[] = (await paneResponse.json()).panes ?? [];
@@ -282,6 +322,27 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
       }
     }
   };
+
+  useEffect(() => {
+    if (!activeProjectId) {
+      setBoard(null);
+      return;
+    }
+    const projectId = activeProjectId;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await apiFetch(`/api/projects/${projectId}/board`, { cache: 'no-store' });
+        const payload = response.ok ? await response.json() : null;
+        if (!cancelled) setBoard(response.ok ? coerceBoard(payload) : unavailableBoard());
+      } catch {
+        if (!cancelled) setBoard(unavailableBoard());
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeProjectId, apiFetch, boardGeneration]);
 
   useEffect(() => {
     void loadWorkspaceState();
@@ -433,7 +494,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     if (paneId === activePaneId) {
       // Stop routing input/resize events before the backend removes this pane.
       selectedPane.current = { ...selectedPane.current, paneId: null };
-      setActivePaneId(null); setTerminalBuffer(''); setPaneMode('chat');
+      setActivePaneId(null); setTerminalBuffer(''); setPaneMode('terminal');
     }
     await apiFetch(`/api/projects/${activeProjectId}/panes/${paneId}`, { method: 'DELETE' });
     await loadWorkspaceState();
@@ -453,7 +514,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         body: JSON.stringify({ activeProjectId: result.project.id, activeSessionId: result.defaultSessionId }),
       });
       setNewProjectPath('');
-      setProjectDialogOpen(false); if (window.innerWidth < 760) setSidebarOpen(false); setActiveView('factory');
+      setProjectDialogOpen(false); if (window.innerWidth < 760) setSidebarOpen(false); setActiveView('board');
       await loadWorkspaceState();
     }
   });
@@ -461,11 +522,18 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   const handleSelectProject = withFeedback("Selecionar projeto", async (projectId: string, sessionId?: string): Promise<void> => {
     setArtifactDrawer(null);
     setActivePaneId(null);
-    setPaneMode('chat');
     setTerminalBuffer('');
     setApprovedSlug(null);
     setActiveRunId('');
-    setPreparedCommand(null); if (window.innerWidth < 760) setSidebarOpen(false); setActiveView('factory');
+    setPreparedCommand(null); if (window.innerWidth < 760) setSidebarOpen(false); setActiveView('board');
+    setPaneMode('terminal');
+    if (projectId !== activeProjectId) {
+      setMessages([]);
+      setSessions([]);
+      setActiveSessionId(sessionId ?? null);
+      setPendingPrompt(null);
+      setCoordinatorInput('');
+    }
     setActiveProjectId(projectId);
     if (sessionId) setActiveSessionId(sessionId);
     await apiFetch(`/api/workspace/state`, {
@@ -549,7 +617,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     if (executePrepared && (!preparedCommand || preparedCommand.projectId !== activeProjectId || preparedCommand.sessionId !== activeSessionId)) throw new Error('Prepare o comando nesta conversa antes de executar.');
     const text = executePrepared && preparedCommand ? `/${preparedCommand.command} ${preparedCommand.argument}`.trim() : coordinatorInput.trim();
     setPreparedCommand(null);
-    if (text === '/setup') { openSettings('project'); setCoordinatorInput(''); return; }
+    if (text === '/setup') { if (activeProjectId) setProjectSettingsId(activeProjectId); else openSettings('gantry'); setCoordinatorInput(''); return; }
 
     if (executePrepared && preparedCommand?.command === 'plan') {
       const goal = text.replace(/^\/plan\s*/, '').trim() || 'New feature';
@@ -583,13 +651,22 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
       return;
     }
 
-    await apiFetch(`/api/projects/${activeProjectId}/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: activeSessionId, prompt: text }),
-    });
-    await loadWorkspaceState();
-    setCoordinatorInput((current) => current.trim() === text ? '' : current);
+    setPendingPrompt(text);
+    setCoordinatorInput('');
+    const sessionId = sessions.some((session) => session.id === activeSessionId) ? activeSessionId : sessions[0]?.id;
+    try {
+      await apiFetch(`/api/projects/${activeProjectId}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...(sessionId ? { sessionId } : {}), prompt: text }),
+      });
+      await loadWorkspaceState();
+      setPendingPrompt(null);
+    } catch (error) {
+      setPendingPrompt(null);
+      setCoordinatorInput((current) => current.trim() ? current : text);
+      throw error;
+    }
   });
 
   const handleAnswerGrilling = withFeedback("Enviar decisões", async (
@@ -799,6 +876,17 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   };
   const handleOpenArtifact = withFeedback("Abrir arquivo", loadArtifact);
 
+  const handleFollowAgent = (ref: string, runId?: string): void => {
+    const pane = panes.find((item) => item.status === 'running' && (item.activeRunId === runId || item.worktreePath.includes(ref.split('#')[0] ?? ref)));
+    setActiveView('factory');
+    if (pane) {
+      setPaneMode('terminal');
+      setActivePaneId(pane.paneId);
+      return;
+    }
+    setPaneMode('chat');
+  };
+
   const handleSaveArtifact = async (content: string): Promise<void> => {
     if (!artifactDrawer) return;
     const { projectId, path } = artifactDrawer;
@@ -851,7 +939,12 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   const handleApplySetup = withFeedback("Salvar configuração do projeto", async (scope: 'repository' | 'personal'): Promise<void> => {
     if (!activeProjectId) throw new Error('Selecione um projeto para continuar.');
     for (const [role, selection] of Object.entries(roleSelections)) {
-      if (!selection.model.trim()) throw new Error(`Informe o modelo para o papel ${role}. Consulte os modelos do host antes de salvar.`);
+      const harness = discoveryHarness(selection.harness);
+      const catalog = modelsByHarness[harness];
+      if (!catalog) throw new Error(`A lista de modelos de ${selection.harness || 'o host'} ainda não carregou para o papel ${role}.`);
+      if (!catalog.some((model) => model.id === selection.model)) {
+        throw new Error(`O modelo do papel ${role} não está disponível em ${selection.harness}. Escolha um modelo desse host.`);
+      }
     }
     const policy = buildProposedPolicy();
     await apiFetch(`/api/projects/${activeProjectId}/setup/apply`, {
@@ -868,38 +961,22 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     await loadWorkspaceState();
   });
 
-  const handleSaveProvider = withFeedback('Salvar conexão de IA', async () => {
-    if (providerMode === 'cli' && !cliHarness) throw new Error('Selecione um host para projetos sem configuração. O host salvo no projeto tem prioridade.');
-    const provider = providerMode === 'cli' ? 'cli' : activeProvider;
-    if (providerMode === 'sdk' && provider === 'cli') throw new Error('Selecione um provedor de API.');
-    const response = await apiFetch('/api/settings/providers', {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        mode: providerMode, activeProvider: provider, cliHarness: cliHarness || undefined,
-        providers: { [provider]: {
-          model: providerModel.trim(),
-          ...(providerBaseUrl.trim() ? { baseUrl: providerBaseUrl.trim() } : {}),
-          ...(providerApiKey.trim() ? { apiKey: providerApiKey.trim() } : {}),
-        } },
-      }),
+  const handleSaveGlobalExecution = withFeedback('Salvar Gantry global', async () => {
+    const response = await apiFetch('/api/settings/execution', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hostHarness: globalHost, roles: globalRoles }),
     });
-    setSavedSettings(await response.json());
-    setProviderApiKey('');
-    await loadWorkspaceState();
+    const data = await response.json() as { execution: ExecutionSettings };
+    setGlobalHost(data.execution.hostHarness ?? '');
+    setGlobalRoles(data.execution.roles ?? {});
+    globalExecutionLoaded.current = true;
   });
 
   const handleBootstrap = withFeedback('Instalar skills do Gantry', async () => {
     if (!activeProjectId) throw new Error('Selecione um projeto primeiro.');
     await apiFetch(`/api/projects/${activeProjectId}/bootstrap`, { method: 'POST' });
     await loadWorkspaceState();
-  });
-
-  const handleDiscoverModels = withFeedback('Consultar modelos do host', async () => {
-    if (!activeProjectId || !setupHostHarness) throw new Error('Selecione um projeto e seu host primeiro.');
-    const response = await apiFetch(`/api/projects/${activeProjectId}/discovery?harness=${encodeURIComponent(setupHostHarness)}`);
-    const data = await response.json();
-    setDiscoveredModels(data.models ?? []);
-    if (!data.models?.length) throw new Error('O host não retornou modelos verificáveis. Verifique instalação e autenticação.');
   });
 
   const handleSaveTerminalSettings = withFeedback('Salvar terminal', async () => {
@@ -1165,6 +1242,20 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     );
   };
 
+  const specInteractions: Record<string, React.ReactNode> = {};
+  const issueInteractions: Record<string, React.ReactNode> = {};
+  for (const message of messages) {
+    const card = message.decisionCard;
+    if (!card || card.resolved) continue;
+    if (card.kind === 'issue_recovery') {
+      issueInteractions[card.issueRef] = renderDecisionCard(card);
+      continue;
+    }
+    if (card.kind === 'grilling_round' || card.kind === 'spec_blocked' || card.kind === 'plan_approval') {
+      specInteractions[card.slug] = renderDecisionCard(card);
+    }
+  }
+
   const handleVerifyPairingCode = withFeedback("Conectar dispositivo", async (): Promise<void> => {
     const res = await apiFetch(`/api/auth/pair/verify`, {
       method: 'POST',
@@ -1213,6 +1304,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   }
 
   const activeProject = projects.find((project) => project.id === activeProjectId);
+  const projectMessages = messages.filter((message) => message.projectId === activeProjectId);
   const activeTerminal = panes.find((pane) => pane.paneId === activePaneId);
   const inlineArtifact = activeView === 'files' && wideWorkspace && artifactDrawer?.projectId === activeProjectId ? artifactDrawer : null;
   const changeView = (view: typeof activeView) => { setActiveView(view); if (window.innerWidth < 760) setSidebarOpen(false); };
@@ -1239,12 +1331,13 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         <div className="sidebar-heading"><span>Projetos</span><button className="icon-button" aria-label="Adicionar projeto" data-testid="new-project-btn" onClick={() => setProjectDialogOpen(true)}>+</button></div>
         <div className="project-list">
           {projects.length === 0 && <p className="sidebar-empty">Abra uma pasta para começar a trabalhar.</p>}
-          {projects.map((project) => <div key={project.id}>
-            <button className={`project-row ${project.id === activeProjectId ? 'selected' : ''}`} onClick={() => void handleSelectProject(project.id)} aria-current={project.id === activeProjectId ? 'page' : undefined}>
+          {projects.map((project) => <div key={project.id} className={`project-row ${project.id === activeProjectId ? 'selected' : ''}`}>
+            <button className="project-row-select" onClick={() => void handleSelectProject(project.id)} aria-current={project.id === activeProjectId ? 'page' : undefined}>
               <span className="folder-icon" aria-hidden="true">▱</span>
               <span className="project-row-text"><strong>{project.name}</strong><small title={project.path}>{project.path}</small></span>
               <span title={STATUS_LABELS[project.badgeState]} className={`status-dot ${project.badgeState?.replace(/\s+/g, '-')}`} />
             </button>
+            <button className="icon-button project-settings" aria-label={`Configurações de ${project.name}`} data-testid={`project-settings-${project.id}`} onClick={() => { setProjectSettingsId(project.id); if (project.id !== activeProjectId) void handleSelectProject(project.id); }}>⚙</button>
             {project.id === activeProjectId && inspection && inspection.worktrees.length > 0 && <details className="project-context">
               <summary>Worktrees</summary>
               {inspection.worktrees.map((wt) => <div key={wt.path} className="worktree-row"><span title={wt.path}>{wt.branch} · {STATUS_LABELS[wt.badgeState]}</span>{wt.issueRef && <button onClick={() => void handleTakeoverWorktree(wt.issueRef!, wt.path)}>Assumir</button>}</div>)}
@@ -1254,8 +1347,8 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         <button className="new-project-link" onClick={() => setProjectDialogOpen(true)}>+ Abrir projeto</button>
         <div className="sidebar-bottom">
           <div className="sidebar-heading">Workspace</div>
-          <button className={`btn-nav ${activeView === 'factory' ? 'btn-nav-active' : ''}`} data-testid="open-factory-btn" onClick={() => changeView('factory')}><span>Conversa e terminal</span><kbd>⌘ B</kbd></button>
-          <button className={`btn-nav ${activeView === 'kanban' ? 'btn-nav-active' : ''}`} data-testid="open-kanban-btn" onClick={() => changeView('kanban')}><span>Acompanhar execução</span>{alerts.length > 0 && <span className="count-badge">{alerts.length}</span>}</button>
+          <button className={`btn-nav ${activeView === 'board' ? 'btn-nav-active' : ''}`} data-testid="open-board-btn" onClick={() => changeView('board')}><span>Quadro</span>{alerts.length > 0 && <span className="count-badge">{alerts.length}</span>}</button>
+          <button className={`btn-nav ${activeView === 'factory' ? 'btn-nav-active' : ''}`} data-testid="open-factory-btn" onClick={() => { setPaneMode('terminal'); changeView('factory'); }}><span>Terminal</span><kbd>⌘ B</kbd></button>
           <div className="sidebar-divider" />
           <button className="btn-nav" data-testid="open-settings-btn" onClick={() => openSettings('terminal')}>Configurações</button>
           <div className="local-caption">Armazenamento local · v0.1.0</div>
@@ -1265,53 +1358,49 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
       <main className="main-area">
         <header className="workspace-header">
           <button className="icon-button navigation-toggle" aria-label="Alternar navegação" aria-expanded={sidebarOpen} onClick={() => setSidebarOpen((value) => !value)}>☰</button>
-          <div className="workspace-title"><strong>{activeProject?.name ?? 'Gantry Harness'}</strong><span title={activeProject?.path}>{activeView === 'kanban' ? 'Execuções' : activeProject?.path ?? 'Seu workspace de desenvolvimento'}</span></div>
+          <div className="workspace-title"><strong>{activeProject?.name ?? 'Gantry Harness'}</strong><span title={activeProject?.path}>{activeView === 'board' ? 'Issues e Specs' : activeProject?.path ?? 'Seu workspace de desenvolvimento'}</span></div>
           <div className="view-selector" aria-label="Área de trabalho">
-            <button aria-pressed={activeView === 'factory' && paneMode === 'chat'} onClick={() => { setPaneMode('chat'); setActiveView('factory'); }}>Conversa</button>
-            <button data-testid="chat-terminal-toggle" aria-pressed={activeView === 'factory' && paneMode === 'terminal'} disabled={!activeProjectId || pendingActions.includes('Abrir terminal')} onClick={() => { setActiveView('factory'); if (paneMode !== 'terminal' || activeTerminal?.launcher !== 'shell' || activeTerminal?.status !== 'running') void handleToggleChatTerminal(); }}>Terminal</button>
+            <button aria-pressed={activeView === 'board'} onClick={() => setActiveView('board')}>Quadro</button>
+            <button data-testid="chat-terminal-toggle" aria-pressed={activeView === 'factory'} disabled={!activeProjectId || pendingActions.includes('Abrir terminal')} onClick={() => { setPaneMode('terminal'); setActiveView('factory'); if (activeTerminal?.launcher !== 'shell' || activeTerminal?.status !== 'running') void handleToggleChatTerminal(); }}>Terminal</button>
             <button data-testid="open-files-btn" aria-pressed={activeView === 'files'} onClick={() => setActiveView('files')}>Files</button>
           </div>
         </header>
 
-        <div className="workspace-context" data-testid="connection-status">
-          <span className={`status-dot ${connection?.ready ? 'done' : 'idle'}`} />
-          <span>{connection ? `${connection.mode === 'cli' ? 'Agent Host' : 'API'}: ${connection.host || 'não configurado'}` : 'Carregando conexão…'}</span>
-          <span className="context-model">{connection?.model || 'Modelo padrão do host'}</span>
-          <button title={connection?.detail} onClick={() => openSettings('ai')}>Configurar conexão</button>
+        <div className="workspace-context">
           <button className="context-help" onClick={() => setShowGuide((value) => !value)} aria-expanded={showGuide}>Ajuda</button>
         </div>
-        {showGuide && <section className="workspace-guide"><strong>Do projeto à execução</strong><p>Abra uma pasta e configure o Agent Host. Converse com o coordenador ou escolha /plan para preparar um objetivo. Revise o comando, aprove o plano gerado e execute. O terminal abre o shell do sistema, onde você pode executar comandos ou restaurar sessões dos seus CLIs.</p><button onClick={() => setShowGuide(false)}>Entendi</button></section>}
+        {showGuide && <section className="workspace-guide"><strong>Do projeto à execução</strong><p>Abra uma pasta e use o terminal para executar comandos ou restaurar sessões do Codex, Claude e OpenCode. O quadro mostra as Issues e Specs do repositório.</p><button onClick={() => setShowGuide(false)}>Entendi</button></section>}
         {pendingActions.length > 0 && <div className="action-pending" role="status" aria-live="polite"><span className="working-indicator" />{pendingActions.join(' · ')}…</div>}
-        {feedback?.kind === 'error' && !projectDialogOpen && !settingsOpen && <div className="action-feedback error" role="alert"><p>{feedback.message}</p><div className="feedback-actions"><button onClick={() => openSettings(feedback.action === 'Executar plano' ? 'project' : 'ai')}>Revisar configuração</button><button aria-label="Fechar aviso" onClick={dismissFeedback}>×</button></div></div>}
+        {feedback?.kind === 'error' && !projectDialogOpen && !settingsOpen && !projectSettingsId && <div className="action-feedback error" role="alert"><p>{feedback.message}</p><div className="feedback-actions"><button onClick={() => openSettings('terminal')}>Revisar configuração</button><button aria-label="Fechar aviso" onClick={dismissFeedback}>×</button></div></div>}
+        {board?.explanation === NO_PACK_EXPLANATION && activeProjectId && <div className="action-feedback error" role="alert" data-testid="pack-missing"><p>{board.explanation}</p><div className="feedback-actions"><button onClick={() => setProjectSettingsId(activeProjectId)}>Configurar este projeto</button><button onClick={() => openSettings('gantry')}>Configuração global</button></div></div>}
         {alerts.length > 0 && <button className="alert-banner" data-testid="alert-banner" onClick={() => { const first = alerts[0]; void handleSelectProject(first.projectId, first.sessionId); setActiveView('factory'); }}><span>{alerts[0].projectName} · {alerts[0].summary || STATUS_LABELS[alerts[0].badgeState]}</span><span>Revisar decisão →</span></button>}
+
+        {activeView === 'board' && (
+          <BoardView
+            board={board}
+            hasProject={Boolean(activeProjectId)}
+            overlays={overlaysFromKanban(kanbanRuns)}
+            specInteractions={specInteractions}
+            issueInteractions={issueInteractions}
+            onRefresh={() => setBoardGeneration((value) => value + 1)}
+            onOpenPath={(path) => void handleOpenArtifact(path)}
+            onFollow={handleFollowAgent}
+          />
+        )}
 
         {activeView === 'factory' && <div className="workspace-content">
           <div className="session-bar">
-            <div className="session-tabs" aria-label={paneMode === 'chat' ? 'Conversas' : 'Terminais'}>
-              {paneMode === 'chat' ? sessions.map((session) => <button className={`session-tab ${session.id === activeSessionId ? 'active' : ''}`} key={session.id} onClick={() => void handleSelectSession(session.id)} aria-current={session.id === activeSessionId ? 'page' : undefined}>{session.title}</button>) : panes.map((pane) => <div key={pane.paneId} className={`terminal-tab ${pane.paneId === activePaneId ? 'active' : ''}`}><button onClick={() => void handleSelectPane(pane.paneId)}><span className={`status-dot ${pane.status === 'running' ? 'done' : 'idle'}`} />{pane.launcher}<small>{pane.status === 'exited' ? `Encerrado (${pane.exitCode ?? '—'})` : 'Em execução'}</small></button><button className="tab-close" aria-label={`Encerrar terminal ${pane.launcher}`} onClick={() => void handleClosePane(pane.paneId)}>×</button></div>)}
-              {paneMode === 'chat' && <button className="icon-button" disabled={!activeProjectId} aria-label="Nova conversa" onClick={() => void handleNewSession()}>+</button>}
+            <div className="session-tabs" aria-label="Terminais">
+              {panes.map((pane) => <div key={pane.paneId} className={`terminal-tab ${pane.paneId === activePaneId ? 'active' : ''}`}><button onClick={() => void handleSelectPane(pane.paneId)}><span className={`status-dot ${pane.status === 'running' ? 'done' : 'idle'}`} />{pane.launcher}<small>{pane.status === 'exited' ? `Encerrado (${pane.exitCode ?? '—'})` : 'Em execução'}</small></button><button className="tab-close" aria-label={`Encerrar terminal ${pane.launcher}`} onClick={() => void handleClosePane(pane.paneId)}>×</button></div>)}
             </div>
             <button className="new-terminal-button" data-testid="launcher-shell" disabled={!activeProjectId || pendingActions.includes('Abrir terminal')} onClick={() => void handleOpenTerminal()}>+ Terminal</button>
           </div>
-          {activeProject?.lifecycleState && activeProject.lifecycleState !== 'idle' && <div className="run-strip"><span className={`status-dot ${activeProject.badgeState?.replace(/\s+/g, '-')}`} /><strong>{PHASE_LABELS[activeProject.lifecycleState] ?? activeProject.lifecycleState}</strong>{activeRunId && <code>{activeRunId}</code>}<button onClick={() => setActiveView('kanban')}>Ver execução →</button></div>}
+          {activeProject?.lifecycleState && activeProject.lifecycleState !== 'idle' && <div className="run-strip"><span className={`status-dot ${activeProject.badgeState?.replace(/\s+/g, '-')}`} /><strong>{PHASE_LABELS[activeProject.lifecycleState] ?? activeProject.lifecycleState}</strong>{activeRunId && <code>{activeRunId}</code>}<button onClick={() => setActiveView('board')}>Ver quadro →</button></div>}
           {approvedSlug && <div className="run-strip"><span>Plano aprovado: <strong>{approvedSlug}</strong></span><button className="btn-primary" data-testid="start-run-btn" disabled={pendingActions.includes('Executar plano')} onClick={() => void handleStartRun(approvedSlug)}>Executar plano</button></div>}
 
-          {paneMode === 'chat' ? <>
-            <div className="conversation-scroll" data-testid="chat-view">
-              <div className="conversation-width">
-                {messages.length === 0 && <div className="chat-empty"><div className="empty-symbol" aria-hidden="true">g</div><h1>{activeProjectId ? 'O que vamos construir?' : 'Seu próximo projeto começa aqui.'}</h1><p>{activeProjectId ? 'Converse com o coordenador ou prepare um comando do Gantry. Seu Agent Host ajuda a definir o próximo passo.' : 'Abra uma pasta para conversar com seu agente, planejar mudanças e acompanhar as execuções.'}</p>{!activeProjectId && <button className="btn-primary" onClick={() => setProjectDialogOpen(true)}>Abrir projeto</button>}<div className="empty-suggestions">{activeProjectId && <><button onClick={() => { setCoordinatorInput('Explique este projeto e como executá-lo localmente.'); document.getElementById('coordinator-message')?.focus(); }}>Entender este projeto</button><button onClick={() => selectShortcut('plan')}>Planejar uma mudança</button></>}</div></div>}
-                {messages.map((message) => <article key={message.id} className={`chat-message message-${message.role}`}><div className="message-heading"><strong>{message.role === 'user' ? 'Você' : message.role === 'assistant' ? 'Gantry' : message.role === 'subagent' ? 'Agente' : 'Sistema'}</strong><time>{new Date(message.createdAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</time></div><div className="message-body">{renderClickableText(message.content)}</div>{message.turnBlocks?.map((block, index) => <details key={index} className="turn-block" open={block.collapsed === false}><summary>{block.title}</summary><pre>{renderClickableText(block.content)}</pre></details>)}{message.decisionCard && renderDecisionCard(message.decisionCard)}</article>)}
-                <div ref={chatEndRef} />
-              </div>
-            </div>
-            <div className="composer-area"><div className="composer">
-              {preparedCommand && <section className="prepared-command" aria-label="Comando preparado"><div><strong>Comando preparado pelo agente</strong><button aria-label="Descartar comando" onClick={() => setPreparedCommand(null)}>×</button></div><code>/{preparedCommand.command} {preparedCommand.argument}</code><p>{preparedCommand.explanation}</p><button className="btn-primary" data-testid="execute-prepared-command" disabled={commandBusy} onClick={() => void handleSendCoordinatorInput(true)}>{preparedCommand.command === 'setup' ? 'Abrir configuração' : preparedCommand.command === 'plan' ? 'Iniciar planejamento' : 'Executar escopo'}</button><small>Revise a proposta antes de continuar.</small></section>}
-              <textarea id="coordinator-message" aria-label="Mensagem para o coordenador" data-testid="coordinator-input" rows={2} placeholder={activeProjectId ? 'Converse com o Gantry ou descreva o próximo passo…' : 'Abra um projeto para começar'} disabled={!activeProjectId || commandBusy} value={coordinatorInput} onChange={(event) => { setCoordinatorInput(event.target.value); setPreparedCommand(null); }} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); if (!commandBusy) void handleSendCoordinatorInput(); } }} />
-              <div className="composer-toolbar"><div className="command-shortcuts" aria-label="Comandos do Gantry">{['plan', 'run', 'setup'].map((command) => <button key={command} disabled={!activeProjectId || commandBusy} onClick={() => selectShortcut(command)} title={`Preparar /${command} com o Agent Host`}>/{command}</button>)}</div><button className="send-button btn-primary" data-testid="coordinator-send-btn" disabled={!activeProjectId || !coordinatorInput.trim() || commandBusy} onClick={() => void handleSendCoordinatorInput()}>{commandBusy ? 'Aguardando…' : /^\/(plan|run|setup)(?:\s|$)/.test(coordinatorInput) ? 'Preparar comando' : 'Enviar'}<span aria-hidden="true">↑</span></button></div>
-            </div><div className="composer-caption"><span>Coordenador Gantry · {connection?.host || 'Configure seu agente'}</span><span>Enter envia · Shift + Enter quebra linha</span></div></div>
-          </> : <div className="terminal-workspace" data-testid="terminal-view">
+          <div className="terminal-workspace" data-testid="terminal-view">
             {activePaneId ? <><div className="terminal-caption"><span>{activeTerminal?.launcher ?? 'Terminal'} · {activeTerminal?.status === 'exited' ? 'Sessão encerrada' : activeTerminal?.launcher === 'shell' ? 'Shell do sistema' : 'Sessão CLI independente'}</span><code>{activeTerminal?.worktreePath ?? activeProject?.path}</code></div><div className="terminal-surface"><div ref={terminalContainerRef} className="terminal-emulator" aria-label="Terminal interativo" /></div><details className="terminal-tools"><summary>Teclas e envio de comando</summary><form className="terminal-command" onSubmit={(event) => { event.preventDefault(); void handleTerminalCommand(); }}><label htmlFor="terminal-command">Enviar ao terminal</label><input id="terminal-command" value={terminalInput} onChange={(event) => setTerminalInput(event.target.value)} placeholder="Mensagem ou comando para este terminal" /><button type="submit" disabled={!activePaneId}>Enviar</button></form><div className="virtual-keybar" data-testid="virtual-keybar">{[['esc', '\x1b'], ['tab', '\t'], ['^C', '\x03'], ['↑', '\x1b[A'], ['↓', '\x1b[B'], ['←', '\x1b[D'], ['→', '\x1b[C']].map(([label, key]) => <button key={label} className="btn-key" onClick={() => void handleVirtualKey(key)}>{label}</button>)}</div></details></> : <div className="chat-empty"><h1>Abra uma sessão de terminal</h1><p>Abra o shell do sistema para executar comandos ou restaurar sessões do Codex, Claude e OpenCode com os parâmetros que preferir.</p><button onClick={() => void handleOpenTerminal()}>Abrir shell</button></div>}
-          </div>}
+          </div>
           {activeRunId && <details className="steering-panel"><summary>Orientar agente em execução · {activeRunId}</summary><div data-testid="steering-bar"><input aria-label="Tarefa a orientar" placeholder="Referência da tarefa" value={selectedSteeringIssue} onChange={(event) => setSelectedSteeringIssue(event.target.value)} /><input aria-label="Orientação para o agente" placeholder="Descreva sua orientação…" value={steeringInput} onChange={(event) => setSteeringInput(event.target.value)} /><button data-testid="steer-queue-btn" onClick={() => void handleSteer('queue')}>Próximo turno</button><button data-testid="steer-send-now-btn" onClick={() => void handleSteer('send_now')}>Enviar agora</button></div></details>}
         </div>}
 
@@ -1321,39 +1410,6 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
             {wideWorkspace && activeProjectId && (inlineArtifact
               ? <FileViewerDialog key={`${inlineArtifact.projectId}:${inlineArtifact.path}`} presentation="pane" artifact={inlineArtifact} onClose={() => setArtifactDrawer(null)} onSave={handleSaveArtifact} onOpenFile={loadArtifact} onLoadAsset={loadArtifactAsset} />
               : <section className="file-viewer-placeholder" data-testid="file-viewer-placeholder"><p>Selecione um arquivo para ver o conteúdo.</p></section>)}
-          </div>
-        )}
-
-        {activeView === 'kanban' && (
-          <div data-testid="kanban-board" style={{ flex: 1, overflow: 'auto' }}>
-            <div className="execution-heading"><h2>Execuções do projeto</h2><p>Acompanhe cada tarefa, sua etapa atual e as decisões que precisam de você.</p></div>
-            {kanbanRuns.length === 0 && <div className="execution-empty"><strong>Nenhuma execução registrada</strong><p>Prepare um planejamento com /plan. Depois da aprovação, execute o plano para acompanhar as tarefas aqui.</p><button onClick={() => selectShortcut('plan')}>Preparar planejamento</button></div>}
-            {kanbanRuns.map((run) => <div key={run.runId} className="run-summary"><code>{run.runId}</code><strong>{run.finished ? 'Concluído' : 'Em andamento'}</strong><span>{run.columns.Done?.length ?? 0} de {Object.values(run.columns).reduce((total, items) => total + items.length, 0)} tarefas concluídas</span>{Object.values(run.columns).flat().some((item) => item.operatorWaiting) && <button onClick={() => setActiveView('factory')}>Aguardando sua decisão →</button>}</div>)}
-            <div className="kanban-grid">
-              {KANBAN_COLUMNS.map((col) => (
-                <div key={col} className="kanban-col" data-testid={`kanban-col-${col}`}>
-                  <h4>{COLUMN_LABELS[col]} <span>{kanbanRuns.reduce((count, run) => count + (run.columns[col]?.length ?? 0), 0)}</span></h4>
-                  {kanbanRuns.map((run) =>
-                    (run.columns[col] ?? []).map((item) => (
-                      <div
-                        key={`${run.runId}-${item.ref}`}
-                        style={{
-                          padding: 6,
-                          border: '1px solid var(--obsidian-700)',
-                          borderRadius: 4,
-                          marginBottom: 6,
-                        }}
-                      >
-                        <div>
-                          <strong>{item.ref}</strong><small className="issue-run-id">{run.runId}</small><span className="issue-phase">{COLUMN_LABELS[item.phase] ?? item.phase}</span>
-                        </div>
-                        {item.operatorWaiting && <button className="decision-link" onClick={() => setActiveView('factory')}>Aguardando sua decisão →</button>}
-                      </div>
-                    )),
-                  )}
-                </div>
-              ))}
-            </div>
           </div>
         )}
 
@@ -1376,10 +1432,58 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
               <button className="btn-primary" type="submit" disabled={!terminalEnvironment || pendingActions.includes('Salvar terminal')}>{pendingActions.includes('Salvar terminal') ? 'Salvando…' : 'Salvar terminal'}</button>
             </form>
           </section>}
-        {settingsTab === 'project' && (activeProjectId ? (
-          <div data-testid="setup-panel" style={{ padding: 16, overflowY: 'auto' }}>
+        {settingsTab === 'gantry' && <section className="settings-panel" data-testid="global-gantry-panel">
+            <h2>Gantry global</h2>
+            <p className="section-intro">Opcional. O processo usa esta configuração quando o projeto não tem a própria. A configuração do projeto tem prioridade.</p>
+            <label htmlFor="global-host">Host global</label>
+            <select id="global-host" value={globalHost} onChange={(event) => setGlobalHost(event.target.value)}>
+              <option value="">Sem host global</option>
+              {EXECUTION_HOSTS.map((host) => <option key={host.id} value={host.id}>{host.label}</option>)}
+            </select>
+            <div className="role-settings">
+              <h3>Papéis globais</h3>
+              {Object.entries(globalRoles).map(([role, selection]) => {
+                const harness = discoveryHarness(selection.harness);
+                const hostLabel = EXECUTION_HOSTS.find((host) => host.id === selection.harness)?.label ?? selection.harness;
+                return <div key={role} className="role-setting-row">
+                  <strong>{role}</strong>
+                  <label>Host<select aria-label={`Host global para ${role}`} value={selection.harness} onChange={(event) => {
+                    const nextHarness = event.target.value;
+                    setGlobalRoles((current) => ({ ...current, [role]: { ...selection, harness: nextHarness, model: '' } }));
+                    void ensureModelCatalog(nextHarness);
+                  }}>
+                    {EXECUTION_HOSTS.map((host) => <option key={host.id} value={host.id}>{host.label}</option>)}
+                  </select></label>
+                  <ModelSelect
+                    label="Modelo"
+                    ariaLabel={`Modelo global para ${role}`}
+                    harnessLabel={hostLabel}
+                    models={modelsByHarness[harness] ?? []}
+                    value={selection.model}
+                    loading={catalogLoading[harness] === true}
+                    error={catalogErrors[harness]}
+                    onChange={(modelId) => setGlobalRoles((current) => ({ ...current, [role]: { ...selection, model: modelId } }))}
+                  />
+                </div>;
+              })}
+              {Object.keys(globalRoles).length === 0 && <button disabled={!globalHost} onClick={() => setGlobalRoles(Object.fromEntries(['plan', 'implement', 'review', 'critic'].map((role) => [role, { harness: globalHost, model: '' }])))}>Configurar papéis globais</button>}
+            </div>
+            <button className="btn-primary" data-testid="save-global-execution" disabled={pendingActions.includes('Salvar Gantry global')} onClick={() => void handleSaveGlobalExecution()}>{pendingActions.includes('Salvar Gantry global') ? 'Salvando…' : 'Salvar Gantry global'}</button>
+          </section>}
+          {settingsTab === 'remote' && (<section className="settings-panel remote-settings"><h2>Acesso remoto por código</h2>
+              <p>Gere um código para conectar outro dispositivo pela sua rede ou Tailscale.</p>
+              <button disabled={pendingActions.includes('Gerar código de acesso')} onClick={() => void handleGeneratePairing()}>Gerar código de acesso</button>
+              {pairingCode && <div data-testid="pairing-code-display">Código: {pairingCode}</div>}
+            </section>)}
+        </SettingsDialog>}
+
+        {projectSettingsId && <div className="dialog-backdrop" onClick={(event) => { if (event.target === event.currentTarget) setProjectSettingsId(null); }}>
+          <section className="project-dialog settings-dialog" role="dialog" aria-modal="true" aria-labelledby="project-settings-title">
+            <div className="dialog-heading"><h2 id="project-settings-title">Configurações de {projects.find((project) => project.id === projectSettingsId)?.name ?? 'projeto'}</h2><button aria-label="Fechar configurações do projeto" onClick={() => setProjectSettingsId(null)}>×</button></div>
+            {activeProjectId === projectSettingsId ? (
+<div data-testid="setup-panel" style={{ padding: 16, overflowY: 'auto' }}>
             <h2>Preparar o projeto para execução</h2>
-            <p className="section-intro">Confira o host e os modelos de cada papel. Consulte os modelos disponíveis, revise a prévia e escolha onde salvar. A conexão da conversa é configurada separadamente.</p>
+            <p className="section-intro">Cada papel usa um host e só pode receber um modelo desse host. A lista é lida do agente instalado. Esta configuração tem prioridade sobre a global.</p>
             {inspection?.remediationCards.map((card) => <div key={card.kind} className="setup-diagnostic"><strong>{card.title}</strong><p>{card.description}</p><p>{card.remediation}</p></div>)}
             <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
               <button
@@ -1389,17 +1493,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
               >
                 Instalar / atualizar skills do Gantry
               </button>
-              <button
-                data-testid="discover-models-btn"
-                disabled={!activeProjectId || !setupHostHarness || pendingActions.includes('Consultar modelos do host')}
-                onClick={() => void handleDiscoverModels()}
-              >
-                Consultar modelos do host
-              </button>
             </div>
-            {discoveredModels.length > 0 && (
-              <div className="model-results">Modelos encontrados: {discoveredModels.map((m) => m.id).join(', ')}</div>
-            )}
             <div>
               <label>
                 Host do projeto:{' '}
@@ -1408,23 +1502,39 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
                   onChange={(e) => setSetupHostHarness(e.target.value)}
                 >
                   <option value="">Selecione o host</option>
-                  <option value="opencode">opencode</option>
-                  <option value="claude-code">claude-code</option>
-                  <option value="codex">codex</option>
-                  <option value="antigravity">antigravity</option>
+                  {EXECUTION_HOSTS.map((host) => <option key={host.id} value={host.id}>{host.label}</option>)}
                 </select>
               </label>
             </div>
             <div className="role-settings">
               <h3>Modelos por papel</h3>
-              <p>Essas escolhas são independentes do host do coordenador. Os valores abaixo vêm da configuração salva.</p>
-              {Object.entries(roleSelections).map(([role, selection]) => <div key={role} className="role-setting-row">
-                <strong>{role}</strong>
-                <label>Host<input aria-label={`Host para ${role}`} value={selection.harness} onChange={(event) => setRoleSelections((current) => ({ ...current, [role]: { ...selection, harness: event.target.value } }))} /></label>
-                <label>Modelo<input aria-label={`Modelo para ${role}`} list="verified-models" value={selection.model} onChange={(event) => setRoleSelections((current) => ({ ...current, [role]: { ...selection, model: event.target.value } }))} /></label>
-                <label>Esforço<input aria-label={`Esforço para ${role}`} value={selection.effort ?? ''} onChange={(event) => setRoleSelections((current) => ({ ...current, [role]: { ...selection, effort: event.target.value } }))} /></label>
-              </div>)}
-              <datalist id="verified-models">{discoveredModels.map((model) => <option key={model.id} value={model.id} />)}</datalist>
+              <p>O modelo de cada papel vem do host escolhido nessa linha. Trocar o host limpa um modelo que não pertence a ele.</p>
+              {Object.entries(roleSelections).map(([role, selection]) => {
+                const harness = discoveryHarness(selection.harness);
+                const hostLabel = EXECUTION_HOSTS.find((host) => host.id === selection.harness)?.label ?? selection.harness;
+                return <div key={role} className="role-setting-row">
+                  <strong>{role}</strong>
+                  <label>Host<select aria-label={`Host para ${role}`} value={selection.harness} onChange={(event) => {
+                    const nextHarness = event.target.value;
+                    setRoleSelections((current) => ({ ...current, [role]: { ...selection, harness: nextHarness, model: '' } }));
+                    void ensureModelCatalog(nextHarness);
+                  }}>
+                    {EXECUTION_HOSTS.map((host) => <option key={host.id} value={host.id}>{host.label}</option>)}
+                    {selection.harness && !EXECUTION_HOSTS.some((host) => host.id === selection.harness) && <option value={selection.harness}>{selection.harness}</option>}
+                  </select></label>
+                  <ModelSelect
+                    label="Modelo"
+                    ariaLabel={`Modelo para ${role}`}
+                    harnessLabel={hostLabel}
+                    models={modelsByHarness[harness] ?? []}
+                    value={selection.model}
+                    loading={catalogLoading[harness] === true}
+                    error={catalogErrors[harness]}
+                    onChange={(modelId) => setRoleSelections((current) => ({ ...current, [role]: { ...selection, model: modelId } }))}
+                  />
+                  <label>Esforço<input aria-label={`Esforço para ${role}`} value={selection.effort ?? ''} onChange={(event) => setRoleSelections((current) => ({ ...current, [role]: { ...selection, effort: event.target.value } }))} /></label>
+                </div>;
+              })}
               {Object.keys(roleSelections).length === 0 && <button disabled={!setupHostHarness} onClick={() => setRoleSelections(Object.fromEntries(['plan', 'implement', 'review', 'critic'].map((role) => [role, { harness: setupHostHarness, model: '' }])))}>Configurar papéis de execução</button>}
             </div>
             <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
@@ -1450,70 +1560,9 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
               </pre>
             )}
           </div>
-        ) : <p className="settings-empty">Abra um projeto para configurar o host e os papéis de execução.</p>)}
-
-        {settingsTab === 'ai' && (
-          <section data-testid="settings-panel" className="settings-panel">
-            <h2>Conexão do coordenador</h2>
-            <p>Escolha como conversar com o agente. No modo CLI, o host salvo no projeto ou no perfil pessoal tem prioridade sobre a conexão global.</p>
-            <div className="settings-form">
-              <label htmlFor="provider-mode">Tipo de conexão</label>
-              <select id="provider-mode" value={providerMode} onChange={(event) => {
-                const mode = event.target.value as 'sdk' | 'cli';
-                setProviderMode(mode);
-                const provider = mode === 'cli' ? 'cli' : activeProvider === 'cli' ? 'openai' : activeProvider;
-                if (mode === 'sdk') setActiveProvider(provider as typeof activeProvider);
-                const config = savedSettings?.providers[provider];
-                setProviderModel(config?.model ?? '');
-                setProviderBaseUrl(config?.baseUrl === 'enable-cli-exec' ? '' : config?.baseUrl ?? '');
-                setProviderApiKey('');
-              }}>
-                <option value="cli">CLI local já autenticado</option>
-                <option value="sdk">API com chave própria</option>
-              </select>
-              {providerMode === 'cli' ? <>
-                <label htmlFor="cli-harness">Host para projetos sem configuração</label>
-                <select id="cli-harness" value={cliHarness} onChange={(event) => setCliHarness(event.target.value)}>
-                  <option value="">Selecione um host</option>
-                  <option value="codex">Codex</option><option value="claude">Claude Code</option>
-                  <option value="opencode">OpenCode</option><option value="agy">Antigravity (terminal)</option>
-                </select>
-                <p className="field-help">Usa a autenticação do CLI instalado nesta máquina. O modelo abaixo se aplica a esse host; projetos com outro host usam o padrão do próprio CLI.</p>
-              </> : <>
-                <label htmlFor="api-provider">Provedor de API</label>
-                <select id="api-provider" value={activeProvider} onChange={(event) => {
-                  const provider = event.target.value as typeof activeProvider;
-                  setActiveProvider(provider);
-                  setProviderModel(savedSettings?.providers[provider]?.model ?? '');
-                  setProviderBaseUrl(savedSettings?.providers[provider]?.baseUrl ?? '');
-                  setProviderApiKey('');
-                }}>
-                  <option value="anthropic">Anthropic</option><option value="openai">OpenAI</option>
-                  <option value="gemini">Google Gemini</option><option value="openrouter">OpenRouter</option>
-                </select>
-                <label htmlFor="provider-api-key">Chave de API</label>
-                <input id="provider-api-key" type="password" autoComplete="off" placeholder={savedSettings?.providers[activeProvider]?.hasApiKey ? 'Chave salva. Preencha apenas para trocar.' : 'Informe sua chave de API'} value={providerApiKey} onChange={(event) => setProviderApiKey(event.target.value)} />
-                <label htmlFor="provider-base-url">Endereço da API (opcional)</label>
-                <input id="provider-base-url" value={providerBaseUrl} onChange={(event) => setProviderBaseUrl(event.target.value)} placeholder="Endereço padrão do provedor" />
-              </>}
-              <label htmlFor="provider-model">Modelo do coordenador</label>
-              <input id="provider-model" value={providerModel} onChange={(event) => setProviderModel(event.target.value)} placeholder={providerMode === 'cli' ? 'Vazio: usar o padrão do host' : 'Identificador do modelo no provedor'} />
-              <p className="field-help">Os modelos dos papéis de planejamento e execução são configurados separadamente em Configurar projeto.</p>
-              <button className="btn-primary" data-testid="save-provider-settings-btn" disabled={pendingActions.includes('Salvar conexão de IA')} onClick={() => void handleSaveProvider()}>
-                {pendingActions.includes('Salvar conexão de IA') ? 'Salvando conexão…' : 'Salvar conexão'}
-              </button>
-              <button onClick={() => setSettingsOpen(false)}>Fechar configurações</button>
-            </div>
-
+            ) : <p className="settings-empty">Carregando a configuração do projeto…</p>}
           </section>
-        )}
-
-          {settingsTab === 'remote' && (<section className="settings-panel remote-settings"><h2>Acesso remoto por código</h2>
-              <p>Gere um código para conectar outro dispositivo pela sua rede ou Tailscale.</p>
-              <button disabled={pendingActions.includes('Gerar código de acesso')} onClick={() => void handleGeneratePairing()}>Gerar código de acesso</button>
-              {pairingCode && <div data-testid="pairing-code-display">Código: {pairingCode}</div>}
-            </section>)}
-        </SettingsDialog>}
+        </div>}
 
         {artifactDrawer && !inlineArtifact && <FileViewerDialog key={`${artifactDrawer.projectId}:${artifactDrawer.path}`} artifact={artifactDrawer} onClose={() => setArtifactDrawer(null)} onSave={handleSaveArtifact} onOpenFile={loadArtifact} onLoadAsset={loadArtifactAsset} />}
 

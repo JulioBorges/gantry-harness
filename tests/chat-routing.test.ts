@@ -49,44 +49,9 @@ const request = (route: string, body?: unknown) => fetch(`http://127.0.0.1:${ser
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
 });
 
-it('routes chat to the saved project host with repository context and conversation history', async () => {
-  const state = await request('/api/workspace/state').then((res) => res.json());
-  expect(state.connection).toMatchObject({ host: 'codex', source: 'repository', model: null, ready: true });
-  const first = await request(`/api/projects/${projectId}/chat`, { sessionId, prompt: 'first question' });
-  expect(first.status).toBe(200);
-  const second = await request(`/api/projects/${projectId}/chat`, { sessionId, prompt: 'follow-up question' });
-  expect(second.status).toBe(200);
-  expect((await second.json()).assistantMessage.content).toContain('follow-up question');
-  const calls = fs.readFileSync(callsPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
-  expect(calls).toHaveLength(2);
-  expect(calls[1]).toMatchObject({ host: 'codex', cwd: fs.realpathSync(repo) });
-  expect(calls[1].input).toContain('first question');
-  expect(calls[1].input).toContain('Repository context marker');
-  expect(calls[1].args).not.toContain('do-not-borrow-this-model');
-  expect(calls[1].args).not.toContain('another-host-model');
-});
-
-it('honors the saved personal host without rewriting the repository policy', async () => {
-  fs.mkdirSync(path.join(profileRoot, 'fixture-unit'), { recursive: true });
-  fs.writeFileSync(path.join(profileRoot, 'fixture-unit', 'execution.json'), JSON.stringify({ hostHarness: 'claude' }));
-  const response = await request(`/api/projects/${projectId}/chat`, { sessionId, prompt: 'profile request' });
-  expect(response.status).toBe(200);
-  expect((await response.json()).connection).toMatchObject({ host: 'claude', source: 'profile' });
-  expect(JSON.parse(fs.readFileSync(callsPath, 'utf8')).host).toBe('claude');
-  expect(fs.readFileSync(path.join(repo, '.gantry', 'config.json'), 'utf8')).toContain('codex');
-});
-
-it('returns a visible upstream error and never persists a fabricated assistant reply', async () => {
-  const response = await request(`/api/projects/${projectId}/chat`, { sessionId, prompt: 'FAIL_THIS_REQUEST' });
-  expect(response.status).toBe(502);
-  expect((await response.json()).error).toContain('fixture authentication failure');
-  expect(server.store.listMessages(projectId, sessionId).map((message) => message.role)).toEqual(['user']);
-});
-
-it('rejects empty messages and sessions from another project before calling a host', async () => {
-  for (const body of [{ sessionId, prompt: '' }, { sessionId: 'wrong-session', prompt: 'hello' }]) {
-    expect((await request(`/api/projects/${projectId}/chat`, body)).status).toBe(400);
-  }
+it('does not connect a host through a conversation endpoint', async () => {
+  const response = await request(`/api/projects/${projectId}/chat`, { sessionId, prompt: 'hello from the conversation screen' });
+  expect(response.status).toBe(404);
   expect(fs.existsSync(callsPath)).toBe(false);
 });
 
@@ -95,8 +60,6 @@ it('reports invalid saved configuration without falling back to a global host', 
   const state = await request('/api/workspace/state').then((response) => response.json());
   expect(state.connection.ready).toBe(false);
   expect(state.connection.detail).toContain('unknown-host');
-  const response = await request(`/api/projects/${projectId}/chat`, { sessionId, prompt: 'hello' });
-  expect(response.status).toBe(400);
   expect(fs.existsSync(callsPath)).toBe(false);
 });
 
