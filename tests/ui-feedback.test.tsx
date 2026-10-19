@@ -23,6 +23,16 @@ function mockWorkspace(chat?: () => Promise<Response>) {
     if (route.endsWith('/api/projects') && init?.method === 'POST') return Response.json({ error: 'Directory does not exist: /missing' }, { status: 400 });
     if (route.endsWith('/workspace/state')) return Response.json(state);
     if (route.endsWith('/inspect')) return Response.json({ specs: [], issues: [], worktrees: [], remediationCards: [], policy: { execution: { hostHarness: 'codex' } }, operatorProfile: {}, skillPack: { found: true }, hasTrackedPolicy: true });
+    if (route.includes('/discovery')) {
+      const harness = new URL(route, 'http://127.0.0.1').searchParams.get('harness');
+      const catalogs: Record<string, Array<{ id: string }>> = {
+        'claude-code': [{ id: 'saved-model' }, { id: 'claude-sonnet-4-6' }],
+        codex: [{ id: 'gpt-5.2-codex' }],
+        opencode: [{ id: 'openai/gpt-5.2-codex' }],
+        antigravity: [{ id: 'gemini-2.5-pro' }],
+      };
+      return Response.json({ harness, models: catalogs[harness ?? ''] ?? [] });
+    }
     if (route.endsWith('/alerts')) return Response.json({ alerts: [] });
     if (route.endsWith('/kanban')) return Response.json({ runs: [] });
     return Response.json({});
@@ -65,7 +75,9 @@ it('loads saved provider fields and preserves a stored API key when saving with 
   fireEvent.click(screen.getByTestId('open-settings-btn'));
   fireEvent.click(screen.getByRole('tab', { name: 'Conexão de IA' }));
   expect((screen.getByLabelText('Host para projetos sem configuração') as HTMLSelectElement).value).toBe('claude');
-  expect((screen.getByLabelText('Modelo do coordenador') as HTMLInputElement).value).toBe('saved-model');
+  await screen.findByRole('option', { name: 'saved-model' });
+  expect((screen.getByLabelText('Modelo do coordenador') as HTMLSelectElement).value).toBe('saved-model');
+  expect(screen.queryByRole('option', { name: 'gpt-5.2-codex' })).toBeNull();
   fireEvent.click(screen.getByTestId('save-provider-settings-btn'));
   await waitFor(() => {
     const request = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith('/settings/providers') && init?.method === 'PUT');

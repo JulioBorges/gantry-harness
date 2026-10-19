@@ -148,6 +148,7 @@ export interface ProviderSettingsInput {
       apiKey?: string;
       model?: string;
       baseUrl?: string;
+      modelsByHost?: Record<string, string>;
     }
   >;
 }
@@ -173,6 +174,7 @@ export interface SanitizedProviderSettings {
       hasApiKey: boolean;
       model?: string;
       baseUrl?: string;
+      modelsByHost?: Record<string, string>;
     }
   >;
 }

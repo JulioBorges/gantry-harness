@@ -55,6 +55,23 @@ export class HarnessStateStore {
     this.initSchema();
   }
 
+  private ensureColumn(table: 'projects' | 'sessions' | 'messages', column: string, definition: string): void {
+    const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    if (columns.some((info) => info.name === column)) return;
+    this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+
+  private migrateLegacySchema(): void {
+    // Databases created before these columns existed stay readable. CREATE TABLE
+    // IF NOT EXISTS does not add columns to a table that is already there.
+    this.ensureColumn('projects', 'unit_id', `TEXT NOT NULL DEFAULT ''`);
+    this.ensureColumn('projects', 'badge_state', `TEXT NOT NULL DEFAULT 'idle'`);
+    this.ensureColumn('projects', 'lifecycle_state', `TEXT NOT NULL DEFAULT 'idle'`);
+    this.ensureColumn('sessions', 'slug', 'TEXT');
+    this.ensureColumn('messages', 'turn_blocks_json', 'TEXT');
+    this.ensureColumn('messages', 'decision_card_json', 'TEXT');
+  }
+
   private initSchema(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS projects (
@@ -104,6 +121,7 @@ export class HarnessStateStore {
         created_at INTEGER NOT NULL
       );
     `);
+    this.migrateLegacySchema();
 
     if (!fs.existsSync(this.settingsPath)) {
       this.writeRawSettings({
@@ -543,6 +561,7 @@ export class HarnessStateStore {
         hasApiKey: Boolean(cfg.apiKey && cfg.apiKey.trim().length > 0),
         model: cfg.model,
         baseUrl: cfg.baseUrl,
+        modelsByHost: cfg.modelsByHost,
       };
     }
     return {

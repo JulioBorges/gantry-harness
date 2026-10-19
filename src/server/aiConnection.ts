@@ -39,9 +39,6 @@ export function resolveCoordinatorConnection(
         if (!aliases[host]) throw new Error(`Host salvo no projeto não suportado: ${host}. Revise a configuração do projeto.`);
         settings.cliHarness = aliases[host];
         settings.activeProvider = 'cli';
-        if (saved.cliHarness !== settings.cliHarness && settings.providers?.cli) {
-          delete settings.providers.cli.model;
-        }
       }
     } catch (error) {
       return { settings, connection: {
@@ -52,6 +49,15 @@ export function resolveCoordinatorConnection(
     }
   }
   const host = settings.mode === 'cli' ? settings.cliHarness ?? '' : settings.activeProvider;
+  if (settings.mode === 'cli' && host && settings.providers?.cli) {
+    const remembered = settings.providers.cli.modelsByHost?.[host];
+    if (saved.cliHarness !== host) {
+      if (remembered) settings.providers.cli.model = remembered;
+      else delete settings.providers.cli.model;
+    } else if (!settings.providers.cli.model && remembered) {
+      settings.providers.cli.model = remembered;
+    }
+  }
   const config = settings.providers?.[settings.mode === 'cli' ? 'cli' : settings.activeProvider];
   const ready = settings.mode === 'cli'
     ? Boolean(host && host !== 'agy' && findExecutable(host))

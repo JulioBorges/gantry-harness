@@ -13,6 +13,7 @@ import type { TerminalSettings, TerminalEnvironment } from '../types.js';
 import { SettingsDialog, type SettingsTab } from './SettingsDialog.js';
 import { SystemFontSelect } from './SystemFontSelect.js';
 import { BoardView } from './BoardView.js';
+import { EXECUTION_HOSTS, ModelSelect, discoveryHarness, type CatalogModel } from './ModelSelect.js';
 import { coerceBoard, overlaysFromKanban, unavailableBoard, type BoardSnapshot } from '../boardModel.js';
 import type {
   ChatMessageRecord,
@@ -106,6 +107,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   const [activePaneId, setActivePaneId] = useState<string | null>(null);
   const [terminalBuffer, setTerminalBuffer] = useState<string>('');
   const [coordinatorInput, setCoordinatorInput] = useState('');
+  const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
   const [newProjectPath, setNewProjectPath] = useState('');
   const [activeRunId, setActiveRunId] = useState<string>('');
   const [approvedSlug, setApprovedSlug] = useState<string | null>(null);
@@ -132,7 +134,10 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
 
   const [setupDiffPreview, setSetupDiffPreview] = useState<string>('');
   const [setupHostHarness, setSetupHostHarness] = useState<string>('opencode');
-  const [discoveredModels, setDiscoveredModels] = useState<Array<{ id: string }>>([]);
+  const [modelsByHarness, setModelsByHarness] = useState<Record<string, CatalogModel[]>>({});
+  const [catalogLoading, setCatalogLoading] = useState<Record<string, boolean>>({});
+  const [catalogErrors, setCatalogErrors] = useState<Record<string, string>>({});
+  const catalogRequests = useRef(new Set<string>());
   const [roleSelections, setRoleSelections] = useState<Record<string, RoleSelection>>({});
   const setupProjectLoaded = useRef<string | null>(null);
   const [providerMode, setProviderMode] = useState<'sdk' | 'cli'>('cli');
@@ -195,6 +200,53 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     }
     return response;
   }, [base, authToken]);
+
+  const ensureModelCatalog = useCallback(async (host: string) => {
+    const harness = discoveryHarness(host);
+    if (!activeProjectId || !harness || catalogRequests.current.has(harness)) return;
+    catalogRequests.current.add(harness);
+    setCatalogLoading((current) => ({ ...current, [harness]: true }));
+    try {
+      const response = await apiFetch(`/api/projects/${activeProjectId}/discovery?harness=${encodeURIComponent(harness)}`);
+      const data = await response.json();
+      const models = Array.isArray(data.models) ? data.models as CatalogModel[] : [];
+      setModelsByHarness((current) => ({ ...current, [harness]: models }));
+      setCatalogErrors((current) => ({
+        ...current,
+        [harness]: models.length ? '' : 'O host não retornou modelos. Verifique instalação e autenticação.',
+      }));
+    } catch (error) {
+      catalogRequests.current.delete(harness);
+      setModelsByHarness((current) => ({ ...current, [harness]: [] }));
+      setCatalogErrors((current) => ({
+        ...current,
+        [harness]: error instanceof Error ? error.message : 'Falha ao consultar os modelos deste host.',
+      }));
+    } finally {
+      setCatalogLoading((current) => ({ ...current, [harness]: false }));
+    }
+  }, [activeProjectId, apiFetch]);
+
+  useEffect(() => {
+    catalogRequests.current.clear();
+    setModelsByHarness({});
+    setCatalogErrors({});
+    setCatalogLoading({});
+  }, [activeProjectId]);
+
+  useEffect(() => {
+    if (!activeProjectId) return;
+    const hosts = new Set<string>();
+    if (settingsOpen && settingsTab === 'project' && setupHostHarness) hosts.add(setupHostHarness);
+    if (settingsOpen && settingsTab === 'project') {
+      for (const selection of Object.values(roleSelections)) {
+        if (selection.harness) hosts.add(selection.harness);
+      }
+    }
+    if (settingsOpen && settingsTab === 'ai' && providerMode === 'cli' && cliHarness) hosts.add(cliHarness);
+    if (activeView === 'factory' && paneMode === 'chat' && connection?.mode === 'cli' && connection.host) hosts.add(connection.host);
+    for (const host of hosts) void ensureModelCatalog(host);
+  }, [settingsOpen, settingsTab, activeProjectId, setupHostHarness, roleSelections, providerMode, cliHarness, activeView, paneMode, connection?.mode, connection?.host, ensureModelCatalog]);
 
   const loadArtifactAsset = useCallback(async (path: string, signal: AbortSignal): Promise<Blob> => {
     if (!artifactDrawer) throw new Error('Nenhum arquivo selecionado.');
@@ -606,13 +658,41 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
       return;
     }
 
-    await apiFetch(`/api/projects/${activeProjectId}/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId: activeSessionId, prompt: text }),
+    setPendingPrompt(text);
+    setCoordinatorInput('');
+    try {
+      await apiFetch(`/api/projects/${activeProjectId}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: activeSessionId, prompt: text }),
+      });
+      await loadWorkspaceState();
+      setPendingPrompt(null);
+    } catch (error) {
+      setPendingPrompt(null);
+      setCoordinatorInput((current) => current.trim() ? current : text);
+      throw error;
+    }
+  });
+
+  const handleApplyConversationModel = withFeedback('Salvar modelo da conversa', async (modelId: string, requestedHost?: string) => {
+    const host = requestedHost || connection?.host || '';
+    if (!host) throw new Error('Configure um host antes de escolher o modelo.');
+    const harness = discoveryHarness(host);
+    const catalog = modelsByHarness[harness] ?? [];
+    if (modelId && catalog.length > 0 && !catalog.some((model) => model.id === modelId)) throw new Error('Escolha um modelo disponível neste host.');
+    const modelsByHost = { ...(savedSettings?.providers.cli?.modelsByHost ?? {}) };
+    if (modelId) modelsByHost[host] = modelId;
+    else delete modelsByHost[host];
+    const response = await apiFetch('/api/settings/providers', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'cli', activeProvider: 'cli', cliHarness: host,
+        providers: { cli: { model: modelId, modelsByHost } },
+      }),
     });
+    setSavedSettings(await response.json());
     await loadWorkspaceState();
-    setCoordinatorInput((current) => current.trim() === text ? '' : current);
   });
 
   const handleAnswerGrilling = withFeedback("Enviar decisões", async (
@@ -885,7 +965,12 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   const handleApplySetup = withFeedback("Salvar configuração do projeto", async (scope: 'repository' | 'personal'): Promise<void> => {
     if (!activeProjectId) throw new Error('Selecione um projeto para continuar.');
     for (const [role, selection] of Object.entries(roleSelections)) {
-      if (!selection.model.trim()) throw new Error(`Informe o modelo para o papel ${role}. Consulte os modelos do host antes de salvar.`);
+      const harness = discoveryHarness(selection.harness);
+      const catalog = modelsByHarness[harness];
+      if (!catalog) throw new Error(`A lista de modelos de ${selection.harness || 'o host'} ainda não carregou para o papel ${role}.`);
+      if (!catalog.some((model) => model.id === selection.model)) {
+        throw new Error(`O modelo do papel ${role} não está disponível em ${selection.harness}. Escolha um modelo desse host.`);
+      }
     }
     const policy = buildProposedPolicy();
     await apiFetch(`/api/projects/${activeProjectId}/setup/apply`, {
@@ -904,7 +989,18 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
 
   const handleSaveProvider = withFeedback('Salvar conexão de IA', async () => {
     if (providerMode === 'cli' && !cliHarness) throw new Error('Selecione um host para projetos sem configuração. O host salvo no projeto tem prioridade.');
+    if (providerMode === 'cli' && providerModel.trim()) {
+      const harness = discoveryHarness(cliHarness);
+      const catalog = modelsByHarness[harness];
+      if (!catalog) throw new Error('A lista de modelos deste host ainda não carregou.');
+      if (!catalog.some((model) => model.id === providerModel)) throw new Error('Escolha um modelo disponível neste host.');
+    }
     const provider = providerMode === 'cli' ? 'cli' : activeProvider;
+    const modelsByHost = { ...(savedSettings?.providers.cli?.modelsByHost ?? {}) };
+    if (providerMode === 'cli' && cliHarness) {
+      if (providerModel.trim()) modelsByHost[cliHarness] = providerModel.trim();
+      else delete modelsByHost[cliHarness];
+    }
     if (providerMode === 'sdk' && provider === 'cli') throw new Error('Selecione um provedor de API.');
     const response = await apiFetch('/api/settings/providers', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
@@ -912,6 +1008,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         mode: providerMode, activeProvider: provider, cliHarness: cliHarness || undefined,
         providers: { [provider]: {
           model: providerModel.trim(),
+          ...(provider === 'cli' ? { modelsByHost } : {}),
           ...(providerBaseUrl.trim() ? { baseUrl: providerBaseUrl.trim() } : {}),
           ...(providerApiKey.trim() ? { apiKey: providerApiKey.trim() } : {}),
         } },
@@ -926,14 +1023,6 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     if (!activeProjectId) throw new Error('Selecione um projeto primeiro.');
     await apiFetch(`/api/projects/${activeProjectId}/bootstrap`, { method: 'POST' });
     await loadWorkspaceState();
-  });
-
-  const handleDiscoverModels = withFeedback('Consultar modelos do host', async () => {
-    if (!activeProjectId || !setupHostHarness) throw new Error('Selecione um projeto e seu host primeiro.');
-    const response = await apiFetch(`/api/projects/${activeProjectId}/discovery?harness=${encodeURIComponent(setupHostHarness)}`);
-    const data = await response.json();
-    setDiscoveredModels(data.models ?? []);
-    if (!data.models?.length) throw new Error('O host não retornou modelos verificáveis. Verifique instalação e autenticação.');
   });
 
   const handleSaveTerminalSettings = withFeedback('Salvar terminal', async () => {
@@ -1362,16 +1451,40 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
           {paneMode === 'chat' ? <>
             <div className="conversation-scroll" data-testid="chat-view">
               <div className="conversation-width">
-                {messages.length === 0 && <div className="chat-empty"><div className="empty-symbol" aria-hidden="true">g</div><h1>{activeProjectId ? 'O que vamos construir?' : 'Seu próximo projeto começa aqui.'}</h1><p>{activeProjectId ? 'Converse com o coordenador ou prepare um comando do Gantry. Seu Agent Host ajuda a definir o próximo passo.' : 'Abra uma pasta para conversar com seu agente, planejar mudanças e acompanhar as execuções.'}</p>{!activeProjectId && <button className="btn-primary" onClick={() => setProjectDialogOpen(true)}>Abrir projeto</button>}<div className="empty-suggestions">{activeProjectId && <><button onClick={() => { setCoordinatorInput('Explique este projeto e como executá-lo localmente.'); document.getElementById('coordinator-message')?.focus(); }}>Entender este projeto</button><button onClick={() => selectShortcut('plan')}>Planejar uma mudança</button></>}</div></div>}
+                {messages.length === 0 && !pendingPrompt && <div className="chat-empty"><div className="empty-symbol" aria-hidden="true">g</div><h1>{activeProjectId ? 'O que vamos construir?' : 'Seu próximo projeto começa aqui.'}</h1><p>{activeProjectId ? `A conversa segue ${connection?.host || 'o host configurado'}${connection?.model ? ` · ${connection.model}` : ''}. Escolha o modelo abaixo e escreva a próxima mensagem.` : 'Abra uma pasta para conversar com seu agente, planejar mudanças e acompanhar as execuções.'}</p>{!activeProjectId && <button className="btn-primary" onClick={() => setProjectDialogOpen(true)}>Abrir projeto</button>}<div className="empty-suggestions">{activeProjectId && <><button onClick={() => { setCoordinatorInput('Explique este projeto e como executá-lo localmente.'); document.getElementById('coordinator-message')?.focus(); }}>Entender este projeto</button><button onClick={() => selectShortcut('plan')}>Planejar uma mudança</button></>}</div></div>}
                 {messages.map((message) => <article key={message.id} className={`chat-message message-${message.role}`}><div className="message-heading"><strong>{message.role === 'user' ? 'Você' : message.role === 'assistant' ? 'Gantry' : message.role === 'subagent' ? 'Agente' : 'Sistema'}</strong><time>{new Date(message.createdAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</time></div><div className="message-body">{renderClickableText(message.content)}</div>{message.turnBlocks?.map((block, index) => <details key={index} className="turn-block" open={block.collapsed === false}><summary>{block.title}</summary><pre>{renderClickableText(block.content)}</pre></details>)}{message.decisionCard && renderDecisionCard(message.decisionCard)}</article>)}
+                {pendingPrompt && <article className="chat-message message-user"><div className="message-heading"><strong>Você</strong></div><div className="message-body">{pendingPrompt}</div></article>}
+                {pendingPrompt && <article className="chat-message message-assistant chat-pending" data-testid="chat-pending"><div className="message-heading"><strong>{connection?.host || 'Agente'}</strong></div><div className="message-body">Respondendo{connection?.model ? ` com ${connection.model}` : ' no modelo padrão deste host'}…</div></article>}
                 <div ref={chatEndRef} />
               </div>
             </div>
             <div className="composer-area"><div className="composer">
+              {activeProjectId && connection?.mode === 'cli' && <div className="composer-connection" data-testid="conversation-connection">
+                {connection.source === 'global' ? <label>Host<select aria-label="Host da conversa" value={connection.host} onChange={(event) => {
+                  const nextHost = event.target.value as 'claude' | 'codex' | 'opencode' | 'agy';
+                  setCliHarness(nextHost);
+                  void handleApplyConversationModel(savedSettings?.providers.cli?.modelsByHost?.[nextHost] ?? '', nextHost);
+                }}>
+                  <option value="codex">Codex</option><option value="claude">Claude Code</option>
+                  <option value="opencode">OpenCode</option><option value="agy">Antigravity</option>
+                </select></label> : <p>Host {connection.source === 'profile' ? 'do perfil' : 'do projeto'}: <strong>{connection.host}</strong></p>}
+                <ModelSelect
+                  label="Modelo"
+                  ariaLabel="Modelo da conversa"
+                  harnessLabel={connection.host}
+                  models={modelsByHarness[discoveryHarness(connection.host)] ?? []}
+                  value={connection.model ?? ''}
+                  loading={catalogLoading[discoveryHarness(connection.host)] === true}
+                  error={catalogErrors[discoveryHarness(connection.host)]}
+                  allowEmpty
+                  emptyLabel="Padrão do host"
+                  onChange={(modelId) => void handleApplyConversationModel(modelId)}
+                />
+              </div>}
               {preparedCommand && <section className="prepared-command" aria-label="Comando preparado"><div><strong>Comando preparado pelo agente</strong><button aria-label="Descartar comando" onClick={() => setPreparedCommand(null)}>×</button></div><code>/{preparedCommand.command} {preparedCommand.argument}</code><p>{preparedCommand.explanation}</p><button className="btn-primary" data-testid="execute-prepared-command" disabled={commandBusy} onClick={() => void handleSendCoordinatorInput(true)}>{preparedCommand.command === 'setup' ? 'Abrir configuração' : preparedCommand.command === 'plan' ? 'Iniciar planejamento' : 'Executar escopo'}</button><small>Revise a proposta antes de continuar.</small></section>}
-              <textarea id="coordinator-message" aria-label="Mensagem para o coordenador" data-testid="coordinator-input" rows={2} placeholder={activeProjectId ? 'Converse com o Gantry ou descreva o próximo passo…' : 'Abra um projeto para começar'} disabled={!activeProjectId || commandBusy} value={coordinatorInput} onChange={(event) => { setCoordinatorInput(event.target.value); setPreparedCommand(null); }} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); if (!commandBusy) void handleSendCoordinatorInput(); } }} />
+              <textarea id="coordinator-message" aria-label="Mensagem para o coordenador" data-testid="coordinator-input" rows={2} placeholder={activeProjectId ? `Mensagem para ${connection?.host || 'o agente'}${connection?.model ? ` · ${connection.model}` : ''}…` : 'Abra um projeto para começar'} disabled={!activeProjectId} value={coordinatorInput} onChange={(event) => { setCoordinatorInput(event.target.value); setPreparedCommand(null); }} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); if (!commandBusy) void handleSendCoordinatorInput(); } }} />
               <div className="composer-toolbar"><div className="command-shortcuts" aria-label="Comandos do Gantry">{['plan', 'run', 'setup'].map((command) => <button key={command} disabled={!activeProjectId || commandBusy} onClick={() => selectShortcut(command)} title={`Preparar /${command} com o Agent Host`}>/{command}</button>)}</div><button className="send-button btn-primary" data-testid="coordinator-send-btn" disabled={!activeProjectId || !coordinatorInput.trim() || commandBusy} onClick={() => void handleSendCoordinatorInput()}>{commandBusy ? 'Aguardando…' : /^\/(plan|run|setup)(?:\s|$)/.test(coordinatorInput) ? 'Preparar comando' : 'Enviar'}<span aria-hidden="true">↑</span></button></div>
-            </div><div className="composer-caption"><span>Coordenador Gantry · {connection?.host || 'Configure seu agente'}</span><span>Enter envia · Shift + Enter quebra linha</span></div></div>
+            </div><div className="composer-caption"><span>{connection?.mode === 'cli' ? `${connection.host || 'Host'} · ${connection.model || 'modelo padrão'}` : connection?.host || 'Configure seu agente'}{connection?.source === 'repository' ? ' · configuração do projeto' : connection?.source === 'profile' ? ' · perfil pessoal' : ''}</span><span>Enter envia · Shift + Enter quebra linha</span></div></div>
           </> : <div className="terminal-workspace" data-testid="terminal-view">
             {activePaneId ? <><div className="terminal-caption"><span>{activeTerminal?.launcher ?? 'Terminal'} · {activeTerminal?.status === 'exited' ? 'Sessão encerrada' : activeTerminal?.launcher === 'shell' ? 'Shell do sistema' : 'Sessão CLI independente'}</span><code>{activeTerminal?.worktreePath ?? activeProject?.path}</code></div><div className="terminal-surface"><div ref={terminalContainerRef} className="terminal-emulator" aria-label="Terminal interativo" /></div><details className="terminal-tools"><summary>Teclas e envio de comando</summary><form className="terminal-command" onSubmit={(event) => { event.preventDefault(); void handleTerminalCommand(); }}><label htmlFor="terminal-command">Enviar ao terminal</label><input id="terminal-command" value={terminalInput} onChange={(event) => setTerminalInput(event.target.value)} placeholder="Mensagem ou comando para este terminal" /><button type="submit" disabled={!activePaneId}>Enviar</button></form><div className="virtual-keybar" data-testid="virtual-keybar">{[['esc', '\x1b'], ['tab', '\t'], ['^C', '\x03'], ['↑', '\x1b[A'], ['↓', '\x1b[B'], ['←', '\x1b[D'], ['→', '\x1b[C']].map(([label, key]) => <button key={label} className="btn-key" onClick={() => void handleVirtualKey(key)}>{label}</button>)}</div></details></> : <div className="chat-empty"><h1>Abra uma sessão de terminal</h1><p>Abra o shell do sistema para executar comandos ou restaurar sessões do Codex, Claude e OpenCode com os parâmetros que preferir.</p><button onClick={() => void handleOpenTerminal()}>Abrir shell</button></div>}
           </div>}
@@ -1442,7 +1555,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         {settingsTab === 'project' && (activeProjectId ? (
           <div data-testid="setup-panel" style={{ padding: 16, overflowY: 'auto' }}>
             <h2>Preparar o projeto para execução</h2>
-            <p className="section-intro">Confira o host e os modelos de cada papel. Consulte os modelos disponíveis, revise a prévia e escolha onde salvar. A conexão da conversa é configurada separadamente.</p>
+            <p className="section-intro">Cada papel usa um host e só pode receber um modelo desse host. A lista é lida do agente instalado. A conexão da conversa é configurada separadamente.</p>
             {inspection?.remediationCards.map((card) => <div key={card.kind} className="setup-diagnostic"><strong>{card.title}</strong><p>{card.description}</p><p>{card.remediation}</p></div>)}
             <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
               <button
@@ -1452,17 +1565,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
               >
                 Instalar / atualizar skills do Gantry
               </button>
-              <button
-                data-testid="discover-models-btn"
-                disabled={!activeProjectId || !setupHostHarness || pendingActions.includes('Consultar modelos do host')}
-                onClick={() => void handleDiscoverModels()}
-              >
-                Consultar modelos do host
-              </button>
             </div>
-            {discoveredModels.length > 0 && (
-              <div className="model-results">Modelos encontrados: {discoveredModels.map((m) => m.id).join(', ')}</div>
-            )}
             <div>
               <label>
                 Host do projeto:{' '}
@@ -1471,23 +1574,39 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
                   onChange={(e) => setSetupHostHarness(e.target.value)}
                 >
                   <option value="">Selecione o host</option>
-                  <option value="opencode">opencode</option>
-                  <option value="claude-code">claude-code</option>
-                  <option value="codex">codex</option>
-                  <option value="antigravity">antigravity</option>
+                  {EXECUTION_HOSTS.map((host) => <option key={host.id} value={host.id}>{host.label}</option>)}
                 </select>
               </label>
             </div>
             <div className="role-settings">
               <h3>Modelos por papel</h3>
-              <p>Essas escolhas são independentes do host do coordenador. Os valores abaixo vêm da configuração salva.</p>
-              {Object.entries(roleSelections).map(([role, selection]) => <div key={role} className="role-setting-row">
-                <strong>{role}</strong>
-                <label>Host<input aria-label={`Host para ${role}`} value={selection.harness} onChange={(event) => setRoleSelections((current) => ({ ...current, [role]: { ...selection, harness: event.target.value } }))} /></label>
-                <label>Modelo<input aria-label={`Modelo para ${role}`} list="verified-models" value={selection.model} onChange={(event) => setRoleSelections((current) => ({ ...current, [role]: { ...selection, model: event.target.value } }))} /></label>
-                <label>Esforço<input aria-label={`Esforço para ${role}`} value={selection.effort ?? ''} onChange={(event) => setRoleSelections((current) => ({ ...current, [role]: { ...selection, effort: event.target.value } }))} /></label>
-              </div>)}
-              <datalist id="verified-models">{discoveredModels.map((model) => <option key={model.id} value={model.id} />)}</datalist>
+              <p>O modelo de cada papel vem do host escolhido nessa linha. Trocar o host limpa um modelo que não pertence a ele.</p>
+              {Object.entries(roleSelections).map(([role, selection]) => {
+                const harness = discoveryHarness(selection.harness);
+                const hostLabel = EXECUTION_HOSTS.find((host) => host.id === selection.harness)?.label ?? selection.harness;
+                return <div key={role} className="role-setting-row">
+                  <strong>{role}</strong>
+                  <label>Host<select aria-label={`Host para ${role}`} value={selection.harness} onChange={(event) => {
+                    const nextHarness = event.target.value;
+                    setRoleSelections((current) => ({ ...current, [role]: { ...selection, harness: nextHarness, model: '' } }));
+                    void ensureModelCatalog(nextHarness);
+                  }}>
+                    {EXECUTION_HOSTS.map((host) => <option key={host.id} value={host.id}>{host.label}</option>)}
+                    {selection.harness && !EXECUTION_HOSTS.some((host) => host.id === selection.harness) && <option value={selection.harness}>{selection.harness}</option>}
+                  </select></label>
+                  <ModelSelect
+                    label="Modelo"
+                    ariaLabel={`Modelo para ${role}`}
+                    harnessLabel={hostLabel}
+                    models={modelsByHarness[harness] ?? []}
+                    value={selection.model}
+                    loading={catalogLoading[harness] === true}
+                    error={catalogErrors[harness]}
+                    onChange={(modelId) => setRoleSelections((current) => ({ ...current, [role]: { ...selection, model: modelId } }))}
+                  />
+                  <label>Esforço<input aria-label={`Esforço para ${role}`} value={selection.effort ?? ''} onChange={(event) => setRoleSelections((current) => ({ ...current, [role]: { ...selection, effort: event.target.value } }))} /></label>
+                </div>;
+              })}
               {Object.keys(roleSelections).length === 0 && <button disabled={!setupHostHarness} onClick={() => setRoleSelections(Object.fromEntries(['plan', 'implement', 'review', 'critic'].map((role) => [role, { harness: setupHostHarness, model: '' }])))}>Configurar papéis de execução</button>}
             </div>
             <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
@@ -1536,12 +1655,16 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
               </select>
               {providerMode === 'cli' ? <>
                 <label htmlFor="cli-harness">Host para projetos sem configuração</label>
-                <select id="cli-harness" value={cliHarness} onChange={(event) => setCliHarness(event.target.value)}>
+                <select id="cli-harness" value={cliHarness} onChange={(event) => {
+                  const nextHost = event.target.value;
+                  setCliHarness(nextHost);
+                  setProviderModel(savedSettings?.providers.cli?.modelsByHost?.[nextHost] ?? '');
+                }}>
                   <option value="">Selecione um host</option>
                   <option value="codex">Codex</option><option value="claude">Claude Code</option>
                   <option value="opencode">OpenCode</option><option value="agy">Antigravity (terminal)</option>
                 </select>
-                <p className="field-help">Usa a autenticação do CLI instalado nesta máquina. O modelo abaixo se aplica a esse host; projetos com outro host usam o padrão do próprio CLI.</p>
+                <p className="field-help">Usa a autenticação do CLI instalado nesta máquina. O modelo abaixo lista só o que esse host oferece; projetos com outro host usam o padrão do próprio CLI.</p>
               </> : <>
                 <label htmlFor="api-provider">Provedor de API</label>
                 <select id="api-provider" value={activeProvider} onChange={(event) => {
@@ -1559,9 +1682,28 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
                 <label htmlFor="provider-base-url">Endereço da API (opcional)</label>
                 <input id="provider-base-url" value={providerBaseUrl} onChange={(event) => setProviderBaseUrl(event.target.value)} placeholder="Endereço padrão do provedor" />
               </>}
-              <label htmlFor="provider-model">Modelo do coordenador</label>
-              <input id="provider-model" value={providerModel} onChange={(event) => setProviderModel(event.target.value)} placeholder={providerMode === 'cli' ? 'Vazio: usar o padrão do host' : 'Identificador do modelo no provedor'} />
-              <p className="field-help">Os modelos dos papéis de planejamento e execução são configurados separadamente em Configurar projeto.</p>
+              {providerMode === 'cli' ? (
+                <ModelSelect
+                  id="provider-model"
+                  label="Modelo do coordenador"
+                  ariaLabel="Modelo do coordenador"
+                  harnessLabel={cliHarness || 'o host'}
+                  models={modelsByHarness[discoveryHarness(cliHarness)] ?? []}
+                  value={providerModel}
+                  loading={Boolean(cliHarness) && catalogLoading[discoveryHarness(cliHarness)] === true}
+                  error={cliHarness ? catalogErrors[discoveryHarness(cliHarness)] : undefined}
+                  showStatus={Boolean(cliHarness)}
+                  allowEmpty
+                  emptyLabel="Padrão do host"
+                  onChange={setProviderModel}
+                />
+              ) : (
+                <>
+                  <label htmlFor="provider-model">Modelo do coordenador</label>
+                  <input id="provider-model" value={providerModel} onChange={(event) => setProviderModel(event.target.value)} placeholder="Identificador do modelo no provedor" />
+                </>
+              )}
+              <p className="field-help">Os modelos dos papéis de planejamento e execução são configurados separadamente em Projeto, cada um com a lista do próprio host.</p>
               <button className="btn-primary" data-testid="save-provider-settings-btn" disabled={pendingActions.includes('Salvar conexão de IA')} onClick={() => void handleSaveProvider()}>
                 {pendingActions.includes('Salvar conexão de IA') ? 'Salvando conexão…' : 'Salvar conexão'}
               </button>

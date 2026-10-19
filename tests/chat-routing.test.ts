@@ -66,6 +66,22 @@ it('routes chat to the saved project host with repository context and conversati
   expect(calls[1].args).not.toContain('another-host-model');
 });
 
+it('uses the model saved for the project host even when the global host is different', async () => {
+  server.store.updateProviderSettings({
+    mode: 'cli', activeProvider: 'cli', cliHarness: 'opencode',
+    providers: { cli: { model: 'another-host-model', modelsByHost: { codex: 'gpt-5.2-codex', opencode: 'another-host-model' } } },
+  });
+  const state = await request('/api/workspace/state').then((res) => res.json());
+  expect(state.connection).toMatchObject({ host: 'codex', model: 'gpt-5.2-codex', source: 'repository' });
+  const response = await request(`/api/projects/${projectId}/chat`, { sessionId, prompt: 'use the configured model' });
+  expect(response.status).toBe(200);
+  const call = JSON.parse(fs.readFileSync(callsPath, 'utf8').trim().split('\n').at(-1)!);
+  expect(call.host).toBe('codex');
+  expect(call.args).toContain('--model');
+  expect(call.args).toContain('gpt-5.2-codex');
+  expect(call.args).not.toContain('another-host-model');
+});
+
 it('honors the saved personal host without rewriting the repository policy', async () => {
   fs.mkdirSync(path.join(profileRoot, 'fixture-unit'), { recursive: true });
   fs.writeFileSync(path.join(profileRoot, 'fixture-unit', 'execution.json'), JSON.stringify({ hostHarness: 'claude' }));
