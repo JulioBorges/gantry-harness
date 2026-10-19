@@ -294,7 +294,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
       const loadedSessions = data.sessions ?? [];
       setSessions(loadedSessions);
       const requestedSessionId = data.layout?.activeSessionId;
-      const actSess = loadedSessions.some((session) => session.id === requestedSessionId)
+      const actSess = loadedSessions.some((session: any) => session.id === requestedSessionId)
         ? requestedSessionId
         : loadedSessions[0]?.id ?? null;
       setActiveSessionId(actSess);
