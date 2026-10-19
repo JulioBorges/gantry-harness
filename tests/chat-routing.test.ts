@@ -99,11 +99,14 @@ it('returns a visible upstream error and never persists a fabricated assistant r
   expect(server.store.listMessages(projectId, sessionId).map((message) => message.role)).toEqual(['user']);
 });
 
-it('rejects empty messages and sessions from another project before calling a host', async () => {
-  for (const body of [{ sessionId, prompt: '' }, { sessionId: 'wrong-session', prompt: 'hello' }]) {
-    expect((await request(`/api/projects/${projectId}/chat`, body)).status).toBe(400);
-  }
+it('rejects an empty message before calling a host and keeps a stale session on this project', async () => {
+  expect((await request(`/api/projects/${projectId}/chat`, { sessionId, prompt: '' })).status).toBe(400);
   expect(fs.existsSync(callsPath)).toBe(false);
+  const response = await request(`/api/projects/${projectId}/chat`, { sessionId: 'wrong-session', prompt: 'hello from the open project' });
+  expect(response.status).toBe(200);
+  expect(server.store.listMessages(projectId, sessionId).some((message) => message.content === 'hello from the open project')).toBe(true);
+  const call = JSON.parse(fs.readFileSync(callsPath, 'utf8').trim().split('\n').at(-1)!);
+  expect(call.host).toBe('codex');
 });
 
 it('reports invalid saved configuration without falling back to a global host', async () => {

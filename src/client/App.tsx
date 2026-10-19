@@ -291,8 +291,12 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
       setProjects(projs);
       const actProj = data.layout?.activeProjectId ?? projs[0]?.id ?? null;
       setActiveProjectId(actProj);
-      setSessions(data.sessions ?? []);
-      const actSess = data.layout?.activeSessionId ?? data.sessions?.[0]?.id ?? null;
+      const loadedSessions = data.sessions ?? [];
+      setSessions(loadedSessions);
+      const requestedSessionId = data.layout?.activeSessionId;
+      const actSess = loadedSessions.some((session) => session.id === requestedSessionId)
+        ? requestedSessionId
+        : loadedSessions[0]?.id ?? null;
       setActiveSessionId(actSess);
       setMessages(data.messages ?? []);
 
@@ -660,11 +664,12 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
 
     setPendingPrompt(text);
     setCoordinatorInput('');
+    const sessionId = sessions.some((session) => session.id === activeSessionId) ? activeSessionId : sessions[0]?.id;
     try {
       await apiFetch(`/api/projects/${activeProjectId}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: activeSessionId, prompt: text }),
+        body: JSON.stringify({ ...(sessionId ? { sessionId } : {}), prompt: text }),
       });
       await loadWorkspaceState();
       setPendingPrompt(null);

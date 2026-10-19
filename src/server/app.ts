@@ -240,8 +240,16 @@ export async function createHarnessServer(
         const layout = store.getWorkspaceLayout();
         const settings = store.getSanitizedProviderSettings();
         const activeProjectId = layout.activeProjectId ?? projects[0]?.id ?? null;
-        const sessions = activeProjectId ? store.listSessions(activeProjectId) : [];
-        const activeSessionId = layout.activeSessionId ?? sessions[0]?.id ?? null;
+        let sessions = activeProjectId ? store.listSessions(activeProjectId) : [];
+        if (activeProjectId && sessions.length === 0) {
+          sessions = [store.createSession(activeProjectId, 'Main Workspace Session')];
+        }
+        let activeSessionId = sessions.some((session) => session.id === layout.activeSessionId)
+          ? layout.activeSessionId
+          : sessions[0]?.id ?? null;
+        if (activeProjectId && activeSessionId !== layout.activeSessionId) {
+          store.saveWorkspaceLayout({ activeProjectId, activeSessionId });
+        }
         const { connection } = resolveCoordinatorConnection(
           store.getRawProviderSettings(), projects.find((project) => project.id === activeProjectId), profileRoot,
         );
@@ -499,13 +507,19 @@ export async function createHarnessServer(
             return;
           }
           const body = await readJsonBody(req);
-          const sessions = store.listSessions(projectId);
-          const sessionId = String(body.sessionId ?? sessions[0]?.id ?? '');
           const prompt = String(body.prompt ?? body.content ?? '').trim();
-          if (!prompt || !sessions.some((session) => session.id === sessionId)) {
-            sendJson(res, 400, { error: 'Informe uma mensagem e selecione uma sessão válida deste projeto.' });
+          if (!prompt) {
+            sendJson(res, 400, { error: 'Informe uma mensagem.' });
             return;
           }
+          let sessions = store.listSessions(projectId);
+          if (sessions.length === 0) {
+            sessions = [store.createSession(projectId, 'Main Workspace Session')];
+          }
+          const requestedSessionId = typeof body.sessionId === 'string' ? body.sessionId : '';
+          const sessionId = sessions.some((session) => session.id === requestedSessionId)
+            ? requestedSessionId
+            : sessions[0].id;
           const { settings, connection } = resolveCoordinatorConnection(store.getRawProviderSettings(), project, profileRoot);
           if (!connection.ready) {
             sendJson(res, 400, { error: connection.detail, connection });
