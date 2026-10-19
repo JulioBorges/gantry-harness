@@ -6,13 +6,8 @@ import type { TerminalSettings } from '../types.js';
 import { createRequire } from 'node:module';
 import type { SQLInputValue } from 'node:sqlite';
 import type {
-  ChatMessageRecord,
-  DecisionCardPayload,
   LiveBadgeState,
-  ProviderSettingsInput,
   RegisteredProject,
-  RunLifecycleState,
-  SanitizedProviderSettings,
   WorkspaceLayoutState,
 } from '../types.js';
 
@@ -43,14 +38,12 @@ export interface SessionRecord {
 export class HarnessStateStore {
   public readonly harnessDir: string;
   public readonly dbPath: string;
-  public readonly settingsPath: string;
   private db: SqliteDatabase;
 
   constructor(gantryHome: string) {
     this.harnessDir = path.join(path.resolve(gantryHome), 'harness');
     fs.mkdirSync(this.harnessDir, { recursive: true });
     this.dbPath = path.join(this.harnessDir, 'harness.db');
-    this.settingsPath = path.join(this.harnessDir, 'settings.json');
     this.db = new Database(this.dbPath);
     this.initSchema();
   }
@@ -104,14 +97,6 @@ export class HarnessStateStore {
         created_at INTEGER NOT NULL
       );
     `);
-
-    if (!fs.existsSync(this.settingsPath)) {
-      this.writeRawSettings({
-        activeProvider: 'cli',
-        mode: 'cli',
-        providers: {},
-      });
-    }
   }
 
   public upsertProject(input: {
@@ -119,55 +104,45 @@ export class HarnessStateStore {
     name?: string;
     unitId: string;
     badgeState?: LiveBadgeState;
-    lifecycleState?: RunLifecycleState;
-  }): { project: RegisteredProject; defaultSessionId: string } {
+  }): { project: RegisteredProject } {
     const resolvedPath = path.resolve(input.path);
     const existing = this.getProjectByPath(resolvedPath);
     const now = new Date().toISOString();
 
     if (existing) {
       const updatedBadge = input.badgeState ?? existing.badgeState;
-      const updatedLifecycle = input.lifecycleState ?? existing.lifecycleState;
       this.db
         .prepare(
-          `UPDATE projects SET unit_id = ?, badge_state = ?, lifecycle_state = ?, updated_at = ? WHERE id = ?`,
+          `UPDATE projects SET unit_id = ?, badge_state = ?, updated_at = ? WHERE id = ?`,
         )
-        .run(input.unitId, updatedBadge, updatedLifecycle, now, existing.id);
-      const sessions = this.listSessions(existing.id);
-      const defaultSessionId =
-        sessions[0]?.id ?? this.createSession(existing.id, 'Main Workspace Session').id;
+        .run(input.unitId, updatedBadge, now, existing.id);
       return {
         project: {
           ...existing,
           unitId: input.unitId,
           badgeState: updatedBadge,
-          lifecycleState: updatedLifecycle,
           updatedAt: now,
         },
-        defaultSessionId,
       };
     }
 
     const id = `proj-${crypto.randomUUID().slice(0, 8)}`;
     const name = input.name ?? path.basename(resolvedPath);
     const badgeState = input.badgeState ?? 'idle';
-    const lifecycleState = input.lifecycleState ?? 'idle';
 
     this.db
       .prepare(
-        `INSERT INTO projects (id, name, path, unit_id, badge_state, lifecycle_state, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO projects (id, name, path, unit_id, badge_state, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(id, name, resolvedPath, input.unitId, badgeState, lifecycleState, now, now);
-
-    const session = this.createSession(id, 'Main Workspace Session');
+      .run(id, name, resolvedPath, input.unitId, badgeState, now, now);
 
     const currentLayout = this.getWorkspaceLayout();
     if (!currentLayout.activeProjectId) {
       this.saveWorkspaceLayout({
         ...currentLayout,
         activeProjectId: id,
-        activeSessionId: session.id,
+        activeSessionId: null,
       });
     }
 
@@ -178,11 +153,9 @@ export class HarnessStateStore {
         path: resolvedPath,
         unitId: input.unitId,
         badgeState,
-        lifecycleState,
         createdAt: now,
         updatedAt: now,
       },
-      defaultSessionId: session.id,
     };
   }
 
@@ -196,7 +169,7 @@ export class HarnessStateStore {
       this.saveWorkspaceLayout({
         ...layout,
         activeProjectId: remaining[0]?.id ?? null,
-        activeSessionId: remaining[0] ? (this.listSessions(remaining[0].id)[0]?.id ?? null) : null,
+        activeSessionId: null,
       });
     }
     return Number(res.changes) > 0;
@@ -204,17 +177,16 @@ export class HarnessStateStore {
 
   public updateProjectState(
     projectId: string,
-    patch: { badgeState?: LiveBadgeState; lifecycleState?: RunLifecycleState },
+    patch: { badgeState?: LiveBadgeState },
   ): RegisteredProject | null {
     const proj = this.getProject(projectId);
     if (!proj) return null;
     const badgeState = patch.badgeState ?? proj.badgeState;
-    const lifecycleState = patch.lifecycleState ?? proj.lifecycleState;
     const now = new Date().toISOString();
     this.db
-      .prepare(`UPDATE projects SET badge_state = ?, lifecycle_state = ?, updated_at = ? WHERE id = ?`)
-      .run(badgeState, lifecycleState, now, projectId);
-    return { ...proj, badgeState, lifecycleState, updatedAt: now };
+      .prepare(`UPDATE projects SET badge_state = ?, updated_at = ? WHERE id = ?`)
+      .run(badgeState, now, projectId);
+    return { ...proj, badgeState, updatedAt: now };
   }
 
   public getProject(projectId: string): RegisteredProject | null {
@@ -245,89 +217,8 @@ export class HarnessStateStore {
       path: row.path,
       unitId: row.unit_id,
       badgeState: row.badge_state as LiveBadgeState,
-      lifecycleState: row.lifecycle_state as RunLifecycleState,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
-    };
-  }
-
-  public createSession(projectId: string, title: string, slug?: string): SessionRecord {
-    const id = `sess-${crypto.randomUUID().slice(0, 8)}`;
-    const now = new Date().toISOString();
-    this.db
-      .prepare(
-        `INSERT INTO sessions (id, project_id, title, slug, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-      )
-      .run(id, projectId, title, slug ?? null, now, now);
-    return { id, projectId, title, slug, createdAt: now, updatedAt: now };
-  }
-
-  public listSessions(projectId: string): SessionRecord[] {
-    const rows = this.db
-      .prepare(`SELECT * FROM sessions WHERE project_id = ? ORDER BY created_at ASC`)
-      .all(projectId) as Array<Record<string, string>>;
-    return rows.map((r) => ({
-      id: r.id,
-      projectId: r.project_id,
-      title: r.title,
-      slug: r.slug ?? undefined,
-      createdAt: r.created_at,
-      updatedAt: r.updated_at,
-    }));
-  }
-
-  public appendMessage(input: {
-    projectId: string;
-    sessionId: string;
-    role: 'user' | 'assistant' | 'system' | 'subagent';
-    content: string;
-    turnBlocks?: ChatMessageRecord['turnBlocks'];
-    decisionCard?: DecisionCardPayload & { id?: string; resolved?: boolean; resolution?: unknown };
-  }): ChatMessageRecord {
-    const id = `msg-${crypto.randomUUID().slice(0, 8)}`;
-    const createdAt = new Date().toISOString();
-    const cardWithId = input.decisionCard
-      ? {
-          ...input.decisionCard,
-          id: input.decisionCard.id ?? `card-${crypto.randomUUID().slice(0, 8)}`,
-          resolved: input.decisionCard.resolved ?? false,
-        }
-      : undefined;
-
-    this.db
-      .prepare(
-        `INSERT INTO messages (id, project_id, session_id, role, content, turn_blocks_json, decision_card_json, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        id,
-        input.projectId,
-        input.sessionId,
-        input.role,
-        input.content,
-        input.turnBlocks ? JSON.stringify(input.turnBlocks) : null,
-        cardWithId ? JSON.stringify(cardWithId) : null,
-        createdAt,
-      );
-
-    if (cardWithId && !cardWithId.resolved) {
-      const targetBadge: LiveBadgeState =
-        cardWithId.kind === 'issue_recovery' || cardWithId.kind === 'spec_blocked'
-          ? 'blocked'
-          : 'needs input';
-      this.updateProjectState(input.projectId, { badgeState: targetBadge });
-    }
-
-    return {
-      id,
-      projectId: input.projectId,
-      sessionId: input.sessionId,
-      role: input.role,
-      content: input.content,
-      turnBlocks: input.turnBlocks,
-      decisionCard: cardWithId,
-      createdAt,
     };
   }
 
@@ -342,106 +233,7 @@ export class HarnessStateStore {
     summary: string;
     createdAt: string;
   }> {
-    const rows = this.db
-      .prepare(
-        `SELECT m.id, m.project_id, m.session_id, m.content, m.decision_card_json, m.created_at, p.name as project_name
-         FROM messages m
-         JOIN projects p ON p.id = m.project_id
-         WHERE m.decision_card_json IS NOT NULL
-         ORDER BY m.created_at DESC`,
-      )
-      .all() as Array<Record<string, string>>;
-
-    const alerts: Array<{
-      id: string;
-      projectId: string;
-      projectName: string;
-      sessionId: string;
-      messageId: string;
-      badgeState: LiveBadgeState;
-      cardKind: string;
-      summary: string;
-      createdAt: string;
-    }> = [];
-
-    for (const row of rows) {
-      const card = JSON.parse(row.decision_card_json) as DecisionCardPayload & {
-        id?: string;
-        resolved?: boolean;
-      };
-      if (card.resolved) continue;
-      const badgeState: LiveBadgeState =
-        card.kind === 'issue_recovery' || card.kind === 'spec_blocked' ? 'blocked' : 'needs input';
-      alerts.push({
-        id: card.id ?? row.id,
-        projectId: row.project_id,
-        projectName: row.project_name,
-        sessionId: row.session_id,
-        messageId: row.id,
-        badgeState,
-        cardKind: card.kind,
-        summary: row.content,
-        createdAt: row.created_at,
-      });
-    }
-    return alerts;
-  }
-
-  public listMessages(projectId: string, sessionId?: string): ChatMessageRecord[] {
-    const rows = sessionId
-      ? (this.db
-          .prepare(
-            `SELECT * FROM messages WHERE project_id = ? AND session_id = ? ORDER BY created_at ASC`,
-          )
-          .all(projectId, sessionId) as Array<Record<string, string | null>>)
-      : (this.db
-          .prepare(`SELECT * FROM messages WHERE project_id = ? ORDER BY created_at ASC`)
-          .all(projectId) as Array<Record<string, string | null>>);
-
-    return rows.map((r) => ({
-      id: r.id!,
-      projectId: r.project_id!,
-      sessionId: r.session_id!,
-      role: r.role as ChatMessageRecord['role'],
-      content: r.content!,
-      turnBlocks: r.turn_blocks_json ? JSON.parse(r.turn_blocks_json) : undefined,
-      decisionCard: r.decision_card_json ? JSON.parse(r.decision_card_json) : undefined,
-      createdAt: r.created_at!,
-    }));
-  }
-
-  public resolveDecisionCard(messageId: string, resolution: unknown): ChatMessageRecord | null {
-    const row = this.db
-      .prepare(`SELECT * FROM messages WHERE id = ?`)
-      .get(messageId) as Record<string, string | null> | undefined;
-    if (!row || !row.decision_card_json) return null;
-    const card = JSON.parse(row.decision_card_json);
-    card.resolved = true;
-    card.resolution = resolution;
-    this.db
-      .prepare(`UPDATE messages SET decision_card_json = ? WHERE id = ?`)
-      .run(JSON.stringify(card), messageId);
-    const remainingForProject = this.listPendingAlerts().filter(
-      (a) => a.projectId === row.project_id!,
-    );
-    if (remainingForProject.length === 0) {
-      this.updateProjectState(row.project_id!, { badgeState: 'idle' });
-    } else {
-      const nextBadge: LiveBadgeState = remainingForProject.some((a) => a.badgeState === 'blocked')
-        ? 'blocked'
-        : 'needs input';
-      this.updateProjectState(row.project_id!, { badgeState: nextBadge });
-    }
-    return {
-      id: row.id!,
-      projectId: row.project_id!,
-      sessionId: row.session_id!,
-      role: row.role as ChatMessageRecord['role'],
-      content: row.content!,
-      turnBlocks: row.turn_blocks_json ? JSON.parse(row.turn_blocks_json) : undefined,
-      decisionCard: card,
-      createdAt: row.created_at!,
-    };
+    return [];
   }
 
   public getWorkspaceLayout(): WorkspaceLayoutState {
@@ -492,65 +284,6 @@ export class HarnessStateStore {
     this.db.prepare('INSERT INTO workspace_kv (key, value_json) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json')
       .run('terminal_settings', JSON.stringify(settings));
     return settings;
-  }
-
-  private writeRawSettings(settings: ProviderSettingsInput): void {
-    fs.writeFileSync(this.settingsPath, JSON.stringify(settings, null, 2) + '\n', {
-      encoding: 'utf-8',
-      mode: 0o600,
-    });
-  }
-
-  public getRawProviderSettings(): ProviderSettingsInput {
-    try {
-      return JSON.parse(fs.readFileSync(this.settingsPath, 'utf-8')) as ProviderSettingsInput;
-    } catch {
-      return {
-        activeProvider: 'cli',
-        mode: 'cli',
-        providers: {},
-      };
-    }
-  }
-
-  public updateProviderSettings(input: ProviderSettingsInput): SanitizedProviderSettings {
-    const current = this.getRawProviderSettings();
-    const nextProviders = { ...(current.providers ?? {}) };
-    if (input.providers) {
-      for (const [provName, cfg] of Object.entries(input.providers)) {
-        nextProviders[provName] = {
-          ...(nextProviders[provName] ?? {}),
-          ...cfg,
-          apiKey: cfg.apiKey !== undefined ? cfg.apiKey : nextProviders[provName]?.apiKey,
-        };
-      }
-    }
-    const updated: ProviderSettingsInput = {
-      activeProvider: input.activeProvider ?? current.activeProvider,
-      mode: input.mode ?? current.mode,
-      cliHarness: input.cliHarness ?? current.cliHarness,
-      providers: nextProviders,
-    };
-    this.writeRawSettings(updated);
-    return this.getSanitizedProviderSettings();
-  }
-
-  public getSanitizedProviderSettings(): SanitizedProviderSettings {
-    const raw = this.getRawProviderSettings();
-    const sanitizedProviders: SanitizedProviderSettings['providers'] = {};
-    for (const [name, cfg] of Object.entries(raw.providers ?? {})) {
-      sanitizedProviders[name] = {
-        hasApiKey: Boolean(cfg.apiKey && cfg.apiKey.trim().length > 0),
-        model: cfg.model,
-        baseUrl: cfg.baseUrl,
-      };
-    }
-    return {
-      activeProvider: raw.activeProvider,
-      mode: raw.mode,
-      cliHarness: raw.cliHarness,
-      providers: sanitizedProviders,
-    };
   }
 
   public generatePairingCode(): string {

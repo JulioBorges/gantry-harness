@@ -29,8 +29,8 @@ it('starts the CLI under Bun and preserves SQLite state across restarts', () => 
       try {
         const project = store.getProjectByPath(cwd);
         assert.ok(project);
-        assert.equal(store.listSessions(project.id).length, 1);
         assert.equal(store.getWorkspaceLayout().activeProjectId, project.id);
+        assert.equal(store.getWorkspaceLayout().activeSessionId, null);
         assert.equal(store.removeProject(project.id), true);
       } finally {
         store.close();

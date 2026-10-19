@@ -34,15 +34,12 @@ it('loads native options and persists terminal preferences independently of the 
   expect(state.terminalSettings).toMatchObject({ fontSize: 13, shell: 'system' });
   expect(state.terminalEnvironment.platform).toBe(process.platform);
   expect(state.terminalEnvironment.shells.map((item: { id: string }) => item.id)).toEqual(['system', ...shellDefinitions(process.platform).map(({ id }) => id)]);
-  server.store.updateProviderSettings({ mode: 'sdk', activeProvider: 'openai', providers: { openai: { apiKey: 'secret-test-key', model: 'fixture' } } });
+  expect((await request('/api/settings/providers')).status).toBe(404);
   expect((await request('/api/settings/terminal', settings)).status).toBe(200);
   await server.close();
   server = await start();
   expect(server.store.getTerminalSettings()).toEqual(settings);
-  expect(server.store.getRawProviderSettings().providers?.openai.apiKey).toBe('secret-test-key');
-  // Saving the coordinator configuration must not overwrite terminal preferences.
-  server.store.updateProviderSettings({ mode: 'cli', activeProvider: 'cli', cliHarness: 'codex' });
-  expect(server.store.getTerminalSettings()).toEqual(settings);
+  expect(fs.existsSync(path.join(root, 'home', 'harness', 'settings.json'))).toBe(false);
 });
 
 it('applies the chosen shell to new PTYs while preserving an open shell and accepting arbitrary commands', async () => {

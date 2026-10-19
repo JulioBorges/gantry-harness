@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 
-export type SettingsTab = 'terminal' | 'ai' | 'project' | 'remote';
-const TABS: Array<[SettingsTab, string]> = [['terminal', 'Terminal'], ['ai', 'Conexão de IA'], ['project', 'Projeto'], ['remote', 'Acesso remoto']];
+export type SettingsTab = 'terminal' | 'project' | 'remote';
+const TABS: Array<[SettingsTab, string]> = [['terminal', 'Terminal'], ['project', 'Projeto'], ['remote', 'Acesso remoto']];
 
 export function SettingsDialog({ tab, onTabChange, onClose, children }: {
   tab: SettingsTab;
