@@ -6,7 +6,7 @@ Delivery tracking for the `gantry-harness` Run orchestration adaptation. Issue s
 
 | | Count |
 |---|---|
-| Issues completed | **0 / 7** |
+| Issues completed | **1 / 7** |
 | Specs completed | **0 / 1** |
 | Execution waves | **4** |
 
@@ -20,15 +20,15 @@ Delivery tracking for the `gantry-harness` Run orchestration adaptation. Issue s
 
 | # | Spec | Issues done | Waves |
 |---|---|---|---|
-| 01 | `run-orchestration` | 0/7 | 0–3 |
+| 01 | `run-orchestration` | 1/7 | 0–3 |
 
 <!-- END GENERATED: spec progress -->
 
 <!-- BEGIN GENERATED: issue checklist -->
 
-### Wave 0 — 0/1 done
+### Wave 0 — 1/1 done
 
-- [ ] **`run-orchestration#01`** — 01: Excise the conversational orchestrator _(no blockers)_
+- [x] **`run-orchestration#01`** — 01: Excise the conversational orchestrator _(no blockers)_
 
 ### Wave 1 — 0/1 done
 

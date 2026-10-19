@@ -1,7 +1,7 @@
 # 01: Excise the conversational orchestrator
 
 Type: issue
-Status: ready-for-agent
+Status: done
 Slice: `run-orchestration#01`
 Spec: `.scratch/run-orchestration/spec.md`
 Created: 2026-10-18
@@ -16,11 +16,11 @@ The harness no longer carries a model-driven orchestrator, so the pack CLI intro
 
 ## Acceptance criteria
 
-- [ ] No HTTP endpoint or UI surface remains for coordinator chat, command preparation, plan workflow, run workflow, steering, takeover, recovery, lessons or cleanup.
-- [ ] Provider/AI connection settings and their stored configuration are removed from settings surfaces and state reads.
-- [ ] Project sidebar, terminal panes, file viewer, terminal settings and remote access still pass their existing observable behaviors (updated to compile without the deleted modules).
-- [ ] The conversation tab and "Main Workspace session" entry points are removed from primary navigation.
-- [ ] `bun run typecheck` and the surviving test suite pass.
+- [x] No HTTP endpoint or UI surface remains for coordinator chat, command preparation, plan workflow, run workflow, steering, takeover, recovery, lessons or cleanup.
+- [x] Provider/AI connection settings and their stored configuration are removed from settings surfaces and state reads.
+- [x] Project sidebar, terminal panes, file viewer, terminal settings and remote access still pass their existing observable behaviors (updated to compile without the deleted modules).
+- [x] The conversation tab and "Main Workspace session" entry points are removed from primary navigation.
+- [x] `bun run typecheck` and the surviving test suite pass.
 
 ## Blocked by
 
