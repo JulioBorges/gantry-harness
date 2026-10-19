@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useActionFeedback } from './useActionFeedback.js';
 import { FileViewerDialog } from './FileViewerDialog.js';
 import { FileTree, type FileTreeEntry } from './FileTree.js';
+import { BoardView } from './BoardView.js';
 import type { ExecutionSettings } from '../types.js';
 import type { ManagedPane } from '../server/ptyManager.js';
 import type { Terminal } from '@xterm/xterm';
@@ -37,6 +38,7 @@ const CLICKABLE_PATH_RE = /\b([A-Za-z0-9_./-]+\.(?:ts|tsx|js|jsx|py|md|json|css|
 export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   const [projects, setProjects] = useState<RegisteredProject[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const [activeView, setActiveView] = useState<'board' | 'terminal'>('board');
 
   const [inspection, setInspection] = useState<{
     policy?: { execution?: ExecutionSettings; [key: string]: unknown };
@@ -284,7 +286,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
       </div>
 
       {/* Main content */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+      <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         {activeProject ? (
           <>
             <div style={{ padding: 16, borderBottom: '1px solid #334155' }}>
@@ -292,60 +294,75 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
               <p style={{ margin: '4px 0 0', fontSize: 12, color: '#94A3B8' }}>{activeProject.path}</p>
             </div>
 
-            <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-              {/* File tree */}
-              <div style={{ width: 240, background: '#1E293B', borderRight: '1px solid #334155', overflow: 'auto', padding: 12 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: '#94A3B8', marginBottom: 8 }}>ARQUIVOS</div>
-                <FileTree
-                  projectId={activeProjectId}
-                  projectName={activeProject.name}
-                  loadEntries={async (path: string, query: string) => {
-                    const response = await fetch(`${apiBaseUrl}/api/projects/${activeProjectId}/tree?path=${encodeURIComponent(path)}&q=${encodeURIComponent(query)}`);
-                    return response.json();
-                  }}
-                  onOpenFile={(path) => {
-                    setSelectedFile({ name: path.split('/').pop() || path, path, kind: 'file' });
-                    setFileViewerOpen(true);
-                  }}
-                  selectedPath={selectedFile?.path}
-                />
-              </div>
+            <div className="view-selector" style={{ margin: '8px 16px', alignSelf: 'flex-start' }}>
+              <button type="button" aria-pressed={activeView === 'board'} onClick={() => setActiveView('board')}>
+                Board
+              </button>
+              <button type="button" aria-pressed={activeView === 'terminal'} onClick={() => setActiveView('terminal')}>
+                Terminal
+              </button>
+            </div>
 
-              {/* Terminal area */}
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-                <div style={{ padding: 12, borderBottom: '1px solid #334155', display: 'flex', gap: 8, alignItems: 'center' }}>
-                  {panes.map((pane) => (
-                    <button
-                      key={pane.paneId}
-                      onClick={() => setActivePaneId(pane.paneId)}
-                      style={{
-                        padding: '6px 12px',
-                        background: pane.paneId === activePaneId ? '#334155' : 'transparent',
-                        border: '1px solid #334155',
-                        borderRadius: 6,
-                        color: '#F8FAFC',
-                        cursor: 'pointer',
-                        fontSize: 12,
+            <div style={{ display: 'flex', flex: 1, overflow: 'hidden', minWidth: 0, minHeight: 0 }}>
+              {activeView === 'board' ? (
+                activeProjectId ? <BoardView projectId={activeProjectId} apiBaseUrl={apiBaseUrl} /> : null
+              ) : (
+                <>
+                  {/* File tree */}
+                  <div style={{ width: 240, background: '#1E293B', borderRight: '1px solid #334155', overflow: 'auto', padding: 12 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: '#94A3B8', marginBottom: 8 }}>ARQUIVOS</div>
+                    <FileTree
+                      projectId={activeProjectId}
+                      projectName={activeProject.name}
+                      loadEntries={async (path: string, query: string) => {
+                        const response = await fetch(`${apiBaseUrl}/api/projects/${activeProjectId}/tree?path=${encodeURIComponent(path)}&q=${encodeURIComponent(query)}`);
+                        return response.json();
                       }}
-                    >
-                      {pane.launcher || 'Terminal'}
-                    </button>
-                  ))}
-                  <button onClick={handleCreatePane} style={{ padding: '6px 12px', background: '#38BDF8', border: 'none', borderRadius: 6, color: '#0F172A', cursor: 'pointer', fontSize: 12 }}>
-                    + Terminal
-                  </button>
-                </div>
+                      onOpenFile={(path) => {
+                        setSelectedFile({ name: path.split('/').pop() || path, path, kind: 'file' });
+                        setFileViewerOpen(true);
+                      }}
+                      selectedPath={selectedFile?.path}
+                    />
+                  </div>
 
-                <div style={{ flex: 1, background: '#0B0E14', padding: 16 }}>
-                  {activePaneId ? (
-                    <div style={{ height: '100%' }} id={`terminal-${activePaneId}`} />
-                  ) : (
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#94A3B8' }}>
-                      Selecione ou crie um terminal
+                  {/* Terminal area */}
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+                    <div style={{ padding: 12, borderBottom: '1px solid #334155', display: 'flex', gap: 8, alignItems: 'center' }}>
+                      {panes.map((pane) => (
+                        <button
+                          key={pane.paneId}
+                          onClick={() => setActivePaneId(pane.paneId)}
+                          style={{
+                            padding: '6px 12px',
+                            background: pane.paneId === activePaneId ? '#334155' : 'transparent',
+                            border: '1px solid #334155',
+                            borderRadius: 6,
+                            color: '#F8FAFC',
+                            cursor: 'pointer',
+                            fontSize: 12,
+                          }}
+                        >
+                          {pane.launcher || 'Terminal'}
+                        </button>
+                      ))}
+                      <button onClick={handleCreatePane} style={{ padding: '6px 12px', background: '#38BDF8', border: 'none', borderRadius: 6, color: '#0F172A', cursor: 'pointer', fontSize: 12 }}>
+                        + Terminal
+                      </button>
                     </div>
-                  )}
-                </div>
-              </div>
+
+                    <div style={{ flex: 1, background: '#0B0E14', padding: 16 }}>
+                      {activePaneId ? (
+                        <div style={{ height: '100%' }} id={`terminal-${activePaneId}`} />
+                      ) : (
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#94A3B8' }}>
+                          Selecione ou crie um terminal
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           </>
         ) : (
