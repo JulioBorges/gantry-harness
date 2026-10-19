@@ -286,7 +286,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
       </div>
 
       {/* Main content */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+      <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         {activeProject ? (
           <>
             <div style={{ padding: 16, borderBottom: '1px solid #334155' }}>
@@ -303,7 +303,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
               </button>
             </div>
 
-            <div style={{ display: 'flex', flex: 1, overflow: 'hidden', minHeight: 0 }}>
+            <div style={{ display: 'flex', flex: 1, overflow: 'hidden', minWidth: 0, minHeight: 0 }}>
               {activeView === 'board' ? (
                 activeProjectId ? <BoardView projectId={activeProjectId} apiBaseUrl={apiBaseUrl} /> : null
               ) : (
