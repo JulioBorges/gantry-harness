@@ -1,7 +1,7 @@
 # 03: Run supervisor and Issue execution
 
 Type: issue
-Status: ready-for-agent
+Status: done
 Slice: `run-orchestration#03`
 Spec: `.scratch/run-orchestration/spec.md`
 Created: 2026-10-18
@@ -16,12 +16,12 @@ Selecting an Issue card's run action spawns one `execute <ref>` child against th
 
 ## Acceptance criteria
 
-- [ ] `POST /api/projects/:id/runs` with an Issue ref spawns `execute` and emits the `worktree` event into the Run record and over WS.
-- [ ] `POST /api/projects/:id/runs/:ref/answer` writes the chosen word to the child's stdin only while a pause is outstanding, and only offers the emitted `choices`.
-- [ ] `corrections-exhausted` pause offers continue/stop; stop leaves the Run interrupted with worktree and branch and the card does not return to ready to agent.
-- [ ] An `open-blocker` or `branch-exists` error surfaces on the card without a crash and without a worktree.
-- [ ] While the child runs, the Issue card sits in the Plan, Implement, Review or Critic lane for the current role, follow-agent opens that Run, and pause choices render inside the card. Terminal events (`stopped`, `ready-for-approval`) and unexpected child exits produce the correct lane and phase label, and persisted records. Stopping does not label the card ready to agent and does not add a lane.
-- [ ] Integration test runs a real `cli.py execute` in a temp repo with executable fixture role commands through pause, answer, and `ready-for-approval`.
+- [x] `POST /api/projects/:id/runs` with an Issue ref spawns `execute` and emits the `worktree` event into the Run record and over WS.
+- [x] `POST /api/projects/:id/runs/:ref/answer` writes the chosen word to the child's stdin only while a pause is outstanding, and only offers the emitted `choices`.
+- [x] `corrections-exhausted` pause offers continue/stop; stop leaves the Run interrupted with worktree and branch and the card does not return to ready to agent.
+- [x] An `open-blocker` or `branch-exists` error surfaces on the card without a crash and without a worktree.
+- [x] While the child runs, the Issue card sits in the Plan, Implement, Review or Critic lane for the current role, follow-agent opens that Run, and pause choices render inside the card. Terminal events (`stopped`, `ready-for-approval`) and unexpected child exits produce the correct lane and phase label, and persisted records. Stopping does not label the card ready to agent and does not add a lane.
+- [x] Integration test runs a real `cli.py execute` in a temp repo with executable fixture role commands through pause, answer, and `ready-for-approval`.
 
 ## Blocked by
 

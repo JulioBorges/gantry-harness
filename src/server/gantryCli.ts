@@ -71,6 +71,94 @@ export function resolvePackExecutable(repoRoot: string, homeDir: string = os.hom
   return { kind: 'none', explanation: NO_PACK_EXPLANATION };
 }
 
+export type PackSubcommand = 'board' | 'issues' | 'specs' | 'frontier' | 'execute' | 'approve' | 'resume' | 'discard';
+
+export interface PackRunRecord {
+  ref: string;
+  branch: string;
+  phase: string;
+  spent: number;
+  granted: number;
+  specPath?: string;
+  issuePath?: string;
+}
+
+export function buildPackCommand(
+  resolved: Exclude<PackExecutable, MissingPack>,
+  repoRoot: string,
+  subcommand: PackSubcommand,
+  ...args: string[]
+): string[] {
+  const root = path.resolve(repoRoot);
+  if (resolved.kind === 'pinned' || resolved.kind === 'global') {
+    return [resolved.command[0], resolved.cliPath, '--cwd', root, subcommand, ...args];
+  }
+  return [resolved.executable, subcommand, ...args];
+}
+
+export function normaliseIssueRef(raw: string): string {
+  const cleaned = raw.trim().replace(/^`+|`+$/g, '');
+  const match = /^([a-z0-9][a-z0-9-]*)#(\d+)$/i.exec(cleaned);
+  if (match) {
+    return `${match[1].toLowerCase()}#${String(Number(match[2])).padStart(2, '0')}`;
+  }
+  return cleaned;
+}
+
+export function resolveGitCommonDir(repoRoot: string): string {
+  const root = path.resolve(repoRoot);
+  const dotGit = path.join(root, '.git');
+  try {
+    if (fs.existsSync(dotGit)) {
+      const stat = fs.statSync(dotGit);
+      if (stat.isDirectory()) return dotGit;
+      if (stat.isFile()) {
+        const text = fs.readFileSync(dotGit, 'utf-8').trim();
+        const match = /^gitdir:\s*(.+)$/i.exec(text);
+        if (match) {
+          const gitDir = path.resolve(root, match[1].trim());
+          const commonDirFile = path.join(gitDir, 'commondir');
+          if (fs.existsSync(commonDirFile)) {
+            return path.resolve(gitDir, fs.readFileSync(commonDirFile, 'utf-8').trim());
+          }
+          return gitDir;
+        }
+      }
+    }
+  } catch {
+    // Fallback below
+  }
+  return dotGit;
+}
+
+export function packRunRecordPath(repoRoot: string, ref: string): string {
+  const canonicalRef = normaliseIssueRef(ref);
+  return path.join(resolveGitCommonDir(repoRoot), 'gantry-cli', `${canonicalRef.replace(/#/g, '--')}.json`);
+}
+
+export function readPackRunRecord(repoRoot: string, ref: string): PackRunRecord | null {
+  try {
+    const filePath = packRunRecordPath(repoRoot, ref);
+    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) return null;
+    const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as Record<string, unknown>;
+    if (!raw || typeof raw !== 'object') return null;
+    if (typeof raw.ref !== 'string' || typeof raw.branch !== 'string' || typeof raw.phase !== 'string') {
+      return null;
+    }
+    return {
+      ref: raw.ref,
+      branch: raw.branch,
+      phase: raw.phase,
+      spent: typeof raw.spent === 'number' ? raw.spent : 0,
+      granted: typeof raw.granted === 'number' ? raw.granted : 0,
+      ...(typeof raw.specPath === 'string' ? { specPath: raw.specPath } : {}),
+      ...(typeof raw.issuePath === 'string' ? { issuePath: raw.issuePath } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
 function failedRead(resolution: PackResolutionKind, explanation: string): BoardSnapshot {
   return emptyBoard(resolution, explanation);
 }
