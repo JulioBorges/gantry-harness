@@ -98,6 +98,8 @@ export interface BoardIssue {
   path: string;
   frontierBlocked: boolean;
   openBlockers: string[];
+  /** Pack run-record phase (`implement`, `review`, `critic`, …), or null when no Run is recorded. */
+  runPhase: string | null;
 }
 
 export interface BoardSpec {

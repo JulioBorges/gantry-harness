@@ -18,15 +18,15 @@ const readyBoard: BoardResponse = {
   issues: [
     {
       ref: 'sample#01', spec: 'sample', number: 1, title: 'Ready work', status: 'ready-for-agent',
-      path: '.scratch/sample/issues/01-ready.md', frontierBlocked: false, openBlockers: [],
+      path: '.scratch/sample/issues/01-ready.md', frontierBlocked: false, openBlockers: [], runPhase: null,
     },
     {
       ref: 'sample#02', spec: 'sample', number: 2, title: 'Blocked work', status: 'ready-for-agent',
-      path: '.scratch/sample/issues/02-blocked.md', frontierBlocked: true, openBlockers: ['sample#01'],
+      path: '.scratch/sample/issues/02-blocked.md', frontierBlocked: true, openBlockers: ['sample#01'], runPhase: null,
     },
     {
       ref: 'sample#03', spec: 'sample', number: 3, title: 'Finished work', status: 'done',
-      path: '.scratch/sample/issues/03-done.md', frontierBlocked: false, openBlockers: [],
+      path: '.scratch/sample/issues/03-done.md', frontierBlocked: false, openBlockers: [], runPhase: 'review',
     },
   ],
 };
@@ -57,6 +57,26 @@ it('renders ready, blocked and done cards from board data', async () => {
   expect(spec?.dataset.executable).toBe('false');
   expect(spec?.textContent).toContain('Non-executable support document');
   expect(screen.queryByRole('button', { name: 'Run' })).toBeNull();
+});
+
+it('places a running Issue in the agent phase recorded by the pack', async () => {
+  stubBoard({
+    ...readyBoard,
+    issues: [
+      { ...readyBoard.issues[0], title: 'Implementing', runPhase: 'implement' },
+      { ...readyBoard.issues[1], title: 'In review', frontierBlocked: false, openBlockers: [], runPhase: 'review' },
+      { ...readyBoard.issues[2], title: 'With the critic', status: 'ready-for-agent', runPhase: 'critic' },
+    ],
+  });
+  render(<BoardView projectId="project" />);
+
+  expect((await screen.findByText('Implementing')).closest('article')?.dataset.phase).toBe('implement');
+  const review = screen.getByText('In review').closest('article');
+  expect(review?.dataset.phase).toBe('review');
+  expect(review?.textContent).toContain('Review');
+  const critic = screen.getByText('With the critic').closest('article');
+  expect(critic?.dataset.phase).toBe('critic');
+  expect(critic?.textContent).toContain('Critic');
 });
 
 it('shows disabled run, plan and approve actions when the pack cannot be resolved', async () => {

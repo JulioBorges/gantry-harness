@@ -1,13 +1,23 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import type { BoardIssue, BoardResponse, BoardSpec } from '../types.js';
-import { PHASE_LABEL, cardPhase, type CardPhase } from './cardPhase.js';
+import { PHASE_LABEL, cardLabel, cardPhase, type CardPhase } from './cardPhase.js';
 
 interface BoardViewProps {
   projectId: string;
   apiBaseUrl?: string;
 }
 
-const COLUMNS: CardPhase[] = ['ready', 'blocked', 'done'];
+const COLUMNS: CardPhase[] = [
+  'ready',
+  'blocked',
+  'plan',
+  'implement',
+  'checks',
+  'review',
+  'critic',
+  'awaiting',
+  'done',
+];
 
 export function BoardView({ projectId, apiBaseUrl = '' }: BoardViewProps): React.ReactElement {
   const [board, setBoard] = useState<BoardResponse | null>(null);
@@ -46,7 +56,17 @@ export function BoardView({ projectId, apiBaseUrl = '' }: BoardViewProps): React
     return <div className="board" />;
   }
 
-  const grouped: Record<CardPhase, BoardIssue[]> = { ready: [], blocked: [], done: [] };
+  const grouped: Record<CardPhase, BoardIssue[]> = {
+    ready: [],
+    blocked: [],
+    plan: [],
+    implement: [],
+    checks: [],
+    review: [],
+    critic: [],
+    awaiting: [],
+    done: [],
+  };
   for (const issue of board.issues) {
     grouped[cardPhase(issue)].push(issue);
   }
@@ -115,7 +135,7 @@ function IssueCard({ issue, phase }: { issue: BoardIssue; phase: CardPhase }): R
     <article className="issue-card" data-phase={phase} data-ref={issue.ref}>
       <header>
         <span>{issue.ref}</span>
-        <strong className={`phase-${phase}`}>{PHASE_LABEL[phase]}</strong>
+        <strong className={`phase-${phase}`}>{cardLabel(issue, phase)}</strong>
       </header>
       <h4>{issue.title}</h4>
       <p>{issue.spec}</p>

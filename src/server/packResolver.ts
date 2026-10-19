@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { findExecutable } from './commandRunner.js';
 import type { BoardPayload, PackResolution } from '../types.js';
 
@@ -75,7 +75,7 @@ export function readBoard(repoPath: string, resolution: PackResolution): Promise
         return;
       }
       try {
-        resolve(parseBoard(stdout));
+        resolve(applyRunPhases(repoPath, parseBoard(stdout)));
       } catch (err) {
         reject(err instanceof Error ? err : new Error(`Failed to parse board JSON: ${err}`));
       }
@@ -89,8 +89,52 @@ function parseBoard(stdout: string): BoardPayload {
     throw new Error('Board output is missing issues, specs, or frontier');
   }
   return {
-    issues: parsed.issues,
+    issues: parsed.issues.map((issue) => ({ ...issue, runPhase: issue.runPhase ?? null })),
     specs: parsed.specs,
     frontier: parsed.frontier,
   };
+}
+
+/**
+ * The pack's `board` command reports repository status only.
+ * The phase the agents are in lives in `<git-common-dir>/gantry-cli/<ref>.json`.
+ */
+function applyRunPhases(repoPath: string, board: BoardPayload): BoardPayload {
+  const phases = readRunPhases(repoPath);
+  return {
+    ...board,
+    issues: board.issues.map((issue) => ({
+      ...issue,
+      runPhase: phases[issue.ref] ?? null,
+    })),
+  };
+}
+
+function readRunPhases(repoPath: string): Record<string, string> {
+  const common = spawnSync('git', ['rev-parse', '--git-common-dir'], {
+    cwd: repoPath,
+    encoding: 'utf-8',
+  });
+  if (common.status !== 0) return {};
+  const commonDir = common.stdout.trim();
+  if (!commonDir) return {};
+  const directory = path.resolve(repoPath, commonDir, 'gantry-cli');
+  if (!fs.existsSync(directory)) return {};
+
+  const phases: Record<string, string> = {};
+  for (const name of fs.readdirSync(directory)) {
+    if (!name.endsWith('.json')) continue;
+    try {
+      const record = JSON.parse(fs.readFileSync(path.join(directory, name), 'utf-8')) as {
+        ref?: unknown;
+        phase?: unknown;
+      };
+      if (typeof record.ref === 'string' && typeof record.phase === 'string') {
+        phases[record.ref] = record.phase;
+      }
+    } catch {
+      // A corrupt record must not hide the rest of the board.
+    }
+  }
+  return phases;
 }

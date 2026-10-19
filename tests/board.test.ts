@@ -150,6 +150,41 @@ None
   expect(fs.readFileSync(path.join(root, 'board-invocations.log'), 'utf-8').trim().split('\n')).toHaveLength(2);
 });
 
+it('shows the pack run phase for implement, review and critic, and re-reads it', async () => {
+  const root = gitRepo();
+  pinPack(root);
+  writeIssue(root, '01-ready.md', `# Agent work
+
+Type: issue
+Status: ready-for-agent
+Slice: \`sample#01\`
+
+## Blocked by
+
+None
+`);
+  const recordDir = path.join(root, '.git', 'gantry-cli');
+  fs.mkdirSync(recordDir, { recursive: true });
+  const recordPath = path.join(recordDir, 'sample--01.json');
+  const writePhase = (phase: string) => {
+    fs.writeFileSync(recordPath, JSON.stringify({ ref: 'sample#01', phase, branch: 'gantry/sample-01', spent: 0, granted: 2 }));
+  };
+
+  const projectId = await register(root);
+  writePhase('implement');
+  const implementing = await (await readBoard(projectId)).json();
+  expect(implementing.issues[0].runPhase).toBe('implement');
+
+  writePhase('review');
+  const reviewing = await (await readBoard(projectId)).json();
+  expect(reviewing.issues[0].runPhase).toBe('review');
+
+  writePhase('critic');
+  const critic = await (await readBoard(projectId)).json();
+  expect(critic.issues[0].runPhase).toBe('critic');
+  expect(critic.issues[0].status).toBe('ready-for-agent');
+});
+
 it('falls back to gantry on PATH when the repository has no pinned pack', async () => {
   const root = gitRepo();
   const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'gantry-board-bin-'));
