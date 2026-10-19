@@ -177,6 +177,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   selectedPane.current = { projectId: activeProjectId, paneId: activePaneId, sessionId: activeSessionId };
   const workspaceLoading = useRef(false);
   const workspaceReloadRequested = useRef(false);
+  const workspaceGeneration = useRef(0);
 
   const base = apiBaseUrl.replace(/\/$/, '');
 
@@ -255,6 +256,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   }, [apiFetch, artifactDrawer?.projectId]);
 
   const loadWorkspaceState = async (): Promise<void> => {
+    const generation = ++workspaceGeneration.current;
     if (workspaceLoading.current) {
       workspaceReloadRequested.current = true;
       return;
@@ -262,6 +264,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     workspaceLoading.current = true;
     try {
       const res = await apiFetch('/api/workspace/state');
+      if (generation !== workspaceGeneration.current) return;
       if (res.status === 401) {
         setRequiresRemotePairing(true);
         return;
@@ -269,6 +272,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
       if (!res.ok) return;
       setRequiresRemotePairing(false);
       const data = await res.json();
+      if (generation !== workspaceGeneration.current) return;
       setConnection(data.connection ?? null);
       setSavedSettings(data.settings ?? null);
       if (data.terminalEnvironment) setTerminalEnvironment(data.terminalEnvironment);
@@ -298,7 +302,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         ? requestedSessionId
         : loadedSessions[0]?.id ?? null;
       setActiveSessionId(actSess);
-      setMessages(data.messages ?? []);
+      setMessages((data.messages ?? []).filter((message: ChatMessageRecord) => message.projectId === actProj));
 
       const alertRes = await apiFetch('/api/alerts');
       if (alertRes.ok) {
@@ -306,6 +310,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         setAlerts(alertData.alerts ?? []);
       }
 
+      if (generation !== workspaceGeneration.current) return;
       if (actProj) {
         const paneResponse = await apiFetch(`/api/projects/${actProj}/panes`);
         const available: ManagedPane[] = (await paneResponse.json()).panes ?? [];
@@ -545,6 +550,13 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     setApprovedSlug(null);
     setActiveRunId('');
     setPreparedCommand(null); if (window.innerWidth < 760) setSidebarOpen(false); setActiveView('board');
+    if (projectId !== activeProjectId) {
+      setMessages([]);
+      setSessions([]);
+      setActiveSessionId(sessionId ?? null);
+      setPendingPrompt(null);
+      setCoordinatorInput('');
+    }
     setActiveProjectId(projectId);
     if (sessionId) setActiveSessionId(sessionId);
     await apiFetch(`/api/workspace/state`, {
@@ -1355,6 +1367,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   }
 
   const activeProject = projects.find((project) => project.id === activeProjectId);
+  const projectMessages = messages.filter((message) => message.projectId === activeProjectId);
   const activeTerminal = panes.find((pane) => pane.paneId === activePaneId);
   const inlineArtifact = activeView === 'files' && wideWorkspace && artifactDrawer?.projectId === activeProjectId ? artifactDrawer : null;
   const changeView = (view: typeof activeView) => { setActiveView(view); if (window.innerWidth < 760) setSidebarOpen(false); };
@@ -1456,8 +1469,8 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
           {paneMode === 'chat' ? <>
             <div className="conversation-scroll" data-testid="chat-view">
               <div className="conversation-width">
-                {messages.length === 0 && !pendingPrompt && <div className="chat-empty"><div className="empty-symbol" aria-hidden="true">g</div><h1>{activeProjectId ? 'O que vamos construir?' : 'Seu próximo projeto começa aqui.'}</h1><p>{activeProjectId ? `A conversa segue ${connection?.host || 'o host configurado'}${connection?.model ? ` · ${connection.model}` : ''}. Escolha o modelo abaixo e escreva a próxima mensagem.` : 'Abra uma pasta para conversar com seu agente, planejar mudanças e acompanhar as execuções.'}</p>{!activeProjectId && <button className="btn-primary" onClick={() => setProjectDialogOpen(true)}>Abrir projeto</button>}<div className="empty-suggestions">{activeProjectId && <><button onClick={() => { setCoordinatorInput('Explique este projeto e como executá-lo localmente.'); document.getElementById('coordinator-message')?.focus(); }}>Entender este projeto</button><button onClick={() => selectShortcut('plan')}>Planejar uma mudança</button></>}</div></div>}
-                {messages.map((message) => <article key={message.id} className={`chat-message message-${message.role}`}><div className="message-heading"><strong>{message.role === 'user' ? 'Você' : message.role === 'assistant' ? 'Gantry' : message.role === 'subagent' ? 'Agente' : 'Sistema'}</strong><time>{new Date(message.createdAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</time></div><div className="message-body">{renderClickableText(message.content)}</div>{message.turnBlocks?.map((block, index) => <details key={index} className="turn-block" open={block.collapsed === false}><summary>{block.title}</summary><pre>{renderClickableText(block.content)}</pre></details>)}{message.decisionCard && renderDecisionCard(message.decisionCard)}</article>)}
+                {projectMessages.length === 0 && !pendingPrompt && <div className="chat-empty"><div className="empty-symbol" aria-hidden="true">g</div><h1>{activeProjectId ? 'O que vamos construir?' : 'Seu próximo projeto começa aqui.'}</h1><p>{activeProjectId ? `A conversa segue ${connection?.host || 'o host configurado'}${connection?.model ? ` · ${connection.model}` : ''}. Escolha o modelo abaixo e escreva a próxima mensagem.` : 'Abra uma pasta para conversar com seu agente, planejar mudanças e acompanhar as execuções.'}</p>{!activeProjectId && <button className="btn-primary" onClick={() => setProjectDialogOpen(true)}>Abrir projeto</button>}<div className="empty-suggestions">{activeProjectId && <><button onClick={() => { setCoordinatorInput('Explique este projeto e como executá-lo localmente.'); document.getElementById('coordinator-message')?.focus(); }}>Entender este projeto</button><button onClick={() => selectShortcut('plan')}>Planejar uma mudança</button></>}</div></div>}
+                {projectMessages.map((message) => <article key={message.id} className={`chat-message message-${message.role}`}><div className="message-heading"><strong>{message.role === 'user' ? 'Você' : message.role === 'assistant' ? 'Gantry' : message.role === 'subagent' ? 'Agente' : 'Sistema'}</strong><time>{new Date(message.createdAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</time></div><div className="message-body">{renderClickableText(message.content)}</div>{message.turnBlocks?.map((block, index) => <details key={index} className="turn-block" open={block.collapsed === false}><summary>{block.title}</summary><pre>{renderClickableText(block.content)}</pre></details>)}{message.decisionCard && renderDecisionCard(message.decisionCard)}</article>)}
                 {pendingPrompt && <article className="chat-message message-user"><div className="message-heading"><strong>Você</strong></div><div className="message-body">{pendingPrompt}</div></article>}
                 {pendingPrompt && <article className="chat-message message-assistant chat-pending" data-testid="chat-pending"><div className="message-heading"><strong>{connection?.host || 'Agente'}</strong></div><div className="message-body">Respondendo{connection?.model ? ` com ${connection.model}` : ' no modelo padrão deste host'}…</div></article>}
                 <div ref={chatEndRef} />

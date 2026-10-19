@@ -109,6 +109,41 @@ it('rejects an empty message before calling a host and keeps a stale session on 
   expect(call.host).toBe('codex');
 });
 
+it('keeps a separate conversation for each project when the saved session belongs elsewhere', async () => {
+  const otherRepo = path.join(root, 'other');
+  fs.mkdirSync(path.join(otherRepo, '.gantry'), { recursive: true });
+  fs.writeFileSync(path.join(otherRepo, '.gantry', 'config.json'), JSON.stringify({ execution: { hostHarness: 'codex', roles: { plan: { harness: 'codex', model: 'do-not-borrow-this-model' } } } }));
+  fs.writeFileSync(path.join(otherRepo, 'README.md'), '# Other repository marker');
+  const other = server.store.upsertProject({ path: otherRepo, unitId: 'other-unit' });
+  expect((await request(`/api/projects/${projectId}/chat`, { sessionId, prompt: 'secret from the first project' })).status).toBe(200);
+
+  const switched = await fetch(`http://127.0.0.1:${server.port}/api/workspace/state`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ activeProjectId: other.project.id }),
+  });
+  expect(switched.status).toBe(200);
+  expect((await switched.json()).layout.activeSessionId).toBe(other.defaultSessionId);
+
+  const state = await fetch(`http://127.0.0.1:${server.port}/api/workspace/state`).then((response) => response.json());
+  expect(state.layout.activeProjectId).toBe(other.project.id);
+  expect(state.layout.activeSessionId).toBe(other.defaultSessionId);
+  expect(state.messages).toEqual([]);
+
+  const response = await request(`/api/projects/${other.project.id}/chat`, { sessionId, prompt: 'hello from the second project' });
+  expect(response.status).toBe(200);
+  const call = JSON.parse(fs.readFileSync(callsPath, 'utf8').trim().split('\n').at(-1)!);
+  expect(call.input).not.toContain('secret from the first project');
+  expect(call.cwd).toBe(fs.realpathSync(otherRepo));
+
+  await fetch(`http://127.0.0.1:${server.port}/api/workspace/state`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ activeProjectId: projectId }),
+  });
+  const restored = await fetch(`http://127.0.0.1:${server.port}/api/workspace/state`).then((response) => response.json());
+  expect(restored.messages.map((message: { content: string }) => message.content)).toContain('secret from the first project');
+  expect(restored.messages.map((message: { content: string }) => message.content)).not.toContain('hello from the second project');
+});
+
 it('reports invalid saved configuration without falling back to a global host', async () => {
   fs.writeFileSync(path.join(repo, '.gantry', 'config.json'), JSON.stringify({ execution: { hostHarness: 'unknown-host' } }));
   const state = await request('/api/workspace/state').then((response) => response.json());

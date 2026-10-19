@@ -89,6 +89,16 @@ export async function resolveUnitId(repoPath: string, skillDir?: string | null):
   return crypto.createHash('sha256').update(fs.realpathSync(repoPath)).digest('hex').slice(0, 12);
 }
 
+function sessionsForProject(store: HarnessStateStore, projectId: string, requestedSessionId: unknown) {
+  let sessions = store.listSessions(projectId);
+  if (sessions.length === 0) {
+    sessions = [store.createSession(projectId, 'Main Workspace Session')];
+  }
+  const requested = typeof requestedSessionId === 'string' ? requestedSessionId : '';
+  const sessionId = sessions.some((session) => session.id === requested) ? requested : sessions[0].id;
+  return { sessions, sessionId };
+}
+
 export async function createHarnessServer(
   options: HarnessServerOptions = {},
 ): Promise<HarnessServerInstance> {
@@ -237,18 +247,18 @@ export async function createHarnessServer(
 
       if (pathname === '/api/workspace/state' && req.method === 'GET') {
         const projects = store.listProjects();
-        const layout = store.getWorkspaceLayout();
+        let layout = store.getWorkspaceLayout();
         const settings = store.getSanitizedProviderSettings();
         const activeProjectId = layout.activeProjectId ?? projects[0]?.id ?? null;
-        let sessions = activeProjectId ? store.listSessions(activeProjectId) : [];
-        if (activeProjectId && sessions.length === 0) {
-          sessions = [store.createSession(activeProjectId, 'Main Workspace Session')];
-        }
-        let activeSessionId = sessions.some((session) => session.id === layout.activeSessionId)
-          ? layout.activeSessionId
-          : sessions[0]?.id ?? null;
-        if (activeProjectId && activeSessionId !== layout.activeSessionId) {
-          store.saveWorkspaceLayout({ activeProjectId, activeSessionId });
+        let sessions: ReturnType<HarnessStateStore['listSessions']> = [];
+        let activeSessionId: string | null = null;
+        if (activeProjectId) {
+          const resolved = sessionsForProject(store, activeProjectId, layout.activeSessionId);
+          sessions = resolved.sessions;
+          activeSessionId = resolved.sessionId;
+          if (activeSessionId !== layout.activeSessionId || activeProjectId !== layout.activeProjectId) {
+            layout = store.saveWorkspaceLayout({ activeProjectId, activeSessionId });
+          }
         }
         const { connection } = resolveCoordinatorConnection(
           store.getRawProviderSettings(), projects.find((project) => project.id === activeProjectId), profileRoot,
@@ -272,7 +282,15 @@ export async function createHarnessServer(
 
       if (pathname === '/api/workspace/state' && req.method === 'PUT') {
         const body = await readJsonBody(req);
-        const updated = store.saveWorkspaceLayout(body);
+        const current = store.getWorkspaceLayout();
+        const requestedProjectId = body.activeProjectId !== undefined ? body.activeProjectId : current.activeProjectId;
+        const activeProjectId = typeof requestedProjectId === 'string' || requestedProjectId === null ? requestedProjectId : current.activeProjectId;
+        const requestedSessionId = body.activeSessionId !== undefined ? body.activeSessionId : current.activeSessionId;
+        const sessionCandidate = typeof requestedSessionId === 'string' || requestedSessionId === null ? requestedSessionId : current.activeSessionId;
+        const activeSessionId = typeof activeProjectId === 'string' && activeProjectId
+          ? sessionsForProject(store, activeProjectId, sessionCandidate).sessionId
+          : sessionCandidate;
+        const updated = store.saveWorkspaceLayout({ ...body, activeProjectId, activeSessionId });
         broadcast({ type: 'workspace.layout.updated', layout: updated });
         sendJson(res, 200, { layout: updated });
         return;
@@ -512,14 +530,7 @@ export async function createHarnessServer(
             sendJson(res, 400, { error: 'Informe uma mensagem.' });
             return;
           }
-          let sessions = store.listSessions(projectId);
-          if (sessions.length === 0) {
-            sessions = [store.createSession(projectId, 'Main Workspace Session')];
-          }
-          const requestedSessionId = typeof body.sessionId === 'string' ? body.sessionId : '';
-          const sessionId = sessions.some((session) => session.id === requestedSessionId)
-            ? requestedSessionId
-            : sessions[0].id;
+          const { sessionId } = sessionsForProject(store, projectId, body.sessionId);
           const { settings, connection } = resolveCoordinatorConnection(store.getRawProviderSettings(), project, profileRoot);
           if (!connection.ready) {
             sendJson(res, 400, { error: connection.detail, connection });
