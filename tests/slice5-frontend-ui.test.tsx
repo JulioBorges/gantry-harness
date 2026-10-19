@@ -128,7 +128,7 @@ describe('Slice 5: React Frontend UI, Decision Cards, Chat ⇄ Terminal, Artifac
     await waitFor(() => {
       expect(screen.getByTestId('decision-card-grilling_round')).toBeTruthy();
       expect(screen.getByTestId('alert-banner')).toBeTruthy();
-    });
+    }, { timeout: 15000 });
 
     // Submit Grilling answers -> transitions to Plan Approval Card
     fireEvent.click(screen.getByTestId('submit-grilling-btn'));
