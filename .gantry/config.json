@@ -1,0 +1,19 @@
+{
+  "checks": [
+    {
+      "name": "typecheck",
+      "command": "bun run typecheck",
+      "mode": "absolute"
+    },
+    {
+      "name": "test",
+      "command": "bun run test",
+      "mode": "absolute"
+    },
+    {
+      "name": "browser-validation",
+      "command": "bun scripts/browser-board.mjs",
+      "mode": "absolute"
+    }
+  ]
+}

@@ -9,6 +9,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { HarnessStateStore } from './stateStore.js';
 import { resolveCoordinatorConnection } from './aiConnection.js';
 import { resolveSkillDir, runGantryScript } from './commandRunner.js';
+import { readBoard } from './gantryCli.js';
 import {
   applyRepositorySetup,
   bootstrapProjectSkills,
@@ -141,6 +142,7 @@ export async function createHarnessServer(
   const sendJson = (res: http.ServerResponse, statusCode: number, data: unknown): void => {
     res.writeHead(statusCode, {
       'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store',
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Forwarded-For',
@@ -310,6 +312,19 @@ export async function createHarnessServer(
       if (pathname === '/api/alerts' && req.method === 'GET') {
         sendJson(res, 200, { alerts: store.listPendingAlerts() });
         return;
+      }
+
+      if (pathname.startsWith('/api/projects/') && pathname.endsWith('/board') && req.method === 'GET') {
+        const parts = pathname.split('/').filter(Boolean);
+        if (parts.length === 4) {
+          const project = store.getProject(parts[2]);
+          if (!project) {
+            sendJson(res, 404, { error: 'Projeto não encontrado.' });
+            return;
+          }
+          sendJson(res, 200, await readBoard(project.path));
+          return;
+        }
       }
 
       if (pathname.startsWith('/api/projects/') && pathname.endsWith('/inspect') && req.method === 'GET') {

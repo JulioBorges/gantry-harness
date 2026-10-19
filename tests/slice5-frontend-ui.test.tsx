@@ -113,6 +113,7 @@ describe('Slice 5: React Frontend UI, Decision Cards, Chat ⇄ Terminal, Artifac
       expect(screen.getByTestId('sidebar')).toBeTruthy();
       expect(within(screen.getByTestId('sidebar')).getByText('ui-project')).toBeTruthy();
     });
+    fireEvent.click(screen.getByTestId('open-factory-btn'));
 
     // Initiate /plan workflow from UI
     const goalInput = screen.getByTestId('coordinator-input') as HTMLInputElement;

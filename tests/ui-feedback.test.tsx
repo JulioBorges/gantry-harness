@@ -47,6 +47,7 @@ it('shows the saved host, pending reply, and an actionable error while preservin
   mockWorkspace(() => new Promise((resolve) => { finish = resolve; }));
   render(<App />);
   await screen.findAllByText('My project');
+  fireEvent.click(screen.getByTestId('open-factory-btn'));
   expect(screen.getByTestId('connection-status').textContent).toContain('codex');
   fireEvent.change(screen.getByTestId('coordinator-input'), { target: { value: 'Como executo o projeto?' } });
   fireEvent.click(screen.getByTestId('coordinator-send-btn'));
@@ -79,6 +80,7 @@ it('keeps malformed Gantry command prefixes in conversation instead of bypassing
   const fetchMock = mockWorkspace(async () => Response.json({}));
   render(<App />);
   await screen.findAllByText('My project');
+  fireEvent.click(screen.getByTestId('open-factory-btn'));
   fireEvent.change(screen.getByTestId('coordinator-input'), { target: { value: '/runner project' } });
   fireEvent.click(screen.getByTestId('coordinator-send-btn'));
   await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/chat'))).toBe(true));
@@ -127,6 +129,7 @@ it('puts all settings in one modal, loads server OS options, saves terminal pref
     ? Response.json({ settings: JSON.parse(init!.body as string), environment }) : fallback(url, init));
   render(<App />);
   await screen.findAllByText('My project');
+  fireEvent.click(screen.getByTestId('open-factory-btn'));
   const open = screen.getByTestId('open-settings-btn');
   expect(screen.queryByTestId('open-setup-btn')).toBeNull();
   open.focus();

@@ -12,6 +12,8 @@ import type { FitAddon } from '@xterm/addon-fit';
 import type { TerminalSettings, TerminalEnvironment } from '../types.js';
 import { SettingsDialog, type SettingsTab } from './SettingsDialog.js';
 import { SystemFontSelect } from './SystemFontSelect.js';
+import { BoardView } from './BoardView.js';
+import { coerceBoard, unavailableBoard, type BoardSnapshot } from '../boardModel.js';
 import type {
   ChatMessageRecord,
   DecisionCardPayload,
@@ -87,9 +89,9 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     }>;
   } | null>(null);
 
-  const [activeView, setActiveView] = useState<'factory' | 'kanban' | 'files'>(
-    'factory',
-  );
+  const [activeView, setActiveView] = useState<'factory' | 'kanban' | 'files' | 'board'>('board');
+  const [board, setBoard] = useState<BoardSnapshot | null>(null);
+  const [boardGeneration, setBoardGeneration] = useState(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('terminal');
   const openSettings = (tab: SettingsTab) => { setSettingsTab(tab); setSettingsOpen(true); };
@@ -284,6 +286,27 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   };
 
   useEffect(() => {
+    if (!activeProjectId) {
+      setBoard(null);
+      return;
+    }
+    const projectId = activeProjectId;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await apiFetch(`/api/projects/${projectId}/board`, { cache: 'no-store' });
+        const payload = response.ok ? await response.json() : null;
+        if (!cancelled) setBoard(response.ok ? coerceBoard(payload) : unavailableBoard());
+      } catch {
+        if (!cancelled) setBoard(unavailableBoard());
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeProjectId, apiFetch, boardGeneration]);
+
+  useEffect(() => {
     void loadWorkspaceState();
     // Connect real-time WebSocket stream for live updates
     const wsBase = base.startsWith('http')
@@ -453,7 +476,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         body: JSON.stringify({ activeProjectId: result.project.id, activeSessionId: result.defaultSessionId }),
       });
       setNewProjectPath('');
-      setProjectDialogOpen(false); if (window.innerWidth < 760) setSidebarOpen(false); setActiveView('factory');
+      setProjectDialogOpen(false); if (window.innerWidth < 760) setSidebarOpen(false); setActiveView('board');
       await loadWorkspaceState();
     }
   });
@@ -465,7 +488,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     setTerminalBuffer('');
     setApprovedSlug(null);
     setActiveRunId('');
-    setPreparedCommand(null); if (window.innerWidth < 760) setSidebarOpen(false); setActiveView('factory');
+    setPreparedCommand(null); if (window.innerWidth < 760) setSidebarOpen(false); setActiveView('board');
     setActiveProjectId(projectId);
     if (sessionId) setActiveSessionId(sessionId);
     await apiFetch(`/api/workspace/state`, {
@@ -1254,6 +1277,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         <button className="new-project-link" onClick={() => setProjectDialogOpen(true)}>+ Abrir projeto</button>
         <div className="sidebar-bottom">
           <div className="sidebar-heading">Workspace</div>
+          <button className={`btn-nav ${activeView === 'board' ? 'btn-nav-active' : ''}`} data-testid="open-board-btn" onClick={() => changeView('board')}><span>Quadro</span></button>
           <button className={`btn-nav ${activeView === 'factory' ? 'btn-nav-active' : ''}`} data-testid="open-factory-btn" onClick={() => changeView('factory')}><span>Conversa e terminal</span><kbd>⌘ B</kbd></button>
           <button className={`btn-nav ${activeView === 'kanban' ? 'btn-nav-active' : ''}`} data-testid="open-kanban-btn" onClick={() => changeView('kanban')}><span>Acompanhar execução</span>{alerts.length > 0 && <span className="count-badge">{alerts.length}</span>}</button>
           <div className="sidebar-divider" />
@@ -1265,8 +1289,9 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
       <main className="main-area">
         <header className="workspace-header">
           <button className="icon-button navigation-toggle" aria-label="Alternar navegação" aria-expanded={sidebarOpen} onClick={() => setSidebarOpen((value) => !value)}>☰</button>
-          <div className="workspace-title"><strong>{activeProject?.name ?? 'Gantry Harness'}</strong><span title={activeProject?.path}>{activeView === 'kanban' ? 'Execuções' : activeProject?.path ?? 'Seu workspace de desenvolvimento'}</span></div>
+          <div className="workspace-title"><strong>{activeProject?.name ?? 'Gantry Harness'}</strong><span title={activeProject?.path}>{activeView === 'board' ? 'Issues e Specs' : activeView === 'kanban' ? 'Execuções' : activeProject?.path ?? 'Seu workspace de desenvolvimento'}</span></div>
           <div className="view-selector" aria-label="Área de trabalho">
+            <button aria-pressed={activeView === 'board'} onClick={() => setActiveView('board')}>Quadro</button>
             <button aria-pressed={activeView === 'factory' && paneMode === 'chat'} onClick={() => { setPaneMode('chat'); setActiveView('factory'); }}>Conversa</button>
             <button data-testid="chat-terminal-toggle" aria-pressed={activeView === 'factory' && paneMode === 'terminal'} disabled={!activeProjectId || pendingActions.includes('Abrir terminal')} onClick={() => { setActiveView('factory'); if (paneMode !== 'terminal' || activeTerminal?.launcher !== 'shell' || activeTerminal?.status !== 'running') void handleToggleChatTerminal(); }}>Terminal</button>
             <button data-testid="open-files-btn" aria-pressed={activeView === 'files'} onClick={() => setActiveView('files')}>Files</button>
@@ -1284,6 +1309,10 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         {pendingActions.length > 0 && <div className="action-pending" role="status" aria-live="polite"><span className="working-indicator" />{pendingActions.join(' · ')}…</div>}
         {feedback?.kind === 'error' && !projectDialogOpen && !settingsOpen && <div className="action-feedback error" role="alert"><p>{feedback.message}</p><div className="feedback-actions"><button onClick={() => openSettings(feedback.action === 'Executar plano' ? 'project' : 'ai')}>Revisar configuração</button><button aria-label="Fechar aviso" onClick={dismissFeedback}>×</button></div></div>}
         {alerts.length > 0 && <button className="alert-banner" data-testid="alert-banner" onClick={() => { const first = alerts[0]; void handleSelectProject(first.projectId, first.sessionId); setActiveView('factory'); }}><span>{alerts[0].projectName} · {alerts[0].summary || STATUS_LABELS[alerts[0].badgeState]}</span><span>Revisar decisão →</span></button>}
+
+        {activeView === 'board' && (
+          <BoardView board={board} hasProject={Boolean(activeProjectId)} onRefresh={() => setBoardGeneration((value) => value + 1)} />
+        )}
 
         {activeView === 'factory' && <div className="workspace-content">
           <div className="session-bar">
