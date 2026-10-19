@@ -22,6 +22,12 @@ Electron owns the desktop window and local server lifecycle. Keep React and xter
 
 Replace the busy workspace shell with compact project navigation, session tabs, context header and focused conversation/terminal views. Expose command shortcuts with a host-assisted preparation step; retain explicit execution. Show pending decisions and phase context without permanently expanding advanced settings.
 
+## Conversation follows the configured host
+
+The composer shows the host that will answer the next message. A project or personal-profile host wins over the global CLI host and is shown as fixed text (`Host do projeto` or `Host do perfil`). The model control is a select of that host's discovered models, the same catalog Settings uses. Choosing a model saves it for that host under `providers.cli.modelsByHost` and the next chat call passes that id as `--model`. A model remembered for a different host is not sent.
+
+While the host is replying, the thread shows the operator message and a pending line that names the host and model. A failed send puts the draft back in the composer. The caption under the composer repeats the host, the model or `modelo padrão`, and whether the host came from the project, the profile, or the global connection.
+
 ## Acceptance
 
 - Desktop starts its backend and opens its own window without requiring a separately installed Bun or Node runtime.

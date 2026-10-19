@@ -28,6 +28,16 @@ The Terminal tab uses a native select populated by the current device's Local Fo
 
 The list can be refreshed after fonts are installed. Access denial, unavailable browser support and empty results are visible, with retry when supported. Font access remains on the rendering device rather than querying fonts from a remote server. No new dependency or desktop permission override is required.
 
+## Host model selection
+
+Every model control in Settings is a `<select>` filled from the models the selected agent reports. A host never offers another host's models.
+
+- **Project.** Each role has its own host (`opencode`, `claude-code`, `codex`, `antigravity`). Its model options come from that host's discovery catalog. Changing the host clears the current model. Save rejects a model that is not in the loaded catalog for that host.
+- **AI connection, CLI.** The coordinator model lists the models of the selected CLI host. `claude` discovers as `claude-code` and `agy` as `antigravity`. An empty choice means the host default. Switching host restores the model last saved for the new host, or clears it. The choice is stored per host in `providers.cli.modelsByHost`.
+- **AI connection, API.** The coordinator model stays the provider's own model identifier. There is no local agent catalog for that mode.
+
+The catalog is `GET /api/projects/:id/discovery?harness=<host>` and loads when the tab is open. Discovery failure is shown on the control and does not leave a free-text model in place.
+
 Validation includes mocked family deduplication/sorting, saved unavailable font preservation, list refresh, denied permission retry and unsupported browsers, plus actual Electron and Chromium checks against installed macOS font families.
 
 
