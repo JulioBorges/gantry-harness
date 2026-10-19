@@ -1,7 +1,7 @@
 # 02: Pack resolution, board read and board UI
 
 Type: issue
-Status: ready-for-agent
+Status: done
 Slice: `run-orchestration#02`
 Spec: `.scratch/run-orchestration/spec.md`
 Created: 2026-10-18
@@ -16,11 +16,11 @@ Opening a project that has the Gantry pack installed shows its Issues and Specs 
 
 ## Acceptance criteria
 
-- [ ] A repo with a pack copy resolves and executes `cli.py board` from that pinned path; a repo without it but with `gantry` on PATH falls back; a repo with neither disables run/plan/approve affordances with an explanatory state.
-- [ ] `GET /api/projects/:id/board` returns issues (ref, spec, number, title, status, path, frontierBlocked, openBlockers), specs (slug, path, executable) and frontier ordering from the pack output.
-- [ ] Cards render ready to agent, blocked (with visible open blockers) or done purely from board data; Spec cards are visibly non-executable.
-- [ ] Board refresh re-reads the repository rather than harness-side caches.
-- [ ] Integration test drives a temp git repo with a minimal pinned pack and proves all three resolution paths plus the blocked/done mapping.
+- [x] A repo with a pack copy resolves and executes `cli.py board` from that pinned path; a repo without it but with `gantry` on PATH falls back; a repo with neither disables run/plan/approve affordances with an explanatory state.
+- [x] `GET /api/projects/:id/board` returns issues (ref, spec, number, title, status, path, frontierBlocked, openBlockers), specs (slug, path, executable) and frontier ordering from the pack output.
+- [x] Cards render ready to agent, blocked (with visible open blockers) or done purely from board data; Spec cards are visibly non-executable.
+- [x] Board refresh re-reads the repository rather than harness-side caches.
+- [x] Integration test drives a temp git repo with a minimal pinned pack and proves all three resolution paths plus the blocked/done mapping.
 
 ## Blocked by
 
