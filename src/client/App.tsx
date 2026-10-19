@@ -12,7 +12,7 @@ import { SettingsDialog, type SettingsTab } from './SettingsDialog.js';
 import { SystemFontSelect } from './SystemFontSelect.js';
 import { BoardView } from './BoardView.js';
 import { EXECUTION_HOSTS, ModelSelect, discoveryHarness, type CatalogModel } from './ModelSelect.js';
-import { coerceBoard, overlaysFromKanban, unavailableBoard, type BoardSnapshot } from '../boardModel.js';
+import { NO_PACK_EXPLANATION, coerceBoard, overlaysFromKanban, unavailableBoard, type BoardSnapshot } from '../boardModel.js';
 import type {
   ChatMessageRecord,
   DecisionCardPayload,
@@ -119,7 +119,11 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   >([]);
 
   const [setupDiffPreview, setSetupDiffPreview] = useState<string>('');
+  const [projectSettingsId, setProjectSettingsId] = useState<string | null>(null);
   const [setupHostHarness, setSetupHostHarness] = useState<string>('opencode');
+  const [globalHost, setGlobalHost] = useState('');
+  const [globalRoles, setGlobalRoles] = useState<Record<string, RoleSelection>>({});
+  const globalExecutionLoaded = useRef(false);
   const [modelsByHarness, setModelsByHarness] = useState<Record<string, CatalogModel[]>>({});
   const [catalogLoading, setCatalogLoading] = useState<Record<string, boolean>>({});
   const [catalogErrors, setCatalogErrors] = useState<Record<string, string>>({});
@@ -213,14 +217,20 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   useEffect(() => {
     if (!activeProjectId) return;
     const hosts = new Set<string>();
-    if (settingsOpen && settingsTab === 'project' && setupHostHarness) hosts.add(setupHostHarness);
-    if (settingsOpen && settingsTab === 'project') {
+    if (projectSettingsId && setupHostHarness) hosts.add(setupHostHarness);
+    if (projectSettingsId) {
       for (const selection of Object.values(roleSelections)) {
         if (selection.harness) hosts.add(selection.harness);
       }
     }
+    if (settingsOpen && settingsTab === 'gantry' && globalHost) hosts.add(globalHost);
+    if (settingsOpen && settingsTab === 'gantry') {
+      for (const selection of Object.values(globalRoles)) {
+        if (selection.harness) hosts.add(selection.harness);
+      }
+    }
     for (const host of hosts) void ensureModelCatalog(host);
-  }, [settingsOpen, settingsTab, activeProjectId, setupHostHarness, roleSelections, ensureModelCatalog]);
+  }, [settingsOpen, settingsTab, projectSettingsId, activeProjectId, setupHostHarness, roleSelections, globalHost, globalRoles, ensureModelCatalog]);
 
   const loadArtifactAsset = useCallback(async (path: string, signal: AbortSignal): Promise<Blob> => {
     if (!artifactDrawer) throw new Error('Nenhum arquivo selecionado.');
@@ -247,6 +257,12 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
       const data = await res.json();
       if (generation !== workspaceGeneration.current) return;
       if (data.terminalEnvironment) setTerminalEnvironment(data.terminalEnvironment);
+      if (!globalExecutionLoaded.current && data.globalExecution) {
+        const execution = data.globalExecution as ExecutionSettings;
+        setGlobalHost(execution.hostHarness ?? '');
+        setGlobalRoles(execution.roles ?? {});
+        globalExecutionLoaded.current = true;
+      }
       if (!terminalSettingsLoaded.current && data.terminalSettings) {
         setTerminalSettings(data.terminalSettings);
         setTerminalDraft(data.terminalSettings);
@@ -601,7 +617,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     if (executePrepared && (!preparedCommand || preparedCommand.projectId !== activeProjectId || preparedCommand.sessionId !== activeSessionId)) throw new Error('Prepare o comando nesta conversa antes de executar.');
     const text = executePrepared && preparedCommand ? `/${preparedCommand.command} ${preparedCommand.argument}`.trim() : coordinatorInput.trim();
     setPreparedCommand(null);
-    if (text === '/setup') { openSettings('project'); setCoordinatorInput(''); return; }
+    if (text === '/setup') { if (activeProjectId) setProjectSettingsId(activeProjectId); else openSettings('gantry'); setCoordinatorInput(''); return; }
 
     if (executePrepared && preparedCommand?.command === 'plan') {
       const goal = text.replace(/^\/plan\s*/, '').trim() || 'New feature';
@@ -943,6 +959,18 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     });
     setupProjectLoaded.current = null;
     await loadWorkspaceState();
+  });
+
+  const handleSaveGlobalExecution = withFeedback('Salvar Gantry global', async () => {
+    const response = await apiFetch('/api/settings/execution', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hostHarness: globalHost, roles: globalRoles }),
+    });
+    const data = await response.json() as { execution: ExecutionSettings };
+    setGlobalHost(data.execution.hostHarness ?? '');
+    setGlobalRoles(data.execution.roles ?? {});
+    globalExecutionLoaded.current = true;
   });
 
   const handleBootstrap = withFeedback('Instalar skills do Gantry', async () => {
@@ -1303,12 +1331,13 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         <div className="sidebar-heading"><span>Projetos</span><button className="icon-button" aria-label="Adicionar projeto" data-testid="new-project-btn" onClick={() => setProjectDialogOpen(true)}>+</button></div>
         <div className="project-list">
           {projects.length === 0 && <p className="sidebar-empty">Abra uma pasta para começar a trabalhar.</p>}
-          {projects.map((project) => <div key={project.id}>
-            <button className={`project-row ${project.id === activeProjectId ? 'selected' : ''}`} onClick={() => void handleSelectProject(project.id)} aria-current={project.id === activeProjectId ? 'page' : undefined}>
+          {projects.map((project) => <div key={project.id} className={`project-row ${project.id === activeProjectId ? 'selected' : ''}`}>
+            <button className="project-row-select" onClick={() => void handleSelectProject(project.id)} aria-current={project.id === activeProjectId ? 'page' : undefined}>
               <span className="folder-icon" aria-hidden="true">▱</span>
               <span className="project-row-text"><strong>{project.name}</strong><small title={project.path}>{project.path}</small></span>
               <span title={STATUS_LABELS[project.badgeState]} className={`status-dot ${project.badgeState?.replace(/\s+/g, '-')}`} />
             </button>
+            <button className="icon-button project-settings" aria-label={`Configurações de ${project.name}`} data-testid={`project-settings-${project.id}`} onClick={() => { setProjectSettingsId(project.id); if (project.id !== activeProjectId) void handleSelectProject(project.id); }}>⚙</button>
             {project.id === activeProjectId && inspection && inspection.worktrees.length > 0 && <details className="project-context">
               <summary>Worktrees</summary>
               {inspection.worktrees.map((wt) => <div key={wt.path} className="worktree-row"><span title={wt.path}>{wt.branch} · {STATUS_LABELS[wt.badgeState]}</span>{wt.issueRef && <button onClick={() => void handleTakeoverWorktree(wt.issueRef!, wt.path)}>Assumir</button>}</div>)}
@@ -1342,7 +1371,8 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         </div>
         {showGuide && <section className="workspace-guide"><strong>Do projeto à execução</strong><p>Abra uma pasta e use o terminal para executar comandos ou restaurar sessões do Codex, Claude e OpenCode. O quadro mostra as Issues e Specs do repositório.</p><button onClick={() => setShowGuide(false)}>Entendi</button></section>}
         {pendingActions.length > 0 && <div className="action-pending" role="status" aria-live="polite"><span className="working-indicator" />{pendingActions.join(' · ')}…</div>}
-        {feedback?.kind === 'error' && !projectDialogOpen && !settingsOpen && <div className="action-feedback error" role="alert"><p>{feedback.message}</p><div className="feedback-actions"><button onClick={() => openSettings(feedback.action === 'Executar plano' ? 'project' : 'terminal')}>Revisar configuração</button><button aria-label="Fechar aviso" onClick={dismissFeedback}>×</button></div></div>}
+        {feedback?.kind === 'error' && !projectDialogOpen && !settingsOpen && !projectSettingsId && <div className="action-feedback error" role="alert"><p>{feedback.message}</p><div className="feedback-actions"><button onClick={() => openSettings('terminal')}>Revisar configuração</button><button aria-label="Fechar aviso" onClick={dismissFeedback}>×</button></div></div>}
+        {board?.explanation === NO_PACK_EXPLANATION && activeProjectId && <div className="action-feedback error" role="alert" data-testid="pack-missing"><p>{board.explanation}</p><div className="feedback-actions"><button onClick={() => setProjectSettingsId(activeProjectId)}>Configurar este projeto</button><button onClick={() => openSettings('gantry')}>Configuração global</button></div></div>}
         {alerts.length > 0 && <button className="alert-banner" data-testid="alert-banner" onClick={() => { const first = alerts[0]; void handleSelectProject(first.projectId, first.sessionId); setActiveView('factory'); }}><span>{alerts[0].projectName} · {alerts[0].summary || STATUS_LABELS[alerts[0].badgeState]}</span><span>Revisar decisão →</span></button>}
 
         {activeView === 'board' && (
@@ -1402,10 +1432,58 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
               <button className="btn-primary" type="submit" disabled={!terminalEnvironment || pendingActions.includes('Salvar terminal')}>{pendingActions.includes('Salvar terminal') ? 'Salvando…' : 'Salvar terminal'}</button>
             </form>
           </section>}
-        {settingsTab === 'project' && (activeProjectId ? (
-          <div data-testid="setup-panel" style={{ padding: 16, overflowY: 'auto' }}>
+        {settingsTab === 'gantry' && <section className="settings-panel" data-testid="global-gantry-panel">
+            <h2>Gantry global</h2>
+            <p className="section-intro">Opcional. O processo usa esta configuração quando o projeto não tem a própria. A configuração do projeto tem prioridade.</p>
+            <label htmlFor="global-host">Host global</label>
+            <select id="global-host" value={globalHost} onChange={(event) => setGlobalHost(event.target.value)}>
+              <option value="">Sem host global</option>
+              {EXECUTION_HOSTS.map((host) => <option key={host.id} value={host.id}>{host.label}</option>)}
+            </select>
+            <div className="role-settings">
+              <h3>Papéis globais</h3>
+              {Object.entries(globalRoles).map(([role, selection]) => {
+                const harness = discoveryHarness(selection.harness);
+                const hostLabel = EXECUTION_HOSTS.find((host) => host.id === selection.harness)?.label ?? selection.harness;
+                return <div key={role} className="role-setting-row">
+                  <strong>{role}</strong>
+                  <label>Host<select aria-label={`Host global para ${role}`} value={selection.harness} onChange={(event) => {
+                    const nextHarness = event.target.value;
+                    setGlobalRoles((current) => ({ ...current, [role]: { ...selection, harness: nextHarness, model: '' } }));
+                    void ensureModelCatalog(nextHarness);
+                  }}>
+                    {EXECUTION_HOSTS.map((host) => <option key={host.id} value={host.id}>{host.label}</option>)}
+                  </select></label>
+                  <ModelSelect
+                    label="Modelo"
+                    ariaLabel={`Modelo global para ${role}`}
+                    harnessLabel={hostLabel}
+                    models={modelsByHarness[harness] ?? []}
+                    value={selection.model}
+                    loading={catalogLoading[harness] === true}
+                    error={catalogErrors[harness]}
+                    onChange={(modelId) => setGlobalRoles((current) => ({ ...current, [role]: { ...selection, model: modelId } }))}
+                  />
+                </div>;
+              })}
+              {Object.keys(globalRoles).length === 0 && <button disabled={!globalHost} onClick={() => setGlobalRoles(Object.fromEntries(['plan', 'implement', 'review', 'critic'].map((role) => [role, { harness: globalHost, model: '' }])))}>Configurar papéis globais</button>}
+            </div>
+            <button className="btn-primary" data-testid="save-global-execution" disabled={pendingActions.includes('Salvar Gantry global')} onClick={() => void handleSaveGlobalExecution()}>{pendingActions.includes('Salvar Gantry global') ? 'Salvando…' : 'Salvar Gantry global'}</button>
+          </section>}
+          {settingsTab === 'remote' && (<section className="settings-panel remote-settings"><h2>Acesso remoto por código</h2>
+              <p>Gere um código para conectar outro dispositivo pela sua rede ou Tailscale.</p>
+              <button disabled={pendingActions.includes('Gerar código de acesso')} onClick={() => void handleGeneratePairing()}>Gerar código de acesso</button>
+              {pairingCode && <div data-testid="pairing-code-display">Código: {pairingCode}</div>}
+            </section>)}
+        </SettingsDialog>}
+
+        {projectSettingsId && <div className="dialog-backdrop" onClick={(event) => { if (event.target === event.currentTarget) setProjectSettingsId(null); }}>
+          <section className="project-dialog settings-dialog" role="dialog" aria-modal="true" aria-labelledby="project-settings-title">
+            <div className="dialog-heading"><h2 id="project-settings-title">Configurações de {projects.find((project) => project.id === projectSettingsId)?.name ?? 'projeto'}</h2><button aria-label="Fechar configurações do projeto" onClick={() => setProjectSettingsId(null)}>×</button></div>
+            {activeProjectId === projectSettingsId ? (
+<div data-testid="setup-panel" style={{ padding: 16, overflowY: 'auto' }}>
             <h2>Preparar o projeto para execução</h2>
-            <p className="section-intro">Cada papel usa um host e só pode receber um modelo desse host. A lista é lida do agente instalado.</p>
+            <p className="section-intro">Cada papel usa um host e só pode receber um modelo desse host. A lista é lida do agente instalado. Esta configuração tem prioridade sobre a global.</p>
             {inspection?.remediationCards.map((card) => <div key={card.kind} className="setup-diagnostic"><strong>{card.title}</strong><p>{card.description}</p><p>{card.remediation}</p></div>)}
             <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
               <button
@@ -1482,14 +1560,9 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
               </pre>
             )}
           </div>
-        ) : <p className="settings-empty">Abra um projeto para configurar o host e os papéis de execução.</p>)}
-
-          {settingsTab === 'remote' && (<section className="settings-panel remote-settings"><h2>Acesso remoto por código</h2>
-              <p>Gere um código para conectar outro dispositivo pela sua rede ou Tailscale.</p>
-              <button disabled={pendingActions.includes('Gerar código de acesso')} onClick={() => void handleGeneratePairing()}>Gerar código de acesso</button>
-              {pairingCode && <div data-testid="pairing-code-display">Código: {pairingCode}</div>}
-            </section>)}
-        </SettingsDialog>}
+            ) : <p className="settings-empty">Carregando a configuração do projeto…</p>}
+          </section>
+        </div>}
 
         {artifactDrawer && !inlineArtifact && <FileViewerDialog key={`${artifactDrawer.projectId}:${artifactDrawer.path}`} artifact={artifactDrawer} onClose={() => setArtifactDrawer(null)} onSave={handleSaveArtifact} onOpenFile={loadArtifact} onLoadAsset={loadArtifactAsset} />}
 

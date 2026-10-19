@@ -23,13 +23,13 @@ Replace the busy workspace shell with compact project navigation and one focused
 
 ## Workspace layout
 
-Sidebar workspace entries are **Quadro** and **Terminal**, then **Configurações**. The header switches **Quadro**, **Terminal** and **Files**. Opening a project lands on the Quadro.
+Sidebar workspace entries are **Quadro** and **Terminal**, then **Configurações**. Each project row has its own settings button. The header switches **Quadro**, **Terminal** and **Files**. Opening a project lands on the Quadro.
 
 - **Quadro** lists Specs and Issues and moves an Issue through Plan, Implement, Review, Critic and Done while a run is active. Pauses stay on the card. The pending-decision count sits on this entry.
 - **Terminal** is shell and agent-CLI panes. While a project phase is active, the strip offers **Ver quadro**, which returns to the board.
 - **Files** is the tree and the file viewer.
 
-There is no "Acompanhar execução" view. There is no conversation tab, no "Main Workspace Session" entry, and no composer that sends a prompt to a host. The operator talks to Codex, Claude, OpenCode or the shell in a terminal pane. Settings are **Terminal**, **Projeto** and **Acesso remoto**. The main screen does not show an Agent Host or coordinator model, and there is no **Conexão de IA** tab. Role host and model live on **Projeto**.
+There is no "Acompanhar execução" view. There is no conversation tab, no "Main Workspace Session" entry, and no composer that sends a prompt to a host. The operator talks to Codex, Claude, OpenCode or the shell in a terminal pane. Harness settings are **Terminal**, **Gantry** and **Acesso remoto**. **Gantry** holds the optional global pack configuration. Each project configures its own host and roles from the button on its row. Project configuration overrides the global one. The harness alerts only when neither a project pack nor a global pack exists.
 
 ## Acceptance
 

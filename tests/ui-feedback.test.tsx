@@ -59,7 +59,8 @@ it('opens settings without a coordinator connection', async () => {
   expect(screen.queryByText(/Agent Host/)).toBeNull();
   fireEvent.click(screen.getByTestId('open-settings-btn'));
   expect(screen.queryByRole('tab', { name: 'Conexão de IA' })).toBeNull();
-  expect(screen.getByRole('tab', { name: 'Projeto' })).toBeTruthy();
+  expect(screen.getByRole('tab', { name: 'Gantry' })).toBeTruthy();
+  expect(screen.queryByRole('tab', { name: 'Projeto' })).toBeNull();
 });
 
 it('returns to a CLI terminal in one click without toggling the coordinator into a different backend mode', async () => {
@@ -127,8 +128,10 @@ it('puts all settings in one modal, loads server OS options, saves terminal pref
   fireEvent.keyDown(within(dialog).getByRole('tab', { name: 'Terminal' }), { key: 'End' });
   expect(screen.getByRole('tab', { name: 'Acesso remoto' }).getAttribute('aria-selected')).toBe('true');
   expect(within(dialog).getByRole('button', { name: 'Gerar código de acesso' })).toBeTruthy();
-  fireEvent.click(screen.getByRole('tab', { name: 'Projeto' }));
-  expect(within(dialog).getByTestId('setup-panel')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Configurações de My project' }));
+  expect(screen.getByTestId('setup-panel')).toBeTruthy();
+  expect(screen.queryByRole('tab', { name: 'Projeto' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Fechar configurações do projeto' }));
   fireEvent(dialog, new Event('cancel', { cancelable: true }));
   expect(screen.queryByRole('dialog')).toBeNull();
   expect(document.activeElement).toBe(open);

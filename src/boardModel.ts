@@ -1,4 +1,4 @@
-export type PackResolutionKind = 'pinned' | 'path' | 'none';
+export type PackResolutionKind = 'pinned' | 'global' | 'path' | 'none';
 
 export interface BoardIssue {
   ref: string;
@@ -58,7 +58,7 @@ export const PHASE_LABEL: Record<IssueCardPhase, string> = {
 };
 
 export const NO_PACK_EXPLANATION =
-  'Este repositório não tem o pack Gantry. Run, plan e approve ficam desabilitados até existir .agents/skills/gantry/scripts/cli.py ou um executável gantry no PATH.';
+  'Não há Gantry neste projeto nem uma instalação global. Configure o pack neste projeto ou em Configurações → Gantry.';
 
 export function issuePhase(issue: Pick<BoardIssue, 'status' | 'frontierBlocked'>): IssueCardPhase {
   if (issue.status === 'done') return 'done';

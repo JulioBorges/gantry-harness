@@ -52,8 +52,7 @@ it('offers only the selected role host models and drops a model from another hos
   mockWorkspace();
   render(<App />);
   await screen.findAllByText('My project');
-  fireEvent.click(screen.getByTestId('open-settings-btn'));
-  fireEvent.click(screen.getByRole('tab', { name: 'Projeto' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Configurações de My project' }));
   const model = await screen.findByLabelText('Modelo para implement');
   await waitFor(() => expect(within(model).getByRole('option', { name: /gpt-5.2-codex/ })).toBeTruthy());
   expect(within(model).queryByRole('option', { name: 'claude-sonnet-4-6' })).toBeNull();

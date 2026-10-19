@@ -113,6 +113,7 @@ describe('Pack resolution and Issues/Specs board', () => {
       gantryHome,
       stateRoot: path.join(gantryHome, 'state'),
       profileRoot: path.join(gantryHome, 'profiles'),
+      homeDir: tmpRoot,
       port: 0,
     });
     apiBaseUrl = `http://127.0.0.1:${server.port}`;
@@ -205,6 +206,21 @@ describe('Pack resolution and Issues/Specs board', () => {
     expect((screen.getByTestId('plan-affordance') as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByTestId('approve-affordance') as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByTestId('execution-unavailable').textContent).toMatch(/gantry/i);
+    expect(screen.getByTestId('pack-missing').textContent).toMatch(/projeto|global/i);
+  });
+
+  it('uses the global skill cli.py when the repository has no pinned pack', async () => {
+    const repo = initRepo(tmpRoot, 'global-repo');
+    fs.writeFileSync(path.join(repo, '.board.json'), JSON.stringify(BOARD));
+    const cli = path.join(tmpRoot, '.agents', 'skills', 'gantry', 'scripts', 'cli.py');
+    writeExecutable(cli, PINNED_CLI);
+    const projectId = await register(repo);
+
+    const body = await fetch(`${apiBaseUrl}/api/projects/${projectId}/board`).then((response) => response.json());
+    expect(body.resolution).toBe('global');
+    expect(body.executionEnabled).toBe(true);
+    const invocation = JSON.parse(fs.readFileSync(path.join(repo, '.invocation.json'), 'utf-8'));
+    expect(invocation.script).toBe(cli);
   });
 
   it('renders ready, blocked and done cards from board data and refresh re-reads the repository', async () => {

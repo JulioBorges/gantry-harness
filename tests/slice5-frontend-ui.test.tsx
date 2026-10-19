@@ -134,8 +134,7 @@ describe('Slice 5: React Frontend UI, Decision Cards, Chat ⇄ Terminal, Artifac
     });
 
     // Open Gantry Setup Panel and preview policy diff
-    fireEvent.click(screen.getByTestId('open-settings-btn'));
-    fireEvent.click(screen.getByRole('tab', { name: 'Projeto' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Configurações de ui-project' }));
     await waitFor(() => {
       expect(screen.getByTestId('setup-panel')).toBeTruthy();
     });

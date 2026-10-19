@@ -6,6 +6,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { fileURLToPath, URL as NodeURL } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
+import type { ExecutionSettings } from '../types.js';
 import { HarnessStateStore } from './stateStore.js';
 import { resolveCoordinatorConnection } from './aiConnection.js';
 import { resolveSkillDir, runGantryScript } from './commandRunner.js';
@@ -48,6 +49,7 @@ export interface HarnessServerOptions {
   gantryHome?: string;
   stateRoot?: string;
   profileRoot?: string;
+  homeDir?: string;
   host?: string;
   port?: number;
   requirePairingForRemote?: boolean;
@@ -104,6 +106,7 @@ export async function createHarnessServer(
   const gantryHome = path.resolve(options.gantryHome ?? path.join(os.homedir(), '.gantry'));
   const stateRoot = path.resolve(options.stateRoot ?? path.join(gantryHome, 'state'));
   const profileRoot = path.resolve(options.profileRoot ?? path.join(gantryHome, 'profiles'));
+  const homeDir = path.resolve(options.homeDir ?? os.homedir());
   const host = options.host ?? '127.0.0.1';
   const requestedPort = options.port ?? 7400;
   const clientDistDir = path.resolve(options.clientDistDir ?? fileURLToPath(new NodeURL('../client/', import.meta.url)));
@@ -271,6 +274,7 @@ export async function createHarnessServer(
           layout,
           settings,
           terminalSettings: store.getTerminalSettings(),
+          globalExecution: store.getGlobalExecution(),
           terminalEnvironment: getTerminalEnvironment(),
           connection,
           sessions,
@@ -347,7 +351,7 @@ export async function createHarnessServer(
             sendJson(res, 404, { error: 'Projeto não encontrado.' });
             return;
           }
-          sendJson(res, 200, await readBoard(project.path));
+          sendJson(res, 200, await readBoard(project.path, homeDir));
           return;
         }
       }
@@ -942,6 +946,16 @@ export async function createHarnessServer(
           sendJson(res, 200, out);
           return;
         }
+      }
+
+      if (pathname === '/api/settings/execution' && req.method === 'PUT') {
+        const body = await readJsonBody(req);
+        const execution = store.updateGlobalExecution({
+          hostHarness: typeof body.hostHarness === 'string' ? body.hostHarness : undefined,
+          roles: body.roles && typeof body.roles === 'object' ? body.roles as ExecutionSettings['roles'] : {},
+        });
+        sendJson(res, 200, { execution });
+        return;
       }
 
       if (pathname === '/api/settings/terminal' && req.method === 'PUT') {

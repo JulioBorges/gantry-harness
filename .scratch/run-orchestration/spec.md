@@ -103,9 +103,9 @@ Concretely:
 
 ### 1. Pack resolution (repo-pinned, PATH as fallback)
 
-- **Primary resolution**: `<repoRoot>/.agents/skills/gantry/scripts/cli.py`, invoked as `python3 <cli.py> --cwd <repoRoot> <subcommand> [args]` with the project directory as working cwd. This honors the PRD: the pinned copy executes, there is no global binary requirement.
-- **Fallback**: when the repo-pinned `cli.py` is absent but a `gantry` executable resolves on `PATH`, the harness may invoke `gantry <subcommand>` instead — the npm bin already routes these subcommands into the installed pack's `cli.py`. Detection and availability are reported per project.
-- **No pack, no execution**: when neither resolution succeeds, the board shows what `issues`/`specs`/`board` could read (typically nothing) and every run/plan/approve affordance is disabled with an explanatory state.
+- **Primary resolution**: `<repoRoot>/.agents/skills/gantry/scripts/cli.py`, invoked as `python3 <cli.py> --cwd <repoRoot> <subcommand> [args]` with the project directory as working cwd. Project configuration overrides the global one.
+- **Global fallback**: when the repository has no pinned `cli.py`, the harness uses `~/.agents/skills/gantry/scripts/cli.py`, then a `gantry` executable on `PATH`. Global Gantry is optional.
+- **Neither pack**: when no project pack and no global pack resolve, the board disables run/plan/approve and the harness alerts the operator to configure the project or the global Gantry.
 
 ### 2. Board reads and lanes
 

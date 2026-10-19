@@ -9,6 +9,7 @@ import type {
   ChatMessageRecord,
   DecisionCardPayload,
   LiveBadgeState,
+  ExecutionSettings,
   ProviderSettingsInput,
   RegisteredProject,
   RunLifecycleState,
@@ -512,7 +513,15 @@ export class HarnessStateStore {
     return settings;
   }
 
-  private writeRawSettings(settings: ProviderSettingsInput): void {
+  private readSettingsFile(): ProviderSettingsInput & { execution?: ExecutionSettings } {
+    try {
+      return JSON.parse(fs.readFileSync(this.settingsPath, 'utf-8')) as ProviderSettingsInput & { execution?: ExecutionSettings };
+    } catch {
+      return { activeProvider: 'cli', mode: 'cli', providers: {} };
+    }
+  }
+
+  private writeRawSettings(settings: ProviderSettingsInput & { execution?: ExecutionSettings }): void {
     fs.writeFileSync(this.settingsPath, JSON.stringify(settings, null, 2) + '\n', {
       encoding: 'utf-8',
       mode: 0o600,
@@ -520,18 +529,29 @@ export class HarnessStateStore {
   }
 
   public getRawProviderSettings(): ProviderSettingsInput {
-    try {
-      return JSON.parse(fs.readFileSync(this.settingsPath, 'utf-8')) as ProviderSettingsInput;
-    } catch {
-      return {
-        activeProvider: 'cli',
-        mode: 'cli',
-        providers: {},
-      };
-    }
+    const { execution: _execution, ...settings } = this.readSettingsFile();
+    return settings;
+  }
+
+  public getGlobalExecution(): ExecutionSettings {
+    const execution = this.readSettingsFile().execution;
+    if (!execution || typeof execution !== 'object') return {};
+    return execution;
+  }
+
+  public updateGlobalExecution(input: ExecutionSettings): ExecutionSettings {
+    const current = this.readSettingsFile();
+    const roles = input.roles && typeof input.roles === 'object' ? input.roles : {};
+    const execution: ExecutionSettings = {
+      ...(typeof input.hostHarness === 'string' && input.hostHarness ? { hostHarness: input.hostHarness } : {}),
+      ...(Object.keys(roles).length ? { roles } : {}),
+    };
+    this.writeRawSettings({ ...current, execution });
+    return execution;
   }
 
   public updateProviderSettings(input: ProviderSettingsInput): SanitizedProviderSettings {
+    const stored = this.readSettingsFile();
     const current = this.getRawProviderSettings();
     const nextProviders = { ...(current.providers ?? {}) };
     if (input.providers) {
@@ -543,11 +563,12 @@ export class HarnessStateStore {
         };
       }
     }
-    const updated: ProviderSettingsInput = {
+    const updated: ProviderSettingsInput & { execution?: ExecutionSettings } = {
       activeProvider: input.activeProvider ?? current.activeProvider,
       mode: input.mode ?? current.mode,
       cliHarness: input.cliHarness ?? current.cliHarness,
       providers: nextProviders,
+      ...(stored.execution ? { execution: stored.execution } : {}),
     };
     this.writeRawSettings(updated);
     return this.getSanitizedProviderSettings();

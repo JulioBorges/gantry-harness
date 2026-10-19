@@ -53,8 +53,10 @@ summary { cursor: pointer; color: var(--slate-400); }
 .sidebar-heading { display: flex; align-items: center; justify-content: space-between; min-height: 30px; padding: 0 10px; color: var(--slate-400); font-size: 12px; }
 .sidebar-heading .icon-button { font-size: 19px; }
 .project-list { display: grid; gap: 3px; }
-.project-row { width: 100%; display: flex; gap: 10px; padding: 10px; border-color: transparent; background: transparent; }
+.project-row { width: 100%; display: flex; align-items: center; gap: 4px; border-color: transparent; background: transparent; }
 .project-row.selected { background: #24241f; }
+.project-row-select { flex: 1; min-width: 0; display: flex; gap: 10px; padding: 10px; border-color: transparent; background: transparent; }
+.project-settings { flex: 0 0 auto; }
 .project-row-text { min-width: 0; flex: 1; display: grid; gap: 1px; }
 .project-row strong { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-row small { color: var(--slate-400); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
