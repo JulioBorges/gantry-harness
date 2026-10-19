@@ -70,27 +70,6 @@ it('offers only the selected role host models and drops a model from another hos
   expect((screen.getByLabelText('Modelo para implement') as HTMLSelectElement).value).toBe('claude-opus-4-5');
 });
 
-it('shows the project host in the conversation and saves a model from that host', async () => {
-  mockWorkspace();
-  render(<App />);
-  await screen.findAllByText('My project');
-  fireEvent.click(screen.getByRole('button', { name: 'Conversa' }));
-  expect(screen.getByTestId('conversation-connection').textContent).toContain('Host do projeto');
-  expect(screen.getByTestId('conversation-connection').textContent).toContain('codex');
-  const model = await screen.findByLabelText('Modelo da conversa');
-  await waitFor(() => expect(within(model).getByRole('option', { name: /gpt-5.2-codex/ })).toBeTruthy());
-  expect(within(model).queryByRole('option', { name: 'claude-sonnet-4-6' })).toBeNull();
-  fireEvent.change(model, { target: { value: 'gpt-5.2-codex' } });
-  await waitFor(() => {
-    const request = vi.mocked(fetch).mock.calls.find(([url, init]) => String(url).endsWith('/settings/providers') && (init as RequestInit | undefined)?.method === 'PUT');
-    expect(request).toBeTruthy();
-    const body = JSON.parse((request![1] as RequestInit).body as string);
-    expect(body.cliHarness).toBe('codex');
-    expect(body.providers.cli.model).toBe('gpt-5.2-codex');
-    expect(body.providers.cli.modelsByHost.codex).toBe('gpt-5.2-codex');
-  });
-});
-
 it('lists coordinator models from the selected CLI host', async () => {
   mockWorkspace();
   render(<App />);

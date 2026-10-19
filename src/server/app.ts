@@ -19,7 +19,6 @@ import {
   resolveProjectRoles,
 } from './projectInspector.js';
 import {
-  generateCoordinatorResponse,
   prepareGantryCommand,
   resolveLanguagePolicy,
   type RoleDispatcher,
@@ -513,55 +512,6 @@ export async function createHarnessServer(
         const prepared = await (options.commandPreparer ?? prepareGantryCommand)(command as 'plan' | 'run' | 'setup', String(body.request ?? ''), settings, project.path);
         sendJson(res, 200, { prepared, connection });
         return;
-      }
-
-      if (pathname.startsWith('/api/projects/') && pathname.endsWith('/chat') && req.method === 'POST') {
-        const parts = pathname.split('/').filter(Boolean);
-        if (parts.length === 4) {
-          const projectId = parts[2];
-          const project = store.getProject(projectId);
-          if (!project) {
-            sendJson(res, 404, { error: `Project not found: ${projectId}` });
-            return;
-          }
-          const body = await readJsonBody(req);
-          const prompt = String(body.prompt ?? body.content ?? '').trim();
-          if (!prompt) {
-            sendJson(res, 400, { error: 'Informe uma mensagem.' });
-            return;
-          }
-          const { sessionId } = sessionsForProject(store, projectId, body.sessionId);
-          const { settings, connection } = resolveCoordinatorConnection(store.getRawProviderSettings(), project, profileRoot);
-          if (!connection.ready) {
-            sendJson(res, 400, { error: connection.detail, connection });
-            return;
-          }
-          const history = store.listMessages(projectId, sessionId);
-          const userMsg = store.appendMessage({
-            projectId,
-            sessionId,
-            role: 'user',
-            content: prompt,
-          });
-          broadcast({ type: 'message.appended', projectId, sessionId, message: userMsg });
-
-          let replyText: string;
-          try {
-            replyText = await generateCoordinatorResponse(prompt, settings, project.path, history);
-          } catch (error) {
-            sendJson(res, 502, { error: (error as Error).message, connection });
-            return;
-          }
-          const assistantMsg = store.appendMessage({
-            projectId,
-            sessionId,
-            role: 'assistant',
-            content: replyText,
-          });
-          broadcast({ type: 'message.appended', projectId, sessionId, message: assistantMsg });
-          sendJson(res, 200, { userMessage: userMsg, assistantMessage: assistantMsg, connection });
-          return;
-        }
       }
 
       if (pathname.startsWith('/api/projects/') && pathname.endsWith('/plan/start') && req.method === 'POST') {

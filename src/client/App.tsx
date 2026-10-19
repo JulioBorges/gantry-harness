@@ -103,7 +103,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   const terminalAppearance = useRef(terminalSettings);
   terminalAppearance.current = terminalSettings;
   const fitAddonRef = useRef<FitAddon | null>(null);
-  const [paneMode, setPaneMode] = useState<'chat' | 'terminal'>('chat');
+  const [paneMode, setPaneMode] = useState<'chat' | 'terminal'>('terminal');
   const [activePaneId, setActivePaneId] = useState<string | null>(null);
   const [terminalBuffer, setTerminalBuffer] = useState<string>('');
   const [coordinatorInput, setCoordinatorInput] = useState('');
@@ -517,7 +517,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     if (paneId === activePaneId) {
       // Stop routing input/resize events before the backend removes this pane.
       selectedPane.current = { ...selectedPane.current, paneId: null };
-      setActivePaneId(null); setTerminalBuffer(''); setPaneMode('chat');
+      setActivePaneId(null); setTerminalBuffer(''); setPaneMode('terminal');
     }
     await apiFetch(`/api/projects/${activeProjectId}/panes/${paneId}`, { method: 'DELETE' });
     await loadWorkspaceState();
@@ -545,11 +545,11 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   const handleSelectProject = withFeedback("Selecionar projeto", async (projectId: string, sessionId?: string): Promise<void> => {
     setArtifactDrawer(null);
     setActivePaneId(null);
-    setPaneMode('chat');
     setTerminalBuffer('');
     setApprovedSlug(null);
     setActiveRunId('');
     setPreparedCommand(null); if (window.innerWidth < 760) setSidebarOpen(false); setActiveView('board');
+    setPaneMode('terminal');
     if (projectId !== activeProjectId) {
       setMessages([]);
       setSessions([]);
@@ -1410,7 +1410,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         <div className="sidebar-bottom">
           <div className="sidebar-heading">Workspace</div>
           <button className={`btn-nav ${activeView === 'board' ? 'btn-nav-active' : ''}`} data-testid="open-board-btn" onClick={() => changeView('board')}><span>Quadro</span></button>
-          <button className={`btn-nav ${activeView === 'factory' ? 'btn-nav-active' : ''}`} data-testid="open-factory-btn" onClick={() => changeView('factory')}><span>Conversa e terminal</span><kbd>⌘ B</kbd></button>
+          <button className={`btn-nav ${activeView === 'factory' ? 'btn-nav-active' : ''}`} data-testid="open-factory-btn" onClick={() => { setPaneMode('terminal'); changeView('factory'); }}><span>Terminal</span><kbd>⌘ B</kbd></button>
           <button className={`btn-nav ${activeView === 'kanban' ? 'btn-nav-active' : ''}`} data-testid="open-kanban-btn" onClick={() => changeView('kanban')}><span>Acompanhar execução</span>{alerts.length > 0 && <span className="count-badge">{alerts.length}</span>}</button>
           <div className="sidebar-divider" />
           <button className="btn-nav" data-testid="open-settings-btn" onClick={() => openSettings('terminal')}>Configurações</button>
@@ -1424,8 +1424,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
           <div className="workspace-title"><strong>{activeProject?.name ?? 'Gantry Harness'}</strong><span title={activeProject?.path}>{activeView === 'board' ? 'Issues e Specs' : activeView === 'kanban' ? 'Execuções' : activeProject?.path ?? 'Seu workspace de desenvolvimento'}</span></div>
           <div className="view-selector" aria-label="Área de trabalho">
             <button aria-pressed={activeView === 'board'} onClick={() => setActiveView('board')}>Quadro</button>
-            <button aria-pressed={activeView === 'factory' && paneMode === 'chat'} onClick={() => { setPaneMode('chat'); setActiveView('factory'); }}>Conversa</button>
-            <button data-testid="chat-terminal-toggle" aria-pressed={activeView === 'factory' && paneMode === 'terminal'} disabled={!activeProjectId || pendingActions.includes('Abrir terminal')} onClick={() => { setActiveView('factory'); if (paneMode !== 'terminal' || activeTerminal?.launcher !== 'shell' || activeTerminal?.status !== 'running') void handleToggleChatTerminal(); }}>Terminal</button>
+            <button data-testid="chat-terminal-toggle" aria-pressed={activeView === 'factory'} disabled={!activeProjectId || pendingActions.includes('Abrir terminal')} onClick={() => { setPaneMode('terminal'); setActiveView('factory'); if (activeTerminal?.launcher !== 'shell' || activeTerminal?.status !== 'running') void handleToggleChatTerminal(); }}>Terminal</button>
             <button data-testid="open-files-btn" aria-pressed={activeView === 'files'} onClick={() => setActiveView('files')}>Files</button>
           </div>
         </header>
@@ -1437,7 +1436,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
           <button title={connection?.detail} onClick={() => openSettings('ai')}>Configurar conexão</button>
           <button className="context-help" onClick={() => setShowGuide((value) => !value)} aria-expanded={showGuide}>Ajuda</button>
         </div>
-        {showGuide && <section className="workspace-guide"><strong>Do projeto à execução</strong><p>Abra uma pasta e configure o Agent Host. Converse com o coordenador ou escolha /plan para preparar um objetivo. Revise o comando, aprove o plano gerado e execute. O terminal abre o shell do sistema, onde você pode executar comandos ou restaurar sessões dos seus CLIs.</p><button onClick={() => setShowGuide(false)}>Entendi</button></section>}
+        {showGuide && <section className="workspace-guide"><strong>Do projeto à execução</strong><p>Abra uma pasta e use o terminal para executar comandos ou restaurar sessões do Codex, Claude e OpenCode. O quadro mostra as Issues e Specs do repositório.</p><button onClick={() => setShowGuide(false)}>Entendi</button></section>}
         {pendingActions.length > 0 && <div className="action-pending" role="status" aria-live="polite"><span className="working-indicator" />{pendingActions.join(' · ')}…</div>}
         {feedback?.kind === 'error' && !projectDialogOpen && !settingsOpen && <div className="action-feedback error" role="alert"><p>{feedback.message}</p><div className="feedback-actions"><button onClick={() => openSettings(feedback.action === 'Executar plano' ? 'project' : 'ai')}>Revisar configuração</button><button aria-label="Fechar aviso" onClick={dismissFeedback}>×</button></div></div>}
         {alerts.length > 0 && <button className="alert-banner" data-testid="alert-banner" onClick={() => { const first = alerts[0]; void handleSelectProject(first.projectId, first.sessionId); setActiveView('factory'); }}><span>{alerts[0].projectName} · {alerts[0].summary || STATUS_LABELS[alerts[0].badgeState]}</span><span>Revisar decisão →</span></button>}
@@ -1457,55 +1456,17 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
 
         {activeView === 'factory' && <div className="workspace-content">
           <div className="session-bar">
-            <div className="session-tabs" aria-label={paneMode === 'chat' ? 'Conversas' : 'Terminais'}>
-              {paneMode === 'chat' ? sessions.map((session) => <button className={`session-tab ${session.id === activeSessionId ? 'active' : ''}`} key={session.id} onClick={() => void handleSelectSession(session.id)} aria-current={session.id === activeSessionId ? 'page' : undefined}>{session.title}</button>) : panes.map((pane) => <div key={pane.paneId} className={`terminal-tab ${pane.paneId === activePaneId ? 'active' : ''}`}><button onClick={() => void handleSelectPane(pane.paneId)}><span className={`status-dot ${pane.status === 'running' ? 'done' : 'idle'}`} />{pane.launcher}<small>{pane.status === 'exited' ? `Encerrado (${pane.exitCode ?? '—'})` : 'Em execução'}</small></button><button className="tab-close" aria-label={`Encerrar terminal ${pane.launcher}`} onClick={() => void handleClosePane(pane.paneId)}>×</button></div>)}
-              {paneMode === 'chat' && <button className="icon-button" disabled={!activeProjectId} aria-label="Nova conversa" onClick={() => void handleNewSession()}>+</button>}
+            <div className="session-tabs" aria-label="Terminais">
+              {panes.map((pane) => <div key={pane.paneId} className={`terminal-tab ${pane.paneId === activePaneId ? 'active' : ''}`}><button onClick={() => void handleSelectPane(pane.paneId)}><span className={`status-dot ${pane.status === 'running' ? 'done' : 'idle'}`} />{pane.launcher}<small>{pane.status === 'exited' ? `Encerrado (${pane.exitCode ?? '—'})` : 'Em execução'}</small></button><button className="tab-close" aria-label={`Encerrar terminal ${pane.launcher}`} onClick={() => void handleClosePane(pane.paneId)}>×</button></div>)}
             </div>
             <button className="new-terminal-button" data-testid="launcher-shell" disabled={!activeProjectId || pendingActions.includes('Abrir terminal')} onClick={() => void handleOpenTerminal()}>+ Terminal</button>
           </div>
           {activeProject?.lifecycleState && activeProject.lifecycleState !== 'idle' && <div className="run-strip"><span className={`status-dot ${activeProject.badgeState?.replace(/\s+/g, '-')}`} /><strong>{PHASE_LABELS[activeProject.lifecycleState] ?? activeProject.lifecycleState}</strong>{activeRunId && <code>{activeRunId}</code>}<button onClick={() => setActiveView('kanban')}>Ver execução →</button></div>}
           {approvedSlug && <div className="run-strip"><span>Plano aprovado: <strong>{approvedSlug}</strong></span><button className="btn-primary" data-testid="start-run-btn" disabled={pendingActions.includes('Executar plano')} onClick={() => void handleStartRun(approvedSlug)}>Executar plano</button></div>}
 
-          {paneMode === 'chat' ? <>
-            <div className="conversation-scroll" data-testid="chat-view">
-              <div className="conversation-width">
-                {projectMessages.length === 0 && !pendingPrompt && <div className="chat-empty"><div className="empty-symbol" aria-hidden="true">g</div><h1>{activeProjectId ? 'O que vamos construir?' : 'Seu próximo projeto começa aqui.'}</h1><p>{activeProjectId ? `A conversa segue ${connection?.host || 'o host configurado'}${connection?.model ? ` · ${connection.model}` : ''}. Escolha o modelo abaixo e escreva a próxima mensagem.` : 'Abra uma pasta para conversar com seu agente, planejar mudanças e acompanhar as execuções.'}</p>{!activeProjectId && <button className="btn-primary" onClick={() => setProjectDialogOpen(true)}>Abrir projeto</button>}<div className="empty-suggestions">{activeProjectId && <><button onClick={() => { setCoordinatorInput('Explique este projeto e como executá-lo localmente.'); document.getElementById('coordinator-message')?.focus(); }}>Entender este projeto</button><button onClick={() => selectShortcut('plan')}>Planejar uma mudança</button></>}</div></div>}
-                {projectMessages.map((message) => <article key={message.id} className={`chat-message message-${message.role}`}><div className="message-heading"><strong>{message.role === 'user' ? 'Você' : message.role === 'assistant' ? 'Gantry' : message.role === 'subagent' ? 'Agente' : 'Sistema'}</strong><time>{new Date(message.createdAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</time></div><div className="message-body">{renderClickableText(message.content)}</div>{message.turnBlocks?.map((block, index) => <details key={index} className="turn-block" open={block.collapsed === false}><summary>{block.title}</summary><pre>{renderClickableText(block.content)}</pre></details>)}{message.decisionCard && renderDecisionCard(message.decisionCard)}</article>)}
-                {pendingPrompt && <article className="chat-message message-user"><div className="message-heading"><strong>Você</strong></div><div className="message-body">{pendingPrompt}</div></article>}
-                {pendingPrompt && <article className="chat-message message-assistant chat-pending" data-testid="chat-pending"><div className="message-heading"><strong>{connection?.host || 'Agente'}</strong></div><div className="message-body">Respondendo{connection?.model ? ` com ${connection.model}` : ' no modelo padrão deste host'}…</div></article>}
-                <div ref={chatEndRef} />
-              </div>
-            </div>
-            <div className="composer-area"><div className="composer">
-              {activeProjectId && connection?.mode === 'cli' && <div className="composer-connection" data-testid="conversation-connection">
-                {connection.source === 'global' ? <label>Host<select aria-label="Host da conversa" value={connection.host} onChange={(event) => {
-                  const nextHost = event.target.value as 'claude' | 'codex' | 'opencode' | 'agy';
-                  setCliHarness(nextHost);
-                  void handleApplyConversationModel(savedSettings?.providers.cli?.modelsByHost?.[nextHost] ?? '', nextHost);
-                }}>
-                  <option value="codex">Codex</option><option value="claude">Claude Code</option>
-                  <option value="opencode">OpenCode</option><option value="agy">Antigravity</option>
-                </select></label> : <p>Host {connection.source === 'profile' ? 'do perfil' : 'do projeto'}: <strong>{connection.host}</strong></p>}
-                <ModelSelect
-                  label="Modelo"
-                  ariaLabel="Modelo da conversa"
-                  harnessLabel={connection.host}
-                  models={modelsByHarness[discoveryHarness(connection.host)] ?? []}
-                  value={connection.model ?? ''}
-                  loading={catalogLoading[discoveryHarness(connection.host)] === true}
-                  error={catalogErrors[discoveryHarness(connection.host)]}
-                  allowEmpty
-                  emptyLabel="Padrão do host"
-                  onChange={(modelId) => void handleApplyConversationModel(modelId)}
-                />
-              </div>}
-              {preparedCommand && <section className="prepared-command" aria-label="Comando preparado"><div><strong>Comando preparado pelo agente</strong><button aria-label="Descartar comando" onClick={() => setPreparedCommand(null)}>×</button></div><code>/{preparedCommand.command} {preparedCommand.argument}</code><p>{preparedCommand.explanation}</p><button className="btn-primary" data-testid="execute-prepared-command" disabled={commandBusy} onClick={() => void handleSendCoordinatorInput(true)}>{preparedCommand.command === 'setup' ? 'Abrir configuração' : preparedCommand.command === 'plan' ? 'Iniciar planejamento' : 'Executar escopo'}</button><small>Revise a proposta antes de continuar.</small></section>}
-              <textarea id="coordinator-message" aria-label="Mensagem para o coordenador" data-testid="coordinator-input" rows={2} placeholder={activeProjectId ? `Mensagem para ${connection?.host || 'o agente'}${connection?.model ? ` · ${connection.model}` : ''}…` : 'Abra um projeto para começar'} disabled={!activeProjectId} value={coordinatorInput} onChange={(event) => { setCoordinatorInput(event.target.value); setPreparedCommand(null); }} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); if (!commandBusy) void handleSendCoordinatorInput(); } }} />
-              <div className="composer-toolbar"><div className="command-shortcuts" aria-label="Comandos do Gantry">{['plan', 'run', 'setup'].map((command) => <button key={command} disabled={!activeProjectId || commandBusy} onClick={() => selectShortcut(command)} title={`Preparar /${command} com o Agent Host`}>/{command}</button>)}</div><button className="send-button btn-primary" data-testid="coordinator-send-btn" disabled={!activeProjectId || !coordinatorInput.trim() || commandBusy} onClick={() => void handleSendCoordinatorInput()}>{commandBusy ? 'Aguardando…' : /^\/(plan|run|setup)(?:\s|$)/.test(coordinatorInput) ? 'Preparar comando' : 'Enviar'}<span aria-hidden="true">↑</span></button></div>
-            </div><div className="composer-caption"><span>{connection?.mode === 'cli' ? `${connection.host || 'Host'} · ${connection.model || 'modelo padrão'}` : connection?.host || 'Configure seu agente'}{connection?.source === 'repository' ? ' · configuração do projeto' : connection?.source === 'profile' ? ' · perfil pessoal' : ''}</span><span>Enter envia · Shift + Enter quebra linha</span></div></div>
-          </> : <div className="terminal-workspace" data-testid="terminal-view">
+          <div className="terminal-workspace" data-testid="terminal-view">
             {activePaneId ? <><div className="terminal-caption"><span>{activeTerminal?.launcher ?? 'Terminal'} · {activeTerminal?.status === 'exited' ? 'Sessão encerrada' : activeTerminal?.launcher === 'shell' ? 'Shell do sistema' : 'Sessão CLI independente'}</span><code>{activeTerminal?.worktreePath ?? activeProject?.path}</code></div><div className="terminal-surface"><div ref={terminalContainerRef} className="terminal-emulator" aria-label="Terminal interativo" /></div><details className="terminal-tools"><summary>Teclas e envio de comando</summary><form className="terminal-command" onSubmit={(event) => { event.preventDefault(); void handleTerminalCommand(); }}><label htmlFor="terminal-command">Enviar ao terminal</label><input id="terminal-command" value={terminalInput} onChange={(event) => setTerminalInput(event.target.value)} placeholder="Mensagem ou comando para este terminal" /><button type="submit" disabled={!activePaneId}>Enviar</button></form><div className="virtual-keybar" data-testid="virtual-keybar">{[['esc', '\x1b'], ['tab', '\t'], ['^C', '\x03'], ['↑', '\x1b[A'], ['↓', '\x1b[B'], ['←', '\x1b[D'], ['→', '\x1b[C']].map(([label, key]) => <button key={label} className="btn-key" onClick={() => void handleVirtualKey(key)}>{label}</button>)}</div></details></> : <div className="chat-empty"><h1>Abra uma sessão de terminal</h1><p>Abra o shell do sistema para executar comandos ou restaurar sessões do Codex, Claude e OpenCode com os parâmetros que preferir.</p><button onClick={() => void handleOpenTerminal()}>Abrir shell</button></div>}
-          </div>}
+          </div>
           {activeRunId && <details className="steering-panel"><summary>Orientar agente em execução · {activeRunId}</summary><div data-testid="steering-bar"><input aria-label="Tarefa a orientar" placeholder="Referência da tarefa" value={selectedSteeringIssue} onChange={(event) => setSelectedSteeringIssue(event.target.value)} /><input aria-label="Orientação para o agente" placeholder="Descreva sua orientação…" value={steeringInput} onChange={(event) => setSteeringInput(event.target.value)} /><button data-testid="steer-queue-btn" onClick={() => void handleSteer('queue')}>Próximo turno</button><button data-testid="steer-send-now-btn" onClick={() => void handleSteer('send_now')}>Enviar agora</button></div></details>}
         </div>}
 
@@ -1521,7 +1482,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         {activeView === 'kanban' && (
           <div data-testid="kanban-board" style={{ flex: 1, overflow: 'auto' }}>
             <div className="execution-heading"><h2>Execuções do projeto</h2><p>Acompanhe cada tarefa, sua etapa atual e as decisões que precisam de você.</p></div>
-            {kanbanRuns.length === 0 && <div className="execution-empty"><strong>Nenhuma execução registrada</strong><p>Prepare um planejamento com /plan. Depois da aprovação, execute o plano para acompanhar as tarefas aqui.</p><button onClick={() => selectShortcut('plan')}>Preparar planejamento</button></div>}
+            {kanbanRuns.length === 0 && <div className="execution-empty"><strong>Nenhuma execução registrada</strong><p>Use o terminal do projeto para executar o agente. As tarefas em andamento aparecem aqui.</p><button onClick={() => { setPaneMode('terminal'); setActiveView('factory'); }}>Abrir terminal</button></div>}
             {kanbanRuns.map((run) => <div key={run.runId} className="run-summary"><code>{run.runId}</code><strong>{run.finished ? 'Concluído' : 'Em andamento'}</strong><span>{run.columns.Done?.length ?? 0} de {Object.values(run.columns).reduce((total, items) => total + items.length, 0)} tarefas concluídas</span>{Object.values(run.columns).flat().some((item) => item.operatorWaiting) && <button onClick={() => setActiveView('factory')}>Aguardando sua decisão →</button>}</div>)}
             <div className="kanban-grid">
               {KANBAN_COLUMNS.map((col) => (

@@ -22,13 +22,9 @@ Electron owns the desktop window and local server lifecycle. Keep React and xter
 
 Replace the busy workspace shell with compact project navigation, session tabs, context header and focused conversation/terminal views. Expose command shortcuts with a host-assisted preparation step; retain explicit execution. Show pending decisions and phase context without permanently expanding advanced settings.
 
-## Conversation follows the configured host
+## Terminal instead of a conversation session
 
-The composer shows the host that will answer the next message. A project or personal-profile host wins over the global CLI host and is shown as fixed text (`Host do projeto` or `Host do perfil`). The model control is a select of that host's discovered models, the same catalog Settings uses. Choosing a model saves it for that host under `providers.cli.modelsByHost` and the next chat call passes that id as `--model`. A model remembered for a different host is not sent.
-
-While the host is replying, the thread shows the operator message and a pending line that names the host and model. A failed send puts the draft back in the composer. The caption under the composer repeats the host, the model or `modelo padrão`, and whether the host came from the project, the profile, or the global connection.
-
-Each project has its own conversation. Opening the workspace for a project with no sessions creates one titled `Main Workspace Session`. Switching projects replaces the visible transcript with that project's messages and does not send the other project's history. The saved session id is used only when it belongs to the selected project; otherwise the workspace selects that project's first session and saves that layout. The composer sends `sessionId` only when the selected id is one of the sessions loaded for the open project. An empty message is rejected and does not call the host. A session id that is missing or belongs to another project does not reject the message: it is stored on this project's current session.
+The harness does not offer a conversation session or a host connected to a conversation screen. The operator talks to Codex, Claude, OpenCode or the shell in a terminal pane. There is no conversation tab, no "Main Workspace Session" entry, and no composer that sends a prompt to a host.
 
 ## Acceptance
 

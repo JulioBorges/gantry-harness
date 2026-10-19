@@ -52,22 +52,6 @@ it('shows a project-registration error instead of silently ignoring the button',
   expect((screen.getByPlaceholderText('/path/to/repo') as HTMLInputElement).value).toBe('/missing');
 });
 
-it('shows the saved host, pending reply, and an actionable error while preserving the message', async () => {
-  let finish!: (response: Response) => void;
-  mockWorkspace(() => new Promise((resolve) => { finish = resolve; }));
-  render(<App />);
-  await screen.findAllByText('My project');
-  fireEvent.click(screen.getByTestId('open-factory-btn'));
-  expect(screen.getByTestId('connection-status').textContent).toContain('codex');
-  fireEvent.change(screen.getByTestId('coordinator-input'), { target: { value: 'Como executo o projeto?' } });
-  fireEvent.click(screen.getByTestId('coordinator-send-btn'));
-  await waitFor(() => expect((screen.getByTestId('coordinator-send-btn') as HTMLButtonElement).disabled).toBe(true));
-  finish(Response.json({ error: 'Host codex: authentication required' }, { status: 502 }));
-  await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('authentication required'));
-  expect((screen.getByTestId('coordinator-input') as HTMLInputElement).value).toBe('Como executo o projeto?');
-  expect((screen.getByTestId('coordinator-send-btn') as HTMLButtonElement).disabled).toBe(false);
-});
-
 it('loads saved provider fields and preserves a stored API key when saving with an empty key field', async () => {
   const fetchMock = mockWorkspace();
   render(<App />);
@@ -88,18 +72,6 @@ it('loads saved provider fields and preserves a stored API key when saving with 
   });
 });
 
-it('keeps malformed Gantry command prefixes in conversation instead of bypassing preparation', async () => {
-  const fetchMock = mockWorkspace(async () => Response.json({}));
-  render(<App />);
-  await screen.findAllByText('My project');
-  fireEvent.click(screen.getByTestId('open-factory-btn'));
-  fireEvent.change(screen.getByTestId('coordinator-input'), { target: { value: '/runner project' } });
-  fireEvent.click(screen.getByTestId('coordinator-send-btn'));
-  await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/chat'))).toBe(true));
-  expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/run'))).toBe(false);
-  expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/plan/start'))).toBe(false);
-});
-
 it('returns to a CLI terminal in one click without toggling the coordinator into a different backend mode', async () => {
   const fetchMock = mockWorkspace();
   const fallback = fetchMock.getMockImplementation()!;
@@ -109,8 +81,9 @@ it('returns to a CLI terminal in one click without toggling the coordinator into
   await screen.findAllByText('My project');
   fireEvent.click(screen.getByTestId('chat-terminal-toggle'));
   await screen.findByTestId('terminal-view');
-  fireEvent.click(screen.getByRole('button', { name: /^Conversa$/ }));
-  expect(screen.getByTestId('chat-view')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: /^Conversa$/ })).toBeNull();
+  expect(screen.queryByTestId('chat-view')).toBeNull();
+  expect(screen.queryByLabelText('Nova conversa')).toBeNull();
   fireEvent.click(screen.getByTestId('chat-terminal-toggle'));
   await screen.findByTestId('terminal-view');
   expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/toggle'))).toBe(false);
@@ -168,7 +141,8 @@ it('puts all settings in one modal, loads server OS options, saves terminal pref
   fireEvent(dialog, new Event('cancel', { cancelable: true }));
   expect(screen.queryByRole('dialog')).toBeNull();
   expect(document.activeElement).toBe(open);
-  expect(screen.getByTestId('chat-view')).toBeTruthy();
+  expect(screen.queryByTestId('chat-view')).toBeNull();
+  expect(screen.getByTestId('terminal-view')).toBeTruthy();
   expect(fetchMock.mock.calls.some(([url, init]) => String(url).includes('/panes') && init?.method === 'DELETE')).toBe(false);
 });
 

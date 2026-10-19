@@ -97,7 +97,7 @@ describe('Slice 5: React Frontend UI, Decision Cards, Chat ⇄ Terminal, Artifac
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   });
 
-  it('renders sidebar, registers projects, drives /plan Grilling -> Plan Approval -> /run -> Handoff Cards, toggles Chat ⇄ Terminal with mobile keybar, opens clickable file diffs, and renders Kanban columns', async () => {
+  it('renders the sidebar, opens a terminal instead of a conversation, and keeps kanban and setup available', async () => {
     const repoDir = initTestRepo(tmpRoot, 'ui-project');
 
     await fetch(`${apiBaseUrl}/api/projects`, {
@@ -114,70 +114,9 @@ describe('Slice 5: React Frontend UI, Decision Cards, Chat ⇄ Terminal, Artifac
       expect(within(screen.getByTestId('sidebar')).getByText('ui-project')).toBeTruthy();
     });
     fireEvent.click(screen.getByTestId('open-factory-btn'));
-
-    // Initiate /plan workflow from UI
-    const goalInput = screen.getByTestId('coordinator-input') as HTMLInputElement;
-    fireEvent.change(goalInput, { target: { value: '/plan Build UI dashboard' } });
-    fireEvent.click(screen.getByTestId('coordinator-send-btn'));
-
-    await screen.findByTestId('execute-prepared-command');
-    expect(screen.queryByTestId('decision-card-grilling_round')).toBeNull();
-    fireEvent.click(screen.getByTestId('execute-prepared-command'));
-
-    // Wait for Grilling Decision Card and Alert Banner
-    await waitFor(() => {
-      expect(screen.getByTestId('decision-card-grilling_round')).toBeTruthy();
-      expect(screen.getByTestId('alert-banner')).toBeTruthy();
-    }, { timeout: 15000 });
-
-    // Submit Grilling answers -> transitions to Plan Approval Card
-    fireEvent.click(screen.getByTestId('submit-grilling-btn'));
-
-    await waitFor(
-      () => {
-        expect(screen.getByTestId('decision-card-plan_approval')).toBeTruthy();
-      },
-      { timeout: 15000 },
-    );
-
-    // Click Approve Plan -> transitions issues via roadmap.py
-    fireEvent.click(screen.getByTestId('approve-plan-btn'));
-
-    await waitFor(
-      () => {
-        expect(screen.getByTestId('start-run-btn')).toBeTruthy();
-      },
-      { timeout: 10000 },
-    );
-
-    // Commit the planned artifacts so the working tree is clean before clicking Start Run
-    execFileSync('git', ['add', '.'], { cwd: repoDir });
-    execFileSync('git', ['commit', '-m', 'Approve plan artifacts'], { cwd: repoDir });
-
-    // Click Start Run -> executes full round loop and renders Run Handoff Card
-    fireEvent.click(screen.getByTestId('start-run-btn'));
-
-    await waitFor(
-      () => {
-        expect(screen.getByTestId('decision-card-run_handoff')).toBeTruthy();
-      },
-      { timeout: 25000 },
-    );
-
-    // Clickable file path opens the Artifact & Diff Drawer
-    fs.writeFileSync(
-      path.join(repoDir, 'src', 'app.ts'),
-      `export const appName = 'ui-project';\nexport const extra = true;\n`,
-      'utf-8',
-    );
-    fireEvent.click(screen.getAllByTestId('file-link-src/app.ts')[0]);
-
-    await waitFor(() => {
-      expect(screen.getByRole('dialog', { name: 'Visualizar arquivo' })).toBeTruthy();
-    });
-    fireEvent.click(screen.getByRole('tab', { name: 'Diff' }));
-    expect(screen.getByRole('dialog', { name: 'Visualizar arquivo' }).textContent).toContain('+export const extra = true;');
-    fireEvent.click(screen.getByRole('button', { name: 'Fechar visualização de arquivo' }));
+    expect(screen.queryByTestId('chat-view')).toBeNull();
+    expect(screen.queryByTestId('coordinator-input')).toBeNull();
+    expect(screen.getByTestId('terminal-view')).toBeTruthy();
 
     // Spawn shell PTY launcher and verify Terminal view + mobile virtual terminal keybar
     fireEvent.click(screen.getByTestId('launcher-shell'));

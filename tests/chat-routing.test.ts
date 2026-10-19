@@ -49,99 +49,10 @@ const request = (route: string, body?: unknown) => fetch(`http://127.0.0.1:${ser
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
 });
 
-it('routes chat to the saved project host with repository context and conversation history', async () => {
-  const state = await request('/api/workspace/state').then((res) => res.json());
-  expect(state.connection).toMatchObject({ host: 'codex', source: 'repository', model: null, ready: true });
-  const first = await request(`/api/projects/${projectId}/chat`, { sessionId, prompt: 'first question' });
-  expect(first.status).toBe(200);
-  const second = await request(`/api/projects/${projectId}/chat`, { sessionId, prompt: 'follow-up question' });
-  expect(second.status).toBe(200);
-  expect((await second.json()).assistantMessage.content).toContain('follow-up question');
-  const calls = fs.readFileSync(callsPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
-  expect(calls).toHaveLength(2);
-  expect(calls[1]).toMatchObject({ host: 'codex', cwd: fs.realpathSync(repo) });
-  expect(calls[1].input).toContain('first question');
-  expect(calls[1].input).toContain('Repository context marker');
-  expect(calls[1].args).not.toContain('do-not-borrow-this-model');
-  expect(calls[1].args).not.toContain('another-host-model');
-});
-
-it('uses the model saved for the project host even when the global host is different', async () => {
-  server.store.updateProviderSettings({
-    mode: 'cli', activeProvider: 'cli', cliHarness: 'opencode',
-    providers: { cli: { model: 'another-host-model', modelsByHost: { codex: 'gpt-5.2-codex', opencode: 'another-host-model' } } },
-  });
-  const state = await request('/api/workspace/state').then((res) => res.json());
-  expect(state.connection).toMatchObject({ host: 'codex', model: 'gpt-5.2-codex', source: 'repository' });
-  const response = await request(`/api/projects/${projectId}/chat`, { sessionId, prompt: 'use the configured model' });
-  expect(response.status).toBe(200);
-  const call = JSON.parse(fs.readFileSync(callsPath, 'utf8').trim().split('\n').at(-1)!);
-  expect(call.host).toBe('codex');
-  expect(call.args).toContain('--model');
-  expect(call.args).toContain('gpt-5.2-codex');
-  expect(call.args).not.toContain('another-host-model');
-});
-
-it('honors the saved personal host without rewriting the repository policy', async () => {
-  fs.mkdirSync(path.join(profileRoot, 'fixture-unit'), { recursive: true });
-  fs.writeFileSync(path.join(profileRoot, 'fixture-unit', 'execution.json'), JSON.stringify({ hostHarness: 'claude' }));
-  const response = await request(`/api/projects/${projectId}/chat`, { sessionId, prompt: 'profile request' });
-  expect(response.status).toBe(200);
-  expect((await response.json()).connection).toMatchObject({ host: 'claude', source: 'profile' });
-  expect(JSON.parse(fs.readFileSync(callsPath, 'utf8')).host).toBe('claude');
-  expect(fs.readFileSync(path.join(repo, '.gantry', 'config.json'), 'utf8')).toContain('codex');
-});
-
-it('returns a visible upstream error and never persists a fabricated assistant reply', async () => {
-  const response = await request(`/api/projects/${projectId}/chat`, { sessionId, prompt: 'FAIL_THIS_REQUEST' });
-  expect(response.status).toBe(502);
-  expect((await response.json()).error).toContain('fixture authentication failure');
-  expect(server.store.listMessages(projectId, sessionId).map((message) => message.role)).toEqual(['user']);
-});
-
-it('rejects an empty message before calling a host and keeps a stale session on this project', async () => {
-  expect((await request(`/api/projects/${projectId}/chat`, { sessionId, prompt: '' })).status).toBe(400);
+it('does not connect a host through a conversation endpoint', async () => {
+  const response = await request(`/api/projects/${projectId}/chat`, { sessionId, prompt: 'hello from the conversation screen' });
+  expect(response.status).toBe(404);
   expect(fs.existsSync(callsPath)).toBe(false);
-  const response = await request(`/api/projects/${projectId}/chat`, { sessionId: 'wrong-session', prompt: 'hello from the open project' });
-  expect(response.status).toBe(200);
-  expect(server.store.listMessages(projectId, sessionId).some((message) => message.content === 'hello from the open project')).toBe(true);
-  const call = JSON.parse(fs.readFileSync(callsPath, 'utf8').trim().split('\n').at(-1)!);
-  expect(call.host).toBe('codex');
-});
-
-it('keeps a separate conversation for each project when the saved session belongs elsewhere', async () => {
-  const otherRepo = path.join(root, 'other');
-  fs.mkdirSync(path.join(otherRepo, '.gantry'), { recursive: true });
-  fs.writeFileSync(path.join(otherRepo, '.gantry', 'config.json'), JSON.stringify({ execution: { hostHarness: 'codex', roles: { plan: { harness: 'codex', model: 'do-not-borrow-this-model' } } } }));
-  fs.writeFileSync(path.join(otherRepo, 'README.md'), '# Other repository marker');
-  const other = server.store.upsertProject({ path: otherRepo, unitId: 'other-unit' });
-  expect((await request(`/api/projects/${projectId}/chat`, { sessionId, prompt: 'secret from the first project' })).status).toBe(200);
-
-  const switched = await fetch(`http://127.0.0.1:${server.port}/api/workspace/state`, {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ activeProjectId: other.project.id }),
-  });
-  expect(switched.status).toBe(200);
-  expect((await switched.json()).layout.activeSessionId).toBe(other.defaultSessionId);
-
-  const state = await fetch(`http://127.0.0.1:${server.port}/api/workspace/state`).then((response) => response.json());
-  expect(state.layout.activeProjectId).toBe(other.project.id);
-  expect(state.layout.activeSessionId).toBe(other.defaultSessionId);
-  expect(state.messages).toEqual([]);
-
-  const response = await request(`/api/projects/${other.project.id}/chat`, { sessionId, prompt: 'hello from the second project' });
-  expect(response.status).toBe(200);
-  const call = JSON.parse(fs.readFileSync(callsPath, 'utf8').trim().split('\n').at(-1)!);
-  expect(call.input).not.toContain('secret from the first project');
-  expect(call.cwd).toBe(fs.realpathSync(otherRepo));
-
-  await fetch(`http://127.0.0.1:${server.port}/api/workspace/state`, {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ activeProjectId: projectId }),
-  });
-  const restored = await fetch(`http://127.0.0.1:${server.port}/api/workspace/state`).then((response) => response.json());
-  expect(restored.messages.map((message: { content: string }) => message.content)).toContain('secret from the first project');
-  expect(restored.messages.map((message: { content: string }) => message.content)).not.toContain('hello from the second project');
 });
 
 it('reports invalid saved configuration without falling back to a global host', async () => {
@@ -149,8 +60,6 @@ it('reports invalid saved configuration without falling back to a global host', 
   const state = await request('/api/workspace/state').then((response) => response.json());
   expect(state.connection.ready).toBe(false);
   expect(state.connection.detail).toContain('unknown-host');
-  const response = await request(`/api/projects/${projectId}/chat`, { sessionId, prompt: 'hello' });
-  expect(response.status).toBe(400);
   expect(fs.existsSync(callsPath)).toBe(false);
 });
 
