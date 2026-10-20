@@ -26,3 +26,9 @@ Quem roda a suíte numa máquina sem checkout pessoal do gantry e sem pack globa
 ## Blocked by
 
 - `prd-alignment#01`
+
+## Comments
+
+### 2026-10-20 — Lacuna de contrato identificada na revisão de #03
+
+O status done registra a entrega de portabilidade original. A fixture `tests/fixtures/gantry-pack/scripts/cli.py` exige `execution.roles.<role>.command`, enquanto o setup/execution inspecionado usa harness/model/effort e monta a invocação no Gantry. Portabilidade não demonstra fidelidade a esse contrato. A #03 inclui corrigir a fixture e validar persistência/execução contra o contrato do pack, sem usar essa exigência artificial como requisito de produto. Na investigação, o pack global não tinha `scripts/cli.py`; sua execução real não foi validada.
