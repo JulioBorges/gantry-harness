@@ -11,7 +11,7 @@ Fonte da verdade: `docs/PRD-integration.md`, incluindo a revisão de setup e sid
 
 O operador abre o gantry-harness para ver Issues e Specs e conduzir a Run só quando o pack pede uma pessoa. Hoje isso não fecha.
 
-A tela de configuração deve representar o setup do Gantry e persistir a política do projeto. O desenho anterior desta spec exigia comandos executáveis por papel e removia a seleção de modelos, contrariando `execution.roles` do setup. A leitura também precisa reconhecer configuração e skills existentes no checkout aberto, atualizar valores ao reabrir e separar perfis pessoais da política versionada. Falhas do pack precisam de explicação em português, sem repetição no card da Spec.
+A tela de configuração deve representar o setup do Gantry e persistir a política do projeto. O desenho anterior desta spec exigia comandos executáveis por papel e removia a seleção de modelos. Isso reflete o `cli.py execute` pinado, mas diverge da seleção harness/model/effort do setup e de `execution.py`. A decisão de produto é unificar os contratos no Gantry antes de entregar a integração da tela. A leitura também precisa reconhecer configuração e skills existentes no checkout aberto, atualizar valores ao reabrir e separar perfis pessoais da política versionada. Falhas do pack precisam de explicação em português, sem repetição no card da Spec.
 
 Quando a Run anda, o quadro esconde o resultado. Uma Run pronta para aprovar sai da coluna que o operador está olhando. Um repositório cheio de Issues done parece vazio porque essa coluna nasce fora da vista. A pausa fala `plan-approval` e oferece `approve` / `reject`. A onda inteira cabe num botão que não diz o que vai disparar. O nome do projeto na sidebar some. O terminal abre sozinho e pinta um processo vivo como se tivesse terminado.
 
@@ -38,7 +38,7 @@ O quadro mostra onde o trabalho está: contagens, lanes vazias que não ocupam a
 
 5. Como operador, quero selecionar harness, modelo e esforço opcional de plan, implement, review e critic e persistir essas escolhas em `execution.roles` de `.gantry/config.json`, para o pipeline do Gantry usá-las.
 6. Como operador, quero detectar política e skills existentes na raiz Git do checkout aberto, com caminhos e origem visíveis, para não reconfigurar um projeto já preparado nem usar silenciosamente outro checkout.
-7. Como operador, quero editar em seções guiadas toda a política suportada pelo setup, com papéis em destaque e preservação de campos desconhecidos.
+7. Como operador, quero editar em seções guiadas a política do contrato versionado do pack pinado, com papéis em destaque e preservação de campos desconhecidos.
 8. Como operador, quero revisar os efeitos em configuração, AGENTS.md e adapters/hooks antes de delegar a aplicação ao setup, sem commit automático nem cópia implícita de perfil pessoal.
 9. Como operador, quero recarregar os valores ao reabrir a tela e distinguir ausência, política inválida e pack incompatível, com explicação em português e acesso à configuração.
 
@@ -85,8 +85,9 @@ O quadro mostra onde o trabalho está: contagens, lanes vazias que não ocupam a
 - A suíte do pipeline não depende de um diretório da máquina de um autor. A cópia do pack usada no teste viaja com a suíte. O teste sobe o harness contra um repositório git temporário com essa cópia pinada.
 - A tela configura a política completa suportada pelo setup. Papéis do pipeline vêm primeiro: plan, implement, review e critic com harness, model e effort opcional em `execution.roles` de `.gantry/config.json`. O Gantry resolve e executa o pipeline; não se introduzem comandos arbitrários por papel.
 - O checkout aberto define a raiz de leitura e gravação, inclusive quando é worktree. Configuração ausente, inválida e skills/pack incompatíveis têm diagnósticos distintos. Caminhos e origem ficam visíveis; a tela relê o disco ao reabrir. Não se importa política de outro checkout nem perfil pessoal implicitamente.
-- Checks, Git/entrega, artefatos/templates, orçamento, hooks e demais preferências do setup têm seções guiadas. Preservam-se campos desconhecidos. A prévia cobre os efeitos reais em config, AGENTS.md e adapters/hooks. Aplicar delega ao setup, sem commit automático.
-- Validação e precedência de execução seguem o contrato publicado pelo Gantry. A suíte não pode transformar um campo `command` inventado pela fixture em requisito de produto. Erros explicam em português e levam à configuração do projeto.
+- Checks, Git/entrega, artefatos/templates, orçamento, hooks, dashboard e Caveman têm seções guiadas conforme o contrato de política da versão pinada. O pack fornece descritor/schema, defaults e validação semântica; o harness mantém apresentação e textos. Campos fora do contrato gerenciado pela tela são sinalizados e preservados. A prévia cobre os efeitos reais em config, AGENTS.md e adapters/hooks. Aplicar delega ao script do setup, sem commit automático nem invocação da skill conversacional.
+- Validação e precedência de execução pertencem ao Gantry. A fixture atual é cópia do `cli.py` real no commit `dc5bdd3571253af628ab629f1edcd58fa81fe2b1` e exige `command`; setup/execution.py usam harness/model/effort. A divergência exige correção upstream, não edição manual da fixture. A #03 fica blocked até existir um pin compatível. Erros explicam em português e levam à configuração do projeto.
+- Conforme a ADR-0007 do pack, a resolução efetiva de papéis é Issue > Run > perfil pessoal > default do projeto > default confirmado do ambiente. A tela edita defaults do projeto separadamente de valores efetivos/origens; perfis ficam fora do repositório e não são promovidos implicitamente para a política compartilhada.
 - Lane, primeira regra que casar: Spec fica em Specs. Issue done no target fica em Done. Run viva em plan, implement, review ou critic fica nessa coluna; integrate conta como critic. Todo o resto fica em Issues, inclusive ready to agent, blocked, interrompida, pronta para aprovação e aprovada com PR ainda não done. A fase escrita no arquivo da Issue não muda por causa da Run.
 - Mudança de estado que tira o card da área visível rola o quadro até ele.
 - Erro vindo do pack aparece uma vez, no card da Run, em português. O card da Spec não repete.
@@ -96,10 +97,22 @@ O quadro mostra onde o trabalho está: contagens, lanes vazias que não ocupam a
 - Quando a pausa traz caminhos de Spec ou de Issue, o card abre esses arquivos no visor.
 - A faixa do quadro conta prontas para o agente, bloqueadas, em execução, esperando o operador, prontas para aprovar e done. Ativar a contagem leva à coluna. Coluna sem card fica só o título. Abaixo da largura em que a navegação já vira gaveta, o quadro vira uma lista com seletor de fase.
 - O contador na entrada Quadro é o número de Runs com pausa em aberto. Não conta alerta de decision card.
-- Identificação e configurações do projeto ficam numa linha própria; worktrees ficam abaixo. Nome pode quebrar linha; caminho pode usar reticências com acesso ao valor completo. Selecionar projeto ou expandir worktrees não oculta informações nem controles. Worktrees são só as de Issue com Run, identificadas pelo ref. O checkout principal não entra. Não há assumir terminal. A experiência é validada com Playwright em desktop e celular.
+- Identificação e configurações do projeto ficam numa linha própria; worktrees ficam abaixo. Nome pode quebrar linha; caminho pode usar reticências com acesso ao valor completo. Selecionar projeto ou expandir worktrees não oculta informações nem controles. Worktrees são só as de Issue com Run, identificadas pelo ref. O checkout principal não entra. Não há assumir terminal. A experiência é validada em desktop e celular pelo check existente `browser-validation`, cuja implementação CDP será migrada para Playwright, preservando seus cenários e ponto de entrada.
 - Ir para Terminal não spawna shell. Shell novo é o controle de nova aba. Fechar a aba mata o processo. Processo rodando não usa o estado visual de concluído.
 - O aviso de pack ausente fica no Quadro. Terminal e Arquivos não o repetem.
 - Textos de operador (README, descrição de produto, ajuda, diretório inexistente, pareamento) em português, descrevendo setup do projeto e o processo filho. Não prometem coordenador, chat, nem instalação do pack pelo harness.
+
+## Pré-requisitos upstream
+
+A [ADR-0001](../../docs/adr/0001-configuracao-do-projeto-e-a-politica-do-setup.md) registra a decisão aceita e suas alternativas. A #03 está `blocked` aguardando os contratos abaixo em `JulioBorges/gantry`; as mudanças no pack são pré-requisitos externos, não implementação deste repositório. Não há flags novas nem commit compatível publicados por este PR.
+
+- **U1 — Execução integrada:** `cli.py execute` deve resolver e executar papéis por harness/model/effort através da camada `execution.py`, respeitando precedência, validação, protocolos de pausa/veredito, stdout do pipeline e retomada. Não adicionar tradução paralela para command no harness.
+- **U2 — Proposta, prévia e aplicação:** o script do setup deve aceitar proposta JSON por arquivo, invocada por argumentos estruturados (`--config-file` já existe). Deve publicar prévia legível por máquina com arquivos afetados e efeitos completos em política, AGENTS.md e adapters/hooks, modo de merge/overwrite e orientações manuais. Aplicação não interativa deve se vincular ao plano aprovado e às pré-condições dos arquivos, checkout e versão do pack, rejeitando mudanças concorrentes com pedido de nova prévia. Definir serialização e comportamento em falha parcial/recuperação; um hash sozinho não garante atomicidade. Não fabricar diff no harness, interpolar JSON no shell nem sintetizar confirmação de overwrite via stdin. Nomes futuros de flags/protocolo serão definidos upstream.
+- **U3 — Contrato da política:** o pack pinado deve publicar descritor/schema e identificação de versão/capacidades para os campos gerenciados, defaults e validação semântica. Abrange papéis, artefatos e issue tracker, templates, checks, Git/entrega, orçamento, hooks, dashboard e Caveman. Compatibilidade é verificar esse contrato e U1/U2, não só a existência dos scripts. A tela preserva campos não gerenciados e não reimplementa regras do pack.
+
+Registrar os commits upstream quando entregues e atualizar a fixture apenas pelos blobs desses commits, seguindo seu README, incluindo dependências reais do setup/dispatch. Provar setup → política no disco → execute sem command gerado pelo harness antes de desbloquear/concluir a integração da #03. O setup atual é interativo; o harness atual fabrica parte da prévia e injeta respostas, caminho que deverá ser substituído, não adotado como protocolo.
+
+A #08 entrega layout e destino da navegação, sem depender da persistência da #03. A #04 trata eventos de Run já suportados pelo pin atual e depende da #02, não da nova tela de setup. A aceitação da configuração completa e os textos correspondentes continuam na #03/#10.
 
 ## Decisões de teste
 
@@ -109,7 +122,7 @@ Um bom teste olha comportamento de fora: resposta HTTP, o que a tela mostra, arq
 
 Prior art: os testes de integração do supervisor com o workspace renderizado, e os testes de tela do quadro, do terminal e dos arquivos. Eles passam a usar a cópia de pack da suíte. Testes cuja única finalidade era o motor antigo saem em vez de serem reescritos.
 
-Não se cria seam novo de unidade para o supervisor. A #08 inclui validação com Playwright sobre a UI servida, em desktop e celular, cobrindo seleção/troca de projetos, expansão de worktrees, nomes/caminhos longos e acesso à configuração. A #03 prova a persistência real pelo setup, releitura e preservação da política existente; a fixture portátil deve respeitar esse contrato.
+Não se cria seam novo de unidade para o supervisor. A #08 migra `scripts/browser-board.mjs` de CDP direto para Playwright, mantendo o comando `bun scripts/browser-board.mjs` e seu registro como check `browser-validation` em `.gantry/config.json`. Declarar dependência e instalação do navegador/ambiente; preservar cenários do quadro e incluir seleção/troca de projetos, expansão de worktrees, nomes/caminhos longos, rolagem e destino da configuração em 1280×800 e 390×844. Não manter runners de browser paralelos. A #03 testa os módulos reais de setup/execução no novo pin, releitura, preservação da política, perfis separados, cancelamento sem escrita, conflito após prévia e recuperação de falha parcial segundo o contrato do pack.
 
 ## Fora de escopo
 
@@ -126,6 +139,7 @@ Onda 3 da revisão, de propósito:
 Também fora:
 
 - Reimplementar no harness os comandos, a ordem ou as regras de execução do Gantry. A tela configura a política; o pack executa.
+- Implementar U1/U2/U3 neste repositório ou alterar scripts da fixture à mão. Mudar cli.py/execução e o setup no pack é pré-requisito upstream da #03, não entrega deste PR.
 - Webhook de pull request, ou um gesto novo para o operador declarar merge à mão.
 - Instalar ou atualizar o pack, e o commit que isso criaria.
 - Campo de resposta livre para um papel.

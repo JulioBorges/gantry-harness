@@ -28,4 +28,10 @@ Quando o card mudaria para fora da área visível, o quadro o traz para a vista.
 
 ## Blocked by
 
-- `prd-alignment#03`
+- `prd-alignment#02`
+
+## Comments
+
+### 2026-10-20 — Independência do setup
+
+A exibição de fases, pausas e erros usa o protocolo de Run já exercitado pela suíte portátil. Não depende da nova tela de setup nem da resolução de modelos upstream da #03. A dependência passa a ser #02 para que o bloqueio do setup não serialize mudanças independentes do quadro; a fixture atual é preservada até seu futuro bump de pin.
