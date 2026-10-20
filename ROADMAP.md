@@ -1,75 +1,32 @@
 # Roadmap
 
-Acompanhamento do gantry-harness. O status em `.scratch/` manda. O bloco gerado abaixo cobre só a spec `run-orchestration` e não foi regenerado; a spec `prd-alignment` está na lista manual.
-
-Nada disso está 100% feito. `run-orchestration` entregou o supervisor e o quadro. `prd-alignment` ainda não começou: é o trabalho para o harness cumprir o PRD (comando por papel, motor antigo apagado, quadro e textos que o operador entende).
+Acompanhamento do gantry-harness. A linha `Status:` de cada Issue é a fonte da verdade. Os blocos entre `BEGIN GENERATED` e `END GENERATED` são projeção desses arquivos, regenerada por `roadmap.py`. Quando os dois divergem, a Issue vence e este arquivo está velho.
 
 ## Progresso
 
-| | Contagem |
+| | Count |
 |---|---|
-| Issues concluídas | **9 / 19** |
-| Specs concluídas | **1 / 2** |
-| Spec em ready-for-agent | **`prd-alignment` (0 / 10)** |
+| Issues completed | **12 / 19** |
+| Specs completed | **1 / 2** |
+| Execution waves | **11** |
 
 ## Specs
 
+Números são a linha `Map:` de cada `spec.md` (`(spec NN)`). A tabela abaixo é a camada manual do pack: *approved* quando o fatiamento foi aceito, *done* quando toda Issue da spec está `done`.
+
 | # | Spec | Status | Blocked by | Ordered after | Touches | Delivers |
 |---|---|---|---|---|---|---|
-| 01 | `run-orchestration` | approved | — | — | supervisor, quadro, registro da Run | integração com o `gantry` pinado no repositório |
-| 02 | `prd-alignment` | ready-for-agent | — | `run-orchestration` | quadro, configuração de papel, textos, suíte | harness operável segundo `docs/PRD-integration.md` |
+| 01 | `run-orchestration` | done | — | — | supervisor, quadro, registro da Run | integração com o `gantry` pinado no repositório |
+| 02 | `prd-alignment` | approved | — | `run-orchestration` | quadro, configuração de papel, textos, suíte | harness operável segundo `docs/PRD-integration.md` |
 
-### `prd-alignment` — 0/10
-
-Ondas pela dependência. Nada nesta lista está feito.
-
-#### Onda 0 — prefactor, pode começar
-
-- [ ] **`prd-alignment#01`** — Apagar o motor antigo _(sem bloqueio)_
-
-#### Onda 1 — depois da 01
-
-- [ ] **`prd-alignment#02`** — Suíte do pipeline portátil
-  <br>↳ blocked by: prd-alignment#01
-- [ ] **`prd-alignment#09`** — Terminal que não abre sozinho
-  <br>↳ blocked by: prd-alignment#01
-
-#### Onda 2
-
-- [ ] **`prd-alignment#03`** — Comando executável do papel
-  <br>↳ blocked by: prd-alignment#02
-- [ ] **`prd-alignment#08`** — Sidebar legível
-  <br>↳ blocked by: prd-alignment#02
-
-#### Onda 3
-
-- [ ] **`prd-alignment#04`** — Run pronta na coluna de Issues e erro uma vez
-  <br>↳ blocked by: prd-alignment#03
-
-#### Onda 4
-
-- [ ] **`prd-alignment#05`** — Onda com confirmação
-  <br>↳ blocked by: prd-alignment#04
-- [ ] **`prd-alignment#06`** — Pausa em português
-  <br>↳ blocked by: prd-alignment#04
-
-#### Onda 5
-
-- [ ] **`prd-alignment#07`** — Quadro que cabe na vista
-  <br>↳ blocked by: prd-alignment#05, prd-alignment#06
-
-#### Onda 6
-
-- [ ] **`prd-alignment#10`** — Textos do operador alinhados ao PRD
-  <br>↳ blocked by: prd-alignment#03, prd-alignment#07, prd-alignment#08, prd-alignment#09
-
-## Histórico gerado — só `run-orchestration`
+## Progresso por spec
 
 <!-- BEGIN GENERATED: spec progress -->
 
 | # | Spec | Issues done | Waves |
 |---|---|---|---|
 | 01 | `run-orchestration` | 9/9 | 0–3 |
+| 02 | `prd-alignment` | 3/10 | 4–10 |
 
 <!-- END GENERATED: spec progress -->
 
@@ -103,5 +60,45 @@ Ondas pela dependência. Nada nesta lista está feito.
   <br>↳ blocked by: run-orchestration#03
 - [x] **`run-orchestration#07`** — 07: Approve, PR watching and merge-done
   <br>↳ blocked by: run-orchestration#03
+
+### Wave 4 — 1/1 done
+
+- [x] **`prd-alignment#01`** — 01: Apagar o motor antigo _(no blockers)_
+
+### Wave 5 — 2/2 done
+
+- [x] **`prd-alignment#02`** — 02: Tornar a suíte do pipeline portátil
+  <br>↳ blocked by: prd-alignment#01
+- [x] **`prd-alignment#09`** — 09: Não abrir o terminal sozinho
+  <br>↳ blocked by: prd-alignment#01
+
+### Wave 6 — 0/2 done
+
+- [ ] **`prd-alignment#03`** — 03: Configurar o comando que o papel vai spawnar
+  <br>↳ blocked by: prd-alignment#02
+- [ ] **`prd-alignment#08`** — 08: Ler o projeto na sidebar
+  <br>↳ blocked by: prd-alignment#02
+
+### Wave 7 — 0/1 done
+
+- [ ] **`prd-alignment#04`** — 04: Mostrar a Run pronta e o erro uma vez só
+  <br>↳ blocked by: prd-alignment#03
+
+### Wave 8 — 0/2 done
+
+- [ ] **`prd-alignment#05`** — 05: Confirmar a onda e tirar o aprovar cego
+  <br>↳ blocked by: prd-alignment#04
+- [ ] **`prd-alignment#06`** — 06: Dizer a pausa em português
+  <br>↳ blocked by: prd-alignment#04
+
+### Wave 9 — 0/1 done
+
+- [ ] **`prd-alignment#07`** — 07: Fazer o quadro caber na vista
+  <br>↳ blocked by: prd-alignment#05, prd-alignment#06
+
+### Wave 10 — 0/1 done
+
+- [ ] **`prd-alignment#10`** — 10: Alinhar os textos ao PRD
+  <br>↳ blocked by: prd-alignment#03, prd-alignment#07, prd-alignment#08, prd-alignment#09
 
 <!-- END GENERATED: issue checklist -->
