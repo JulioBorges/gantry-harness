@@ -11,10 +11,8 @@ import type {
   DecisionCardPayload,
   LiveBadgeState,
   ExecutionSettings,
-  ProviderSettingsInput,
   RegisteredProject,
   RunLifecycleState,
-  SanitizedProviderSettings,
   WorkspaceLayoutState,
 } from '../types.js';
 
@@ -150,11 +148,7 @@ export class HarnessStateStore {
     this.migrateLegacySchema();
 
     if (!fs.existsSync(this.settingsPath)) {
-      this.writeRawSettings({
-        activeProvider: 'cli',
-        mode: 'cli',
-        providers: {},
-      });
+      this.writeRawSettings({});
     }
   }
 
@@ -539,24 +533,20 @@ export class HarnessStateStore {
     return settings;
   }
 
-  private readSettingsFile(): ProviderSettingsInput & { execution?: ExecutionSettings } {
+  private readSettingsFile(): { execution?: ExecutionSettings } {
     try {
-      return JSON.parse(fs.readFileSync(this.settingsPath, 'utf-8')) as ProviderSettingsInput & { execution?: ExecutionSettings };
+      const parsed = JSON.parse(fs.readFileSync(this.settingsPath, 'utf-8')) as { execution?: ExecutionSettings };
+      return parsed.execution && typeof parsed.execution === 'object' ? { execution: parsed.execution } : {};
     } catch {
-      return { activeProvider: 'cli', mode: 'cli', providers: {} };
+      return {};
     }
   }
 
-  private writeRawSettings(settings: ProviderSettingsInput & { execution?: ExecutionSettings }): void {
+  private writeRawSettings(settings: { execution?: ExecutionSettings }): void {
     fs.writeFileSync(this.settingsPath, JSON.stringify(settings, null, 2) + '\n', {
       encoding: 'utf-8',
       mode: 0o600,
     });
-  }
-
-  public getRawProviderSettings(): ProviderSettingsInput {
-    const { execution: _execution, ...settings } = this.readSettingsFile();
-    return settings;
   }
 
   public getGlobalExecution(): ExecutionSettings {
@@ -572,51 +562,8 @@ export class HarnessStateStore {
       ...(typeof input.hostHarness === 'string' && input.hostHarness ? { hostHarness: input.hostHarness } : {}),
       ...(Object.keys(roles).length ? { roles } : {}),
     };
-    this.writeRawSettings({ ...current, execution });
+    this.writeRawSettings({ execution });
     return execution;
-  }
-
-  public updateProviderSettings(input: ProviderSettingsInput): SanitizedProviderSettings {
-    const stored = this.readSettingsFile();
-    const current = this.getRawProviderSettings();
-    const nextProviders = { ...(current.providers ?? {}) };
-    if (input.providers) {
-      for (const [provName, cfg] of Object.entries(input.providers)) {
-        nextProviders[provName] = {
-          ...(nextProviders[provName] ?? {}),
-          ...cfg,
-          apiKey: cfg.apiKey !== undefined ? cfg.apiKey : nextProviders[provName]?.apiKey,
-        };
-      }
-    }
-    const updated: ProviderSettingsInput & { execution?: ExecutionSettings } = {
-      activeProvider: input.activeProvider ?? current.activeProvider,
-      mode: input.mode ?? current.mode,
-      cliHarness: input.cliHarness ?? current.cliHarness,
-      providers: nextProviders,
-      ...(stored.execution ? { execution: stored.execution } : {}),
-    };
-    this.writeRawSettings(updated);
-    return this.getSanitizedProviderSettings();
-  }
-
-  public getSanitizedProviderSettings(): SanitizedProviderSettings {
-    const raw = this.getRawProviderSettings();
-    const sanitizedProviders: SanitizedProviderSettings['providers'] = {};
-    for (const [name, cfg] of Object.entries(raw.providers ?? {})) {
-      sanitizedProviders[name] = {
-        hasApiKey: Boolean(cfg.apiKey && cfg.apiKey.trim().length > 0),
-        model: cfg.model,
-        baseUrl: cfg.baseUrl,
-        modelsByHost: cfg.modelsByHost,
-      };
-    }
-    return {
-      activeProvider: raw.activeProvider,
-      mode: raw.mode,
-      cliHarness: raw.cliHarness,
-      providers: sanitizedProviders,
-    };
   }
 
   public generatePairingCode(): string {

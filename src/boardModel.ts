@@ -279,14 +279,6 @@ export function issuePhase(
   return 'ready-to-agent';
 }
 
-const EXECUTION_COLUMNS: Record<string, ExecutionLane> = {
-  Plan: 'plan',
-  Implement: 'implement',
-  Review: 'review',
-  Critic: 'critic',
-  Integrate: 'critic',
-};
-
 export function issueLane(issue: Pick<BoardIssue, 'status' | 'ref'>, overlays: IssueRunOverlay[]): BoardLane {
   if (issue.status === 'done') return 'done';
   const overlay = [...overlays].reverse().find((item) => item.ref === issue.ref);
@@ -386,30 +378,6 @@ export function mergeBoardWithPlanRuns(
     specs,
     issues,
   };
-}
-
-export function overlaysFromKanban(
-  runs: Array<{
-    runId: string;
-    finished: boolean;
-    columns: Record<string, Array<{ ref: string; operatorWaiting?: boolean }>>;
-  }>,
-): IssueRunOverlay[] {
-  const overlays: IssueRunOverlay[] = [];
-  for (const run of runs) {
-    if (run.finished) continue;
-    for (const [column, lane] of Object.entries(EXECUTION_COLUMNS)) {
-      for (const item of run.columns[column] ?? []) {
-        overlays.push({
-          ref: item.ref,
-          lane,
-          operatorWaiting: item.operatorWaiting === true,
-          runId: run.runId,
-        });
-      }
-    }
-  }
-  return overlays;
 }
 
 export function orderedIssues(board: BoardSnapshot): BoardIssue[] {
