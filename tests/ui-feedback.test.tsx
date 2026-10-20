@@ -82,7 +82,7 @@ it('returns to a CLI terminal in one click without toggling the coordinator into
 });
 
 
-it('opens a system shell from Terminal even when the coordinator uses Codex', async () => {
+it('opens a system shell from the new tab control and not from the Terminal selector', async () => {
   const fetchMock = mockWorkspace();
   const fallback = fetchMock.getMockImplementation()!;
   fetchMock.mockImplementation(async (url, init) => String(url).endsWith('/panes') && init?.method === 'POST'
@@ -91,9 +91,17 @@ it('opens a system shell from Terminal even when the coordinator uses Codex', as
   render(<App />);
   await screen.findAllByText('My project');
   fireEvent.click(screen.getByTestId('chat-terminal-toggle'));
+  fireEvent.click(screen.getByTestId('open-factory-btn'));
   await screen.findByTestId('terminal-view');
-  const creation = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith('/panes') && init?.method === 'POST');
-  expect(JSON.parse(creation![1]!.body as string)).toMatchObject({ launcher: 'shell', mode: 'terminal' });
+  expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith('/panes') && init?.method === 'POST')).toBe(false);
+  fireEvent.click(screen.getByTestId('open-settings-btn'));
+  expect(within(screen.getByRole('dialog', { name: 'Configurações' })).queryByText(/Alternar conversa e terminal/)).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Fechar configurações' }));
+  fireEvent.click(screen.getByTestId('launcher-shell'));
+  await waitFor(() => {
+    const creation = fetchMock.mock.calls.find(([url, init]) => String(url).endsWith('/panes') && init?.method === 'POST');
+    expect(JSON.parse(creation![1]!.body as string)).toMatchObject({ launcher: 'shell', mode: 'terminal' });
+  });
   expect(screen.queryByTestId('launcher-codex')).toBeNull();
 });
 

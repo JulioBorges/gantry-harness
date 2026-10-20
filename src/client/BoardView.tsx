@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import {
   BOARD_LANES,
   LANE_LABEL,
+  NO_PACK_EXPLANATION,
   PHASE_LABEL,
   issueLane,
   issuePhase,
@@ -334,7 +335,7 @@ export function BoardView({
           Approve
         </button>
       </div>
-      {!executionEnabled && effectiveBoard.explanation && (
+      {!executionEnabled && effectiveBoard.explanation && effectiveBoard.explanation !== NO_PACK_EXPLANATION && (
         <p className="board-explanation" data-testid="execution-unavailable">{effectiveBoard.explanation}</p>
       )}
       <div className="board-lanes" data-testid="board-lanes">
