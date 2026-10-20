@@ -42,7 +42,7 @@ A tela não define comandos arbitrários por papel, não chama os modelos e não
 - `prd-alignment#02`
 - Upstream `JulioBorges/gantry`: contratos U1 (execução), U2 (prévia/aplicação) e U3 (política versionada), descritos em [Pré-requisitos upstream](../spec.md#pré-requisitos-upstream).
 
-A Issue permanece `blocked` até os contratos serem entregues no upstream e houver um pin verificável. Preparar o formulário não conclui a integração. Ao desbloquear, registrar o commit e a evidência de compatibilidade; presença dos scripts não basta.
+A Issue permanece `blocked` até os contratos serem entregues no upstream e houver um pin verificável. Preparar o formulário não conclui a integração. Ainda não há ticket upstream específico vinculado: a consulta ao GitHub e ao tracker local em 2026-10-20 não encontrou item que cubra U1/U2/U3. Ao desbloquear, vincular o artefato upstream, o commit e a evidência de compatibilidade; presença dos scripts não basta.
 
 ## Comments
 

@@ -100,3 +100,12 @@ A #08 não precisa aguardar a integração upstream para corrigir layout: separa
 5. **Entrega e testes:** atualizar pin e fixtures a partir do upstream; testar setup → disco → execute com papéis configurados, sem `command` introduzido pelo harness; validar cancelamento, conflito após prévia, falha parcial, campos desconhecidos e worktrees. Migrar o check de browser existente para Playwright e cobrir quadro/sidebar com um único runner.
 
 Na etapa de investigação, os ajustes eram propostas. Após confirmação do dono do produto, foram incorporados ao PRD, à spec, às issues #02/#03/#04/#08 e à ADR-0001: #03 blocked por U1/U2/U3; #04/#08 independentes dessa integração; migração do único check de browser prevista na #08. O roadmap foi regenerado e o check passou com drift vazio. Este PR continua documental: não entrega os contratos upstream nem a migração de runner. A nota numérica de entropia do comentário não tem método reproduzível demonstrado; a priorização acima se baseia nos contratos e falhas observados, não no total +4.
+
+## Segunda revisão arquitetural — head 9dbf7af
+
+O [comentário atualizado](https://github.com/JulioBorges/gantry-harness/pull/15#issuecomment-6303735532) considera A1–A5 tratados e não aponta achados bloqueantes, altos ou médios. Os ajustes documentais seguintes respondem às observações restantes:
+
+- ADR-0002 própria para a migração CDP → Playwright no único check `browser-validation`, com motivo, alternativa e custos de dependência/ambiente.
+- #10 sem dependência da #03 para textos gerais e traduções. A nova #11 depende de #03/#10 para textos específicos do setup e remoção da ressalva do pin antigo após evidência do pin compatível.
+- Consulta ao GitHub do pack (nenhuma issue aberta retornada) e busca no tracker local em 2026-10-20 não identificaram item específico que entregue U1/U2/U3. A lacuna é explícita na spec/#03; vincular o artefato upstream e o commit passa a ser condição de desbloqueio. Não foram criadas issues em outro repositório nesta revisão.
+- ROADMAP regenerado pelo comando oficial, com 20 Issues totais e check sem drift. A ADR/relatório preservam a investigação histórica quando a ressalva operacional for retirada do PRD.
