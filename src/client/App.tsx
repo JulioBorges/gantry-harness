@@ -546,15 +546,6 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     }
   });
 
-  const handleToggleChatTerminal = withFeedback("Alternar conversa e terminal", async (): Promise<void> => {
-    const shellPane = panes.find((pane) => pane.paneId === activePaneId && pane.launcher === 'shell' && pane.status === 'running') ?? panes.find((pane) => pane.launcher === 'shell' && pane.status === 'running');
-    if (activeProjectId && shellPane) {
-      await handleSelectPane(shellPane.paneId);
-      return;
-    }
-    await handleOpenTerminal();
-  });
-
   const handleVirtualKey = withFeedback("Enviar tecla", async (keySeq: string): Promise<void> => {
     if (activeProjectId && activePaneId) {
       await apiFetch(`/api/projects/${activeProjectId}/panes/${activePaneId}/input`, {
@@ -1002,7 +993,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
           <div className="workspace-title"><strong>{activeProject?.name ?? 'Gantry Harness'}</strong><span title={activeProject?.path}>{activeView === 'board' ? 'Issues e Specs' : activeProject?.path ?? 'Seu workspace de desenvolvimento'}</span></div>
           <div className="view-selector" aria-label="Área de trabalho">
             <button aria-pressed={activeView === 'board'} onClick={() => setActiveView('board')}>Quadro</button>
-            <button data-testid="chat-terminal-toggle" aria-pressed={activeView === 'factory'} disabled={!activeProjectId || pendingActions.includes('Abrir terminal')} onClick={() => { setPaneMode('terminal'); setActiveView('factory'); if (activeTerminal?.launcher !== 'shell' || activeTerminal?.status !== 'running') void handleToggleChatTerminal(); }}>Terminal</button>
+            <button data-testid="chat-terminal-toggle" aria-pressed={activeView === 'factory'} disabled={!activeProjectId} onClick={() => { setPaneMode('terminal'); setActiveView('factory'); }}>Terminal</button>
             <button data-testid="open-files-btn" aria-pressed={activeView === 'files'} onClick={() => setActiveView('files')}>Files</button>
           </div>
         </header>
@@ -1013,7 +1004,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         {showGuide && <section className="workspace-guide"><strong>Do projeto à execução</strong><p>Abra uma pasta e use o terminal para executar comandos ou restaurar sessões do Codex, Claude e OpenCode. O quadro mostra as Issues e Specs do repositório.</p><button onClick={() => setShowGuide(false)}>Entendi</button></section>}
         {pendingActions.length > 0 && <div className="action-pending" role="status" aria-live="polite"><span className="working-indicator" />{pendingActions.join(' · ')}…</div>}
         {feedback?.kind === 'error' && !projectDialogOpen && !settingsOpen && !projectSettingsId && <div className="action-feedback error" role="alert"><p>{feedback.message}</p><div className="feedback-actions"><button onClick={() => openSettings('terminal')}>Revisar configuração</button><button aria-label="Fechar aviso" onClick={dismissFeedback}>×</button></div></div>}
-        {board?.explanation === NO_PACK_EXPLANATION && activeProjectId && <div className="action-feedback error" role="alert" data-testid="pack-missing"><p>{board.explanation}</p><div className="feedback-actions"><button onClick={() => setProjectSettingsId(activeProjectId)}>Configurar este projeto</button><button onClick={() => openSettings('gantry')}>Configuração global</button></div></div>}
+        {activeView === 'board' && board?.explanation === NO_PACK_EXPLANATION && activeProjectId && <div className="action-feedback error" role="alert" data-testid="pack-missing"><p>{board.explanation}</p><div className="feedback-actions"><button onClick={() => setProjectSettingsId(activeProjectId)}>Configurar este projeto</button><button onClick={() => openSettings('gantry')}>Configuração global</button></div></div>}
         {activeView === 'board' && (
           <BoardView
             board={board}
@@ -1041,7 +1032,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
           return <div className="workspace-content">
           <div className="session-bar">
             <div className="session-tabs" aria-label="Terminais">
-              {panes.map((pane) => <div key={pane.paneId} className={`terminal-tab ${pane.paneId === activePaneId ? 'active' : ''}`}><button onClick={() => void handleSelectPane(pane.paneId)}><span className={`status-dot ${pane.status === 'running' ? 'done' : 'idle'}`} />{pane.launcher}<small>{pane.status === 'exited' ? `Encerrado (${pane.exitCode ?? '—'})` : 'Em execução'}</small></button><button className="tab-close" aria-label={`Encerrar terminal ${pane.launcher}`} onClick={() => void handleClosePane(pane.paneId)}>×</button></div>)}
+              {panes.map((pane) => <div key={pane.paneId} className={`terminal-tab ${pane.paneId === activePaneId ? 'active' : ''}`}><button onClick={() => void handleSelectPane(pane.paneId)}><span className={`status-dot ${pane.status === 'exited' ? 'done' : 'working'}`} />{pane.launcher}<small>{pane.status === 'exited' ? `Encerrado (${pane.exitCode ?? '—'})` : 'Em execução'}</small></button><button className="tab-close" aria-label={`Encerrar terminal ${pane.launcher}`} onClick={() => void handleClosePane(pane.paneId)}>×</button></div>)}
             </div>
             <button className="new-terminal-button" data-testid="launcher-shell" disabled={!activeProjectId || pendingActions.includes('Abrir terminal')} onClick={() => void handleOpenTerminal()}>+ Terminal</button>
           </div>
@@ -1056,7 +1047,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
           )}
 
           <div className="terminal-workspace" data-testid="terminal-view">
-            {activePaneId ? <><div className="terminal-caption"><span>{activeTerminal?.launcher ?? 'Terminal'} · {activeTerminal?.status === 'exited' ? 'Sessão encerrada' : activeTerminal?.launcher === 'shell' ? 'Shell do sistema' : 'Sessão CLI independente'}</span><code>{activeTerminal?.worktreePath ?? activeProject?.path}</code></div><div className="terminal-surface"><div ref={terminalContainerRef} className="terminal-emulator" aria-label="Terminal interativo" /></div><details className="terminal-tools"><summary>Teclas e envio de comando</summary><form className="terminal-command" onSubmit={(event) => { event.preventDefault(); void handleTerminalCommand(); }}><label htmlFor="terminal-command">Enviar ao terminal</label><input id="terminal-command" value={terminalInput} onChange={(event) => setTerminalInput(event.target.value)} placeholder="Mensagem ou comando para este terminal" /><button type="submit" disabled={!activePaneId}>Enviar</button></form><div className="virtual-keybar" data-testid="virtual-keybar">{[['esc', '\x1b'], ['tab', '\t'], ['^C', '\x03'], ['↑', '\x1b[A'], ['↓', '\x1b[B'], ['←', '\x1b[D'], ['→', '\x1b[C']].map(([label, key]) => <button key={label} className="btn-key" onClick={() => void handleVirtualKey(key)}>{label}</button>)}</div></details></> : <div className="chat-empty"><h1>Abra uma sessão de terminal</h1><p>Abra o shell do sistema para executar comandos ou restaurar sessões do Codex, Claude e OpenCode com os parâmetros que preferir.</p><button onClick={() => void handleOpenTerminal()}>Abrir shell</button></div>}
+            {activePaneId ? <><div className="terminal-caption"><span>{activeTerminal?.launcher ?? 'Terminal'} · {activeTerminal?.status === 'exited' ? 'Sessão encerrada' : activeTerminal?.launcher === 'shell' ? 'Shell do sistema' : 'Sessão CLI independente'}</span><code>{activeTerminal?.worktreePath ?? activeProject?.path}</code></div><div className="terminal-surface"><div ref={terminalContainerRef} className="terminal-emulator" aria-label="Terminal interativo" /></div><details className="terminal-tools"><summary>Teclas e envio de comando</summary><form className="terminal-command" onSubmit={(event) => { event.preventDefault(); void handleTerminalCommand(); }}><label htmlFor="terminal-command">Enviar ao terminal</label><input id="terminal-command" value={terminalInput} onChange={(event) => setTerminalInput(event.target.value)} placeholder="Mensagem ou comando para este terminal" /><button type="submit" disabled={!activePaneId}>Enviar</button></form><div className="virtual-keybar" data-testid="virtual-keybar">{[['esc', '\x1b'], ['tab', '\t'], ['^C', '\x03'], ['↑', '\x1b[A'], ['↓', '\x1b[B'], ['←', '\x1b[D'], ['→', '\x1b[C']].map(([label, key]) => <button key={label} className="btn-key" onClick={() => void handleVirtualKey(key)}>{label}</button>)}</div></details></> : <div className="chat-empty"><h1>Abra uma sessão de terminal</h1><p>Use + Terminal para abrir o shell do sistema neste projeto.</p></div>}
           </div>
         </div>;
         })()}

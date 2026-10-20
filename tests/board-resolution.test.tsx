@@ -205,8 +205,20 @@ describe('Pack resolution and Issues/Specs board', () => {
     expect((await screen.findByTestId('run-affordance') as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByTestId('plan-affordance') as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByTestId('approve-affordance') as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByTestId('execution-unavailable').textContent).toMatch(/gantry/i);
+    expect(screen.queryByTestId('execution-unavailable')).toBeNull();
+    expect(screen.getByTestId('pack-missing').textContent).toMatch(/gantry/i);
     expect(screen.getByTestId('pack-missing').textContent).toMatch(/projeto|global/i);
+    fireEvent.click(screen.getByTestId('chat-terminal-toggle'));
+    expect(screen.getByTestId('terminal-view')).toBeTruthy();
+    expect(screen.queryByTestId('pack-missing')).toBeNull();
+    expect(screen.queryByTestId('execution-unavailable')).toBeNull();
+    fireEvent.click(screen.getByTestId('open-files-btn'));
+    expect(screen.getByTestId('files-workspace')).toBeTruthy();
+    expect(screen.queryByTestId('pack-missing')).toBeNull();
+    fireEvent.click(screen.getByTestId('open-factory-btn'));
+    expect(screen.queryByTestId('pack-missing')).toBeNull();
+    fireEvent.click(screen.getByTestId('open-board-btn'));
+    expect(screen.getByTestId('pack-missing')).toBeTruthy();
   });
 
   it('uses the global skill cli.py when the repository has no pinned pack', async () => {
