@@ -32,6 +32,7 @@ import {
   startPlanWorkflow,
 } from './planEngine.js';
 import { PtySupervisor, readArtifactAndDiff } from './ptyManager.js';
+import { RunSupervisor, RunSupervisorError } from './runSupervisor.js';
 import { ProjectTreeError, readProjectTree } from './projectTree.js';
 import {
   authorizeRunCleanup,
@@ -65,6 +66,7 @@ export interface HarnessServerInstance {
   stateRoot: string;
   profileRoot: string;
   store: HarnessStateStore;
+  runSupervisor: RunSupervisor;
   broadcast: (event: Record<string, unknown>) => void;
   close: () => Promise<void>;
 }
@@ -129,6 +131,8 @@ export async function createHarnessServer(
     }
   };
 
+  const runSupervisor = new RunSupervisor({ store, broadcast, homeDir });
+
   const readJsonBody = async (req: http.IncomingMessage): Promise<Record<string, unknown>> => {
     return new Promise((resolve, reject) => {
       let body = '';
@@ -178,7 +182,8 @@ export async function createHarnessServer(
         return;
       }
 
-      const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`);
+      const rawUrl = (req.url ?? '/').replace(/#/g, '%23');
+      const url = new URL(rawUrl, `http://${req.headers.host ?? '127.0.0.1'}`);
       const pathname = url.pathname;
 
       if (pathname === '/api/health' && req.method === 'GET') {
@@ -269,6 +274,7 @@ export async function createHarnessServer(
           activeProjectId && activeSessionId
             ? store.listMessages(activeProjectId, activeSessionId)
             : [];
+        const runs = activeProjectId ? runSupervisor.listRuns(activeProjectId) : [];
         sendJson(res, 200, {
           projects,
           layout,
@@ -279,6 +285,7 @@ export async function createHarnessServer(
           connection,
           sessions,
           messages,
+          runs,
         });
         return;
       }
@@ -351,7 +358,9 @@ export async function createHarnessServer(
             sendJson(res, 404, { error: 'Projeto não encontrado.' });
             return;
           }
-          sendJson(res, 200, await readBoard(project.path, homeDir));
+          const board = await readBoard(project.path, homeDir);
+          const runs = runSupervisor.listRuns(project.id);
+          sendJson(res, 200, { ...board, runs });
           return;
         }
       }
@@ -819,15 +828,77 @@ export async function createHarnessServer(
         }
       }
 
+      if (pathname.startsWith('/api/projects/') && pathname.endsWith('/runs')) {
+        const parts = pathname.split('/').filter(Boolean);
+        if (parts.length === 4) {
+          const projectId = parts[2];
+          const project = store.getProject(projectId);
+          if (!project) {
+            sendJson(res, 404, { error: `Project not found: ${projectId}` });
+            return;
+          }
+          if (req.method === 'GET') {
+            sendJson(res, 200, { runs: runSupervisor.listRuns(projectId) });
+            return;
+          }
+          if (req.method === 'POST') {
+            const body = await readJsonBody(req);
+            const ref = String(body.ref ?? body.issueRef ?? '').trim();
+            const kind = body.kind === 'plan' ? 'plan' : 'issue';
+            try {
+              const run = await runSupervisor.startRun({ project, ref, kind });
+              sendJson(res, 200, { ...run, run });
+            } catch (error) {
+              if (error instanceof RunSupervisorError) {
+                sendJson(res, error.statusCode, { error: error.message, code: error.code });
+                return;
+              }
+              throw error;
+            }
+            return;
+          }
+        }
+      }
+
       if (pathname.startsWith('/api/projects/') && pathname.includes('/runs/')) {
         const parts = pathname.split('/').filter(Boolean);
-        // /api/projects/:id/runs/:runId/:action
+        // /api/projects/:id/runs/:runIdOrRef[/:action]
         const projectId = parts[2];
-        const runId = parts[4];
+        const runId = decodeURIComponent(parts[4] ?? '');
         const action = parts[5];
         const project = store.getProject(projectId);
         if (!project) {
           sendJson(res, 404, { error: `Project not found: ${projectId}` });
+          return;
+        }
+
+        if (!action && req.method === 'GET') {
+          const run = runSupervisor.getRun(projectId, runId);
+          if (!run) {
+            sendJson(res, 404, { error: `Run not found: ${runId}` });
+            return;
+          }
+          sendJson(res, 200, { ...run, run });
+          return;
+        }
+
+        if (action === 'answer' && req.method === 'POST') {
+          const body = await readJsonBody(req);
+          const choice = String(body.choice ?? body.answer ?? '');
+          try {
+            const run = await runSupervisor.answerPause({
+              projectId,
+              ref: runId,
+              choice,
+            });
+            sendJson(res, 200, { ...run, run });
+          } catch (error) {
+            if (error instanceof RunSupervisorError) {
+              sendJson(res, error.statusCode, { error: error.message });
+              return;
+            }
+            throw error;
+          }
           return;
         }
 
@@ -1167,8 +1238,10 @@ export async function createHarnessServer(
     stateRoot,
     profileRoot,
     store,
+    runSupervisor,
     broadcast,
     close: async () => {
+      runSupervisor.closeAll();
       ptySupervisor.closeAll();
       for (const ws of clients) {
         ws.close();

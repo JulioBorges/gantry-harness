@@ -3,6 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { DEFAULT_TERMINAL_SETTINGS, shellDefinitions, validateTerminalSettings } from './terminalSettings.js';
 import type { TerminalSettings } from '../types.js';
+import type { HarnessRunRecord } from '../boardModel.js';
 import { createRequire } from 'node:module';
 import type { SQLInputValue } from 'node:sqlite';
 import type {
@@ -121,6 +122,30 @@ export class HarnessStateStore {
         token TEXT PRIMARY KEY,
         created_at INTEGER NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS runs (
+        project_id TEXT NOT NULL,
+        ref TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        slug TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        status TEXT NOT NULL,
+        child_pid INTEGER,
+        lane TEXT,
+        pack_phase TEXT,
+        branch TEXT,
+        worktree TEXT,
+        pushed INTEGER NOT NULL DEFAULT 0,
+        pause_json TEXT,
+        terminal_event TEXT,
+        error_json TEXT,
+        pr_url TEXT,
+        derived_phase TEXT NOT NULL,
+        record_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, ref)
+      );
     `);
     this.migrateLegacySchema();
 
@@ -209,6 +234,7 @@ export class HarnessStateStore {
     const res = this.db.prepare(`DELETE FROM projects WHERE id = ?`).run(projectId);
     this.db.prepare(`DELETE FROM sessions WHERE project_id = ?`).run(projectId);
     this.db.prepare(`DELETE FROM messages WHERE project_id = ?`).run(projectId);
+    this.db.prepare(`DELETE FROM runs WHERE project_id = ?`).run(projectId);
     const layout = this.getWorkspaceLayout();
     if (layout.activeProjectId === projectId) {
       const remaining = this.listProjects();
@@ -625,6 +651,97 @@ export class HarnessStateStore {
       .prepare(`SELECT token FROM auth_tokens WHERE token = ?`)
       .get(token) as { token: string } | undefined;
     return Boolean(row);
+  }
+
+  public saveRun(record: HarnessRunRecord): HarnessRunRecord {
+    const updatedAt = new Date().toISOString();
+    const persisted: HarnessRunRecord = {
+      ...record,
+      updatedAt,
+    };
+    this.db
+      .prepare(
+        `INSERT INTO runs (
+           project_id, ref, run_id, slug, kind, status, child_pid, lane, pack_phase,
+           branch, worktree, pushed, pause_json, terminal_event, error_json, pr_url,
+           derived_phase, record_json, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(project_id, ref) DO UPDATE SET
+           run_id = excluded.run_id,
+           slug = excluded.slug,
+           kind = excluded.kind,
+           status = excluded.status,
+           child_pid = excluded.child_pid,
+           lane = excluded.lane,
+           pack_phase = excluded.pack_phase,
+           branch = excluded.branch,
+           worktree = excluded.worktree,
+           pushed = excluded.pushed,
+           pause_json = excluded.pause_json,
+           terminal_event = excluded.terminal_event,
+           error_json = excluded.error_json,
+           pr_url = excluded.pr_url,
+           derived_phase = excluded.derived_phase,
+           record_json = excluded.record_json,
+           updated_at = excluded.updated_at`,
+      )
+      .run(
+        persisted.projectId,
+        persisted.ref,
+        persisted.runId,
+        persisted.slug,
+        persisted.kind,
+        persisted.status,
+        persisted.childPid,
+        persisted.lane,
+        persisted.packPhase,
+        persisted.branch,
+        persisted.worktree,
+        persisted.pushed ? 1 : 0,
+        persisted.pause ? JSON.stringify(persisted.pause) : null,
+        persisted.terminalEvent,
+        persisted.error ? JSON.stringify(persisted.error) : null,
+        persisted.prUrl,
+        persisted.derivedPhase,
+        JSON.stringify(persisted),
+        persisted.createdAt,
+        persisted.updatedAt,
+      );
+    return persisted;
+  }
+
+  public getRun(projectId: string, ref: string): HarnessRunRecord | null {
+    const row = this.db
+      .prepare(`SELECT record_json FROM runs WHERE project_id = ? AND ref = ?`)
+      .get(projectId, ref) as { record_json: string } | undefined;
+    if (!row) return null;
+    try {
+      return JSON.parse(row.record_json) as HarnessRunRecord;
+    } catch {
+      return null;
+    }
+  }
+
+  public listRuns(projectId: string): HarnessRunRecord[] {
+    const rows = this.db
+      .prepare(`SELECT record_json FROM runs WHERE project_id = ? ORDER BY created_at ASC`)
+      .all(projectId) as Array<{ record_json: string }>;
+    const out: HarnessRunRecord[] = [];
+    for (const row of rows) {
+      try {
+        out.push(JSON.parse(row.record_json) as HarnessRunRecord);
+      } catch {
+        // ignore corrupted row
+      }
+    }
+    return out;
+  }
+
+  public deleteRun(projectId: string, ref: string): boolean {
+    const res = this.db
+      .prepare(`DELETE FROM runs WHERE project_id = ? AND ref = ?`)
+      .run(projectId, ref);
+    return Number(res.changes) > 0;
   }
 
   public close(): void {

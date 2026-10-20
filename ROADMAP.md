@@ -6,7 +6,7 @@ Delivery tracking for the `gantry-harness` Run orchestration adaptation. Issue s
 
 | | Count |
 |---|---|
-| Issues completed | **2 / 7** |
+| Issues completed | **5 / 9** |
 | Specs completed | **0 / 1** |
 | Execution waves | **4** |
 
@@ -20,7 +20,7 @@ Delivery tracking for the `gantry-harness` Run orchestration adaptation. Issue s
 
 | # | Spec | Issues done | Waves |
 |---|---|---|---|
-| 01 | `run-orchestration` | 2/7 | 0–3 |
+| 01 | `run-orchestration` | 5/9 | 0–3 |
 
 <!-- END GENERATED: spec progress -->
 
@@ -35,9 +35,13 @@ Delivery tracking for the `gantry-harness` Run orchestration adaptation. Issue s
 - [x] **`run-orchestration#02`** — 02: Pack resolution, board read and board UI
   <br>↳ blocked by: run-orchestration#01
 
-### Wave 2 — 0/1 done
+### Wave 2 — 3/3 done
 
-- [ ] **`run-orchestration#03`** — 03: Run supervisor and Issue execution
+- [x] **`run-orchestration#03`** — 03: Run supervisor and Issue execution
+  <br>↳ blocked by: run-orchestration#02
+- [x] **`run-orchestration#08`** — 08: Restore the Files view
+  <br>↳ blocked by: run-orchestration#02
+- [x] **`run-orchestration#09`** — 09: Restore the standalone terminal
   <br>↳ blocked by: run-orchestration#02
 
 ### Wave 3 — 0/4 done

@@ -12,7 +12,15 @@ import { SettingsDialog, type SettingsTab } from './SettingsDialog.js';
 import { SystemFontSelect } from './SystemFontSelect.js';
 import { BoardView } from './BoardView.js';
 import { EXECUTION_HOSTS, ModelSelect, discoveryHarness, type CatalogModel } from './ModelSelect.js';
-import { NO_PACK_EXPLANATION, coerceBoard, overlaysFromKanban, unavailableBoard, type BoardSnapshot } from '../boardModel.js';
+import {
+  NO_PACK_EXPLANATION,
+  PHASE_LABEL,
+  coerceBoard,
+  overlaysFromKanban,
+  unavailableBoard,
+  type BoardSnapshot,
+  type HarnessRunRecord,
+} from '../boardModel.js';
 import type {
   ChatMessageRecord,
   DecisionCardPayload,
@@ -117,6 +125,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
       columns: Record<string, Array<{ ref: string; phase: string; operatorWaiting: boolean }>>;
     }>
   >([]);
+  const [runs, setRuns] = useState<HarnessRunRecord[]>([]);
 
   const [setupDiffPreview, setSetupDiffPreview] = useState<string>('');
   const [projectSettingsId, setProjectSettingsId] = useState<string | null>(null);
@@ -280,6 +289,9 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         : loadedSessions[0]?.id ?? null;
       setActiveSessionId(actSess);
       setMessages((data.messages ?? []).filter((message: ChatMessageRecord) => message.projectId === actProj));
+      if (Array.isArray(data.runs)) {
+        setRuns(data.runs as HarnessRunRecord[]);
+      }
 
       const alertRes = await apiFetch('/api/alerts');
       if (alertRes.ok) {
@@ -311,6 +323,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         setPanes([]);
         setInspection(null);
         setKanbanRuns([]);
+        setRuns([]);
       }
     } catch (error) {
       reportError(error);
@@ -334,7 +347,12 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
       try {
         const response = await apiFetch(`/api/projects/${projectId}/board`, { cache: 'no-store' });
         const payload = response.ok ? await response.json() : null;
-        if (!cancelled) setBoard(response.ok ? coerceBoard(payload) : unavailableBoard());
+        if (!cancelled) {
+          setBoard(response.ok ? coerceBoard(payload) : unavailableBoard());
+          if (payload && typeof payload === 'object' && Array.isArray((payload as { runs?: unknown }).runs)) {
+            setRuns((payload as { runs: HarnessRunRecord[] }).runs);
+          }
+        }
       } catch {
         if (!cancelled) setBoard(unavailableBoard());
       }
@@ -364,6 +382,26 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
             if (payload.projectId === selectedPane.current.projectId && payload.paneId === selectedPane.current.paneId) {
               setTerminalBuffer((prev) => `${prev}${payload.chunk}`);
             }
+          } else if (
+            (payload.type === 'run.event' || payload.type === 'run.paused' || payload.type === 'run.finished') &&
+            payload.run
+          ) {
+            if (!selectedPane.current.projectId || payload.projectId === selectedPane.current.projectId) {
+              const incoming = payload.run as HarnessRunRecord;
+              setRuns((current) => {
+                const idx = current.findIndex((item) => item.ref === incoming.ref);
+                if (idx === -1) return [...current, incoming];
+                const next = [...current];
+                next[idx] = incoming;
+                return next;
+              });
+            }
+            void loadWorkspaceState();
+          } else if (payload.type === 'board.changed') {
+            if (!selectedPane.current.projectId || payload.projectId === selectedPane.current.projectId) {
+              setBoardGeneration((value) => value + 1);
+            }
+            void loadWorkspaceState();
           } else if (payload.type !== 'pane.input' && payload.type !== 'pane.mode_toggled') {
             void loadWorkspaceState();
           }
@@ -876,8 +914,69 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   };
   const handleOpenArtifact = withFeedback("Abrir arquivo", loadArtifact);
 
+  const handleRunIssue = withFeedback('Executar issue', async (ref: string): Promise<void> => {
+    if (!activeProjectId) throw new Error('Selecione um projeto para continuar.');
+    const res = await apiFetch(`/api/projects/${activeProjectId}/runs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ref }),
+    });
+    if (res.ok) {
+      const out = await res.json();
+      const updatedRun = (out.run ?? out) as HarnessRunRecord;
+      if (updatedRun?.runId) {
+        setActiveRunId(updatedRun.runId);
+        setRuns((current) => {
+          const idx = current.findIndex((item) => item.ref === updatedRun.ref);
+          if (idx === -1) return [...current, updatedRun];
+          const next = [...current];
+          next[idx] = updatedRun;
+          return next;
+        });
+      }
+      setBoardGeneration((value) => value + 1);
+    }
+  });
+
+  const handleAnswerPause = withFeedback('Responder pausa', async (ref: string, choice: string): Promise<void> => {
+    if (!activeProjectId) throw new Error('Selecione um projeto para continuar.');
+    const res = await apiFetch(`/api/projects/${activeProjectId}/runs/${encodeURIComponent(ref)}/answer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ choice }),
+    });
+    if (res.ok) {
+      const out = await res.json();
+      const updatedRun = (out.run ?? out) as HarnessRunRecord;
+      if (updatedRun?.runId) {
+        setRuns((current) => {
+          const idx = current.findIndex((item) => item.ref === updatedRun.ref);
+          if (idx === -1) return [...current, updatedRun];
+          const next = [...current];
+          next[idx] = updatedRun;
+          return next;
+        });
+      }
+      setBoardGeneration((value) => value + 1);
+    }
+  });
+
   const handleFollowAgent = (ref: string, runId?: string): void => {
-    const pane = panes.find((item) => item.status === 'running' && (item.activeRunId === runId || item.worktreePath.includes(ref.split('#')[0] ?? ref)));
+    const matchedRun = runs.find((item) => (runId && item.runId === runId) || item.ref === ref);
+    if (matchedRun) {
+      setActiveRunId(matchedRun.runId);
+      setSelectedSteeringIssue(matchedRun.ref);
+    } else if (runId) {
+      setActiveRunId(runId);
+      setSelectedSteeringIssue(ref);
+    }
+    const pane = panes.find(
+      (item) =>
+        item.status === 'running' &&
+        (item.activeRunId === runId ||
+          (matchedRun?.worktree && item.worktreePath === matchedRun.worktree) ||
+          item.worktreePath.includes(ref.split('#')[0] ?? ref)),
+    );
     setActiveView('factory');
     if (pane) {
       setPaneMode('terminal');
@@ -1380,29 +1479,52 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
             board={board}
             hasProject={Boolean(activeProjectId)}
             overlays={overlaysFromKanban(kanbanRuns)}
+            runs={runs}
             specInteractions={specInteractions}
             issueInteractions={issueInteractions}
             onRefresh={() => setBoardGeneration((value) => value + 1)}
             onOpenPath={(path) => void handleOpenArtifact(path)}
             onFollow={handleFollowAgent}
+            onRunIssue={(ref) => void handleRunIssue(ref)}
+            onAnswerPause={(ref, choice) => void handleAnswerPause(ref, choice)}
           />
         )}
 
-        {activeView === 'factory' && <div className="workspace-content">
+        {activeView === 'factory' && (() => {
+          const followedRun =
+            runs.find((item) => item.runId === activeRunId) ??
+            runs.find((item) => item.status === 'running' || item.status === 'paused') ??
+            null;
+          const showLifecycleStrip =
+            (activeProject?.lifecycleState && activeProject.lifecycleState !== 'idle') || Boolean(followedRun);
+          return <div className="workspace-content">
           <div className="session-bar">
             <div className="session-tabs" aria-label="Terminais">
               {panes.map((pane) => <div key={pane.paneId} className={`terminal-tab ${pane.paneId === activePaneId ? 'active' : ''}`}><button onClick={() => void handleSelectPane(pane.paneId)}><span className={`status-dot ${pane.status === 'running' ? 'done' : 'idle'}`} />{pane.launcher}<small>{pane.status === 'exited' ? `Encerrado (${pane.exitCode ?? '—'})` : 'Em execução'}</small></button><button className="tab-close" aria-label={`Encerrar terminal ${pane.launcher}`} onClick={() => void handleClosePane(pane.paneId)}>×</button></div>)}
             </div>
             <button className="new-terminal-button" data-testid="launcher-shell" disabled={!activeProjectId || pendingActions.includes('Abrir terminal')} onClick={() => void handleOpenTerminal()}>+ Terminal</button>
           </div>
-          {activeProject?.lifecycleState && activeProject.lifecycleState !== 'idle' && <div className="run-strip"><span className={`status-dot ${activeProject.badgeState?.replace(/\s+/g, '-')}`} /><strong>{PHASE_LABELS[activeProject.lifecycleState] ?? activeProject.lifecycleState}</strong>{activeRunId && <code>{activeRunId}</code>}<button onClick={() => setActiveView('board')}>Ver quadro →</button></div>}
+          {showLifecycleStrip && (
+            <div className="run-strip" data-testid="run-strip">
+              <span className={`status-dot ${(activeProject?.badgeState ?? 'working').replace(/\s+/g, '-')}`} />
+              <strong>
+                {followedRun
+                  ? `${followedRun.ref} · ${PHASE_LABEL[followedRun.derivedPhase] ?? followedRun.status}`
+                  : (PHASE_LABELS[activeProject?.lifecycleState ?? ''] ?? activeProject?.lifecycleState)}
+              </strong>
+              {(followedRun?.runId || activeRunId) && <code>{followedRun?.runId ?? activeRunId}</code>}
+              {followedRun?.worktree && <code data-testid="followed-run-worktree">{followedRun.worktree}</code>}
+              <button onClick={() => setActiveView('board')}>Ver quadro →</button>
+            </div>
+          )}
           {approvedSlug && <div className="run-strip"><span>Plano aprovado: <strong>{approvedSlug}</strong></span><button className="btn-primary" data-testid="start-run-btn" disabled={pendingActions.includes('Executar plano')} onClick={() => void handleStartRun(approvedSlug)}>Executar plano</button></div>}
 
           <div className="terminal-workspace" data-testid="terminal-view">
             {activePaneId ? <><div className="terminal-caption"><span>{activeTerminal?.launcher ?? 'Terminal'} · {activeTerminal?.status === 'exited' ? 'Sessão encerrada' : activeTerminal?.launcher === 'shell' ? 'Shell do sistema' : 'Sessão CLI independente'}</span><code>{activeTerminal?.worktreePath ?? activeProject?.path}</code></div><div className="terminal-surface"><div ref={terminalContainerRef} className="terminal-emulator" aria-label="Terminal interativo" /></div><details className="terminal-tools"><summary>Teclas e envio de comando</summary><form className="terminal-command" onSubmit={(event) => { event.preventDefault(); void handleTerminalCommand(); }}><label htmlFor="terminal-command">Enviar ao terminal</label><input id="terminal-command" value={terminalInput} onChange={(event) => setTerminalInput(event.target.value)} placeholder="Mensagem ou comando para este terminal" /><button type="submit" disabled={!activePaneId}>Enviar</button></form><div className="virtual-keybar" data-testid="virtual-keybar">{[['esc', '\x1b'], ['tab', '\t'], ['^C', '\x03'], ['↑', '\x1b[A'], ['↓', '\x1b[B'], ['←', '\x1b[D'], ['→', '\x1b[C']].map(([label, key]) => <button key={label} className="btn-key" onClick={() => void handleVirtualKey(key)}>{label}</button>)}</div></details></> : <div className="chat-empty"><h1>Abra uma sessão de terminal</h1><p>Abra o shell do sistema para executar comandos ou restaurar sessões do Codex, Claude e OpenCode com os parâmetros que preferir.</p><button onClick={() => void handleOpenTerminal()}>Abrir shell</button></div>}
           </div>
           {activeRunId && <details className="steering-panel"><summary>Orientar agente em execução · {activeRunId}</summary><div data-testid="steering-bar"><input aria-label="Tarefa a orientar" placeholder="Referência da tarefa" value={selectedSteeringIssue} onChange={(event) => setSelectedSteeringIssue(event.target.value)} /><input aria-label="Orientação para o agente" placeholder="Descreva sua orientação…" value={steeringInput} onChange={(event) => setSteeringInput(event.target.value)} /><button data-testid="steer-queue-btn" onClick={() => void handleSteer('queue')}>Próximo turno</button><button data-testid="steer-send-now-btn" onClick={() => void handleSteer('send_now')}>Enviar agora</button></div></details>}
-        </div>}
+        </div>;
+        })()}
 
         {activeView === 'files' && (
           <div className={`file-workspace${wideWorkspace && activeProjectId ? ' split' : ''}`} data-testid="files-workspace">
