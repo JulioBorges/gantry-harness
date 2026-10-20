@@ -6,8 +6,8 @@ Delivery tracking for the `gantry-harness` Run orchestration adaptation. Issue s
 
 | | Count |
 |---|---|
-| Issues completed | **5 / 9** |
-| Specs completed | **0 / 1** |
+| Issues completed | **9 / 9** |
+| Specs completed | **1 / 1** |
 | Execution waves | **4** |
 
 ## Specs
@@ -20,7 +20,7 @@ Delivery tracking for the `gantry-harness` Run orchestration adaptation. Issue s
 
 | # | Spec | Issues done | Waves |
 |---|---|---|---|
-| 01 | `run-orchestration` | 5/9 | 0–3 |
+| 01 | `run-orchestration` | 9/9 | 0–3 |
 
 <!-- END GENERATED: spec progress -->
 
@@ -44,15 +44,15 @@ Delivery tracking for the `gantry-harness` Run orchestration adaptation. Issue s
 - [x] **`run-orchestration#09`** — 09: Restore the standalone terminal
   <br>↳ blocked by: run-orchestration#02
 
-### Wave 3 — 0/4 done
+### Wave 3 — 4/4 done
 
-- [ ] **`run-orchestration#04`** — 04: Plan runs
+- [x] **`run-orchestration#04`** — 04: Plan runs
   <br>↳ blocked by: run-orchestration#03
-- [ ] **`run-orchestration#05`** — 05: Wave execution and parallel Runs
+- [x] **`run-orchestration#05`** — 05: Wave execution and parallel Runs
   <br>↳ blocked by: run-orchestration#03
-- [ ] **`run-orchestration#06`** — 06: Resume, discard and restart reattach
+- [x] **`run-orchestration#06`** — 06: Resume, discard and restart reattach
   <br>↳ blocked by: run-orchestration#03
-- [ ] **`run-orchestration#07`** — 07: Approve, PR watching and merge-done
+- [x] **`run-orchestration#07`** — 07: Approve, PR watching and merge-done
   <br>↳ blocked by: run-orchestration#03
 
 <!-- END GENERATED: issue checklist -->

@@ -143,6 +143,8 @@ export interface HarnessRunPause {
   worktree: string;
   pushed: boolean;
   prompt?: string;
+  specPath?: string | null;
+  issuePath?: string | null;
 }
 
 export interface HarnessRunRecord {
@@ -166,9 +168,12 @@ export interface HarnessRunRecord {
   terminalEvent: TerminalEventKind | null;
   error: GantryErrorPayload | null;
   prUrl: string | null;
+  prState?: 'open' | 'closed' | 'reopened' | 'merged' | null;
+  createdCommit?: boolean;
   derivedPhase: IssueCardPhase;
   specPath?: string | null;
   issuePath?: string | null;
+  issueTitle?: string | null;
   stdoutLines?: string[];
   stderrText?: string;
   exitCode?: number | null;
@@ -235,22 +240,32 @@ export function phaseToExecutionLane(
 
 export function isSetupRefusalError(error: GantryErrorPayload | null | undefined): boolean {
   if (!error) return false;
-  return (
-    error.code === 'open-blocker' ||
-    error.code === 'branch-exists' ||
-    error.code === 'setup-invalid' ||
-    error.code === 'pack-unreadable'
+  const candidates = [error.code, error.reason].filter((v): v is string => typeof v === 'string');
+  return candidates.some(
+    (code) =>
+      code === 'open-blocker' ||
+      code === 'branch-exists' ||
+      code === 'spec-or-issue-exists' ||
+      code === 'setup-invalid' ||
+      code === 'pack-unreadable' ||
+      code === 'issue-missing' ||
+      code === 'spec-missing' ||
+      code === 'role-command-missing' ||
+      code === 'checks-invalid' ||
+      code === 'target-missing',
   );
 }
 
 export function issuePhase(
   issue: Pick<BoardIssue, 'status' | 'frontierBlocked'>,
   overlay?: Pick<IssueRunOverlay, 'phase' | 'status'> | null,
-  run?: Pick<HarnessRunRecord, 'status' | 'derivedPhase' | 'error' | 'worktree'> | null,
+  run?: Pick<HarnessRunRecord, 'status' | 'derivedPhase' | 'error' | 'worktree' | 'prState'> | null,
 ): IssueCardPhase {
   if (issue.status === 'done') return 'done';
   if (overlay?.phase) return overlay.phase;
   if (run) {
+    if (run.prState === 'closed') return 'stopped';
+    if (run.prState === 'reopened') return 'ready-for-approval';
     if (run.status === 'stopped') return 'stopped';
     if (run.status === 'ready-for-approval') return 'ready-for-approval';
     if (run.status === 'approved-pending-merge') return 'approved-pending-merge';
@@ -285,6 +300,9 @@ export function overlaysFromRuns(runs: HarnessRunRecord[]): IssueRunOverlay[] {
     if (run.status === 'failed' && isSetupRefusalError(run.error) && !run.worktree) {
       continue;
     }
+    if (run.prState === 'closed' || run.prState === 'reopened') {
+      continue;
+    }
     const lane =
       run.lane ??
       phaseToExecutionLane(run.packPhase, run.kind === 'plan' ? 'plan' : 'implement') ??
@@ -317,6 +335,57 @@ export function overlaysFromRuns(runs: HarnessRunRecord[]): IssueRunOverlay[] {
     });
   }
   return overlays;
+}
+
+export function mergeBoardWithPlanRuns(
+  board: BoardSnapshot,
+  runs: HarnessRunRecord[],
+): BoardSnapshot {
+  if (!runs.length) return board;
+  let specs = board.specs;
+  let issues = board.issues;
+  for (const run of runs) {
+    if (run.kind !== 'plan') continue;
+    if (run.status === 'rejected' || run.status === 'discarded') continue;
+    if (run.status === 'failed' && !run.worktree) continue;
+    if (!run.worktree) continue;
+
+    if (run.slug && !specs.some((item) => item.slug === run.slug)) {
+      specs = [
+        ...specs,
+        {
+          slug: run.slug,
+          path: run.specPath ?? `.scratch/${run.slug}/spec.md`,
+          executable: false,
+        },
+      ];
+    }
+
+    const effectiveRef = run.ref.includes('#') ? run.ref : `${run.slug}#01`;
+    if (!issues.some((item) => item.ref === effectiveRef)) {
+      const numPart = Number(effectiveRef.split('#')[1] ?? 1);
+      const number = Number.isInteger(numPart) && numPart > 0 ? numPart : 1;
+      issues = [
+        ...issues,
+        {
+          ref: effectiveRef,
+          spec: run.slug,
+          number,
+          title: run.issueTitle ?? run.slug,
+          status: 'ready-for-agent',
+          path: run.issuePath ?? `.scratch/${run.slug}/issues/${String(number).padStart(2, '0')}-${run.slug}.md`,
+          frontierBlocked: false,
+          openBlockers: [],
+        },
+      ];
+    }
+  }
+  if (specs === board.specs && issues === board.issues) return board;
+  return {
+    ...board,
+    specs,
+    issues,
+  };
 }
 
 export function overlaysFromKanban(

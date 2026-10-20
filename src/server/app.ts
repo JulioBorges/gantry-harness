@@ -11,6 +11,7 @@ import { HarnessStateStore } from './stateStore.js';
 import { resolveCoordinatorConnection } from './aiConnection.js';
 import { resolveSkillDir, runGantryScript } from './commandRunner.js';
 import { readBoard } from './gantryCli.js';
+import { mergeBoardWithPlanRuns } from '../boardModel.js';
 import {
   applyRepositorySetup,
   bootstrapProjectSkills,
@@ -132,6 +133,31 @@ export async function createHarnessServer(
   };
 
   const runSupervisor = new RunSupervisor({ store, broadcast, homeDir });
+  for (const project of store.listProjects()) {
+    await runSupervisor.reattachProject(project);
+  }
+
+  const resolveArtifactBasePath = (projectId: string, projectPath: string, relPath: string): string => {
+    const normalizedRel = relPath.replace(/^\/+/, '');
+    const runs = runSupervisor.listRuns(projectId);
+    for (const run of [...runs].reverse()) {
+      if (!run.worktree || run.status === 'rejected' || run.status === 'discarded') continue;
+      const worktreeRoot = path.resolve(run.worktree);
+      const candidate = path.resolve(worktreeRoot, normalizedRel);
+      if (!candidate.startsWith(worktreeRoot + path.sep)) continue;
+      if (
+        (run.specPath === normalizedRel ||
+          run.issuePath === normalizedRel ||
+          run.pause?.specPath === normalizedRel ||
+          run.pause?.issuePath === normalizedRel ||
+          !fs.existsSync(path.resolve(projectPath, normalizedRel))) &&
+        fs.existsSync(candidate)
+      ) {
+        return worktreeRoot;
+      }
+    }
+    return projectPath;
+  };
 
   const readJsonBody = async (req: http.IncomingMessage): Promise<Record<string, unknown>> => {
     return new Promise((resolve, reject) => {
@@ -267,8 +293,12 @@ export async function createHarnessServer(
             layout = store.saveWorkspaceLayout({ activeProjectId, activeSessionId });
           }
         }
+        const activeProject = projects.find((project) => project.id === activeProjectId);
+        if (activeProject) {
+          await runSupervisor.reattachProject(activeProject);
+        }
         const { connection } = resolveCoordinatorConnection(
-          store.getRawProviderSettings(), projects.find((project) => project.id === activeProjectId), profileRoot,
+          store.getRawProviderSettings(), activeProject, profileRoot,
         );
         const messages =
           activeProjectId && activeSessionId
@@ -328,6 +358,7 @@ export async function createHarnessServer(
           name: body.name ? String(body.name) : undefined,
           unitId,
         });
+        await runSupervisor.reattachProject(result.project);
         const inspection = await inspectProject(result.project, { stateRoot, profileRoot });
         broadcast({ type: 'project.registered', project: result.project, inspection });
         sendJson(res, 200, { ...result, inspection });
@@ -358,8 +389,9 @@ export async function createHarnessServer(
             sendJson(res, 404, { error: 'Projeto não encontrado.' });
             return;
           }
-          const board = await readBoard(project.path, homeDir);
-          const runs = runSupervisor.listRuns(project.id);
+          const rawBoard = await readBoard(project.path, homeDir);
+          const runs = await runSupervisor.syncProjectWithTarget(project, rawBoard);
+          const board = mergeBoardWithPlanRuns(rawBoard, runs);
           sendJson(res, 200, { ...board, runs });
           return;
         }
@@ -767,14 +799,16 @@ export async function createHarnessServer(
           if (req.method === 'GET') {
             const relPath = url.searchParams.get('path') ?? '';
             const includeDiff = url.searchParams.get('diff') === 'true';
-            const art = await readArtifactAndDiff(project.path, relPath, includeDiff);
+            const baseRoot = resolveArtifactBasePath(projectId, project.path, relPath);
+            const art = await readArtifactAndDiff(baseRoot, relPath, includeDiff);
             sendJson(res, 200, art);
             return;
           }
           if (req.method === 'PUT') {
             const body = await readJsonBody(req);
             const relPath = String(body.path ?? '');
-            const root = path.resolve(project.path);
+            const baseRoot = resolveArtifactBasePath(projectId, project.path, relPath);
+            const root = path.resolve(baseRoot);
             const resolved = path.resolve(root, relPath);
             if (!resolved.startsWith(root + path.sep)) {
               sendJson(res, 400, { error: 'Invalid artifact path' });
@@ -828,6 +862,29 @@ export async function createHarnessServer(
         }
       }
 
+      if (pathname.startsWith('/api/projects/') && pathname.endsWith('/waves/execute') && req.method === 'POST') {
+        const parts = pathname.split('/').filter(Boolean);
+        if (parts.length === 5) {
+          const projectId = parts[2];
+          const project = store.getProject(projectId);
+          if (!project) {
+            sendJson(res, 404, { error: `Project not found: ${projectId}` });
+            return;
+          }
+          try {
+            const out = await runSupervisor.executeWave({ project });
+            sendJson(res, 200, out);
+          } catch (error) {
+            if (error instanceof RunSupervisorError) {
+              sendJson(res, error.statusCode, { error: error.message, code: error.code });
+              return;
+            }
+            throw error;
+          }
+          return;
+        }
+      }
+
       if (pathname.startsWith('/api/projects/') && pathname.endsWith('/runs')) {
         const parts = pathname.split('/').filter(Boolean);
         if (parts.length === 4) {
@@ -843,14 +900,27 @@ export async function createHarnessServer(
           }
           if (req.method === 'POST') {
             const body = await readJsonBody(req);
-            const ref = String(body.ref ?? body.issueRef ?? '').trim();
-            const kind = body.kind === 'plan' ? 'plan' : 'issue';
+            const slug = typeof body.slug === 'string' ? body.slug.trim() : undefined;
+            const ref = String(body.ref ?? body.issueRef ?? slug ?? '').trim();
+            const kind =
+              body.kind === 'plan' || (!ref.includes('#') && Boolean(slug || ref))
+                ? 'plan'
+                : 'issue';
             try {
-              const run = await runSupervisor.startRun({ project, ref, kind });
+              const run = await runSupervisor.startRun({
+                project,
+                ref,
+                slug: slug ?? (kind === 'plan' ? ref : undefined),
+                kind,
+              });
               sendJson(res, 200, { ...run, run });
             } catch (error) {
               if (error instanceof RunSupervisorError) {
-                sendJson(res, error.statusCode, { error: error.message, code: error.code });
+                sendJson(res, error.statusCode, {
+                  error: error.message,
+                  code: error.code,
+                  ...(error.details ?? {}),
+                });
                 return;
               }
               throw error;
@@ -894,7 +964,91 @@ export async function createHarnessServer(
             sendJson(res, 200, { ...run, run });
           } catch (error) {
             if (error instanceof RunSupervisorError) {
-              sendJson(res, error.statusCode, { error: error.message });
+              sendJson(res, error.statusCode, { error: error.message, code: error.code });
+              return;
+            }
+            throw error;
+          }
+          return;
+        }
+
+        if (action === 'resume' && req.method === 'POST') {
+          try {
+            const run = await runSupervisor.resumeRun({ project, ref: runId });
+            sendJson(res, 200, { ...run, run });
+          } catch (error) {
+            if (error instanceof RunSupervisorError) {
+              sendJson(res, error.statusCode, {
+                error: error.message,
+                code: error.code,
+                ...(error.details ?? {}),
+              });
+              return;
+            }
+            throw error;
+          }
+          return;
+        }
+
+        if (action === 'discard' && req.method === 'POST') {
+          try {
+            const out = await runSupervisor.discardRun({ project, ref: runId });
+            sendJson(res, 200, out);
+          } catch (error) {
+            if (error instanceof RunSupervisorError) {
+              sendJson(res, error.statusCode, {
+                error: error.message,
+                code: error.code,
+                ...(error.details ?? {}),
+              });
+              return;
+            }
+            throw error;
+          }
+          return;
+        }
+
+        if (action === 'approve' && req.method === 'POST') {
+          try {
+            const run = await runSupervisor.approveRun({ project, ref: runId });
+            sendJson(res, 200, { ...run, run });
+          } catch (error) {
+            if (error instanceof RunSupervisorError) {
+              const currentRun = runSupervisor.getRun(projectId, runId);
+              sendJson(res, error.statusCode, {
+                error: error.message,
+                code: error.code,
+                ...(error.details ?? {}),
+                ...(currentRun ? { run: currentRun } : {}),
+              });
+              return;
+            }
+            throw error;
+          }
+          return;
+        }
+
+        if ((action === 'pr-closed' || action === 'close-pr') && req.method === 'POST') {
+          try {
+            const run = await runSupervisor.markPullRequestClosed({ project, ref: runId });
+            sendJson(res, 200, { ...run, run });
+          } catch (error) {
+            if (error instanceof RunSupervisorError) {
+              sendJson(res, error.statusCode, { error: error.message, code: error.code });
+              return;
+            }
+            throw error;
+          }
+          return;
+        }
+
+        if ((action === 'reopen' || action === 'pr-reopen') && req.method === 'POST') {
+          try {
+            const run = await runSupervisor.reopenPullRequest({ project, ref: runId });
+            sendJson(res, 200, { ...run, run });
+          } catch (error) {
+            if (error instanceof RunSupervisorError) {
+              sendJson(res, error.statusCode, { error: error.message, code: error.code });
               return;
             }
             throw error;

@@ -389,12 +389,16 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
             if (!selectedPane.current.projectId || payload.projectId === selectedPane.current.projectId) {
               const incoming = payload.run as HarnessRunRecord;
               setRuns((current) => {
-                const idx = current.findIndex((item) => item.ref === incoming.ref);
+                if (incoming.status === 'rejected' || incoming.status === 'discarded') {
+                  return current.filter((item) => item.ref !== incoming.ref && item.runId !== incoming.runId);
+                }
+                const idx = current.findIndex((item) => item.ref === incoming.ref || item.runId === incoming.runId);
                 if (idx === -1) return [...current, incoming];
                 const next = [...current];
                 next[idx] = incoming;
                 return next;
               });
+              setBoardGeneration((value) => value + 1);
             }
             void loadWorkspaceState();
           } else if (payload.type === 'board.changed') {
@@ -938,12 +942,161 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     }
   });
 
-  const handleAnswerPause = withFeedback('Responder pausa', async (ref: string, choice: string): Promise<void> => {
+  const handleAnswerPause = async (ref: string, choice: string): Promise<void> => {
+    if (!activeProjectId) {
+      reportError(new Error('Selecione um projeto para continuar.'), 'Responder pausa');
+      return;
+    }
+    try {
+      const res = await apiFetch(`/api/projects/${activeProjectId}/runs/${encodeURIComponent(ref)}/answer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ choice }),
+      });
+      if (res.ok) {
+        const out = await res.json();
+        const updatedRun = (out.run ?? out) as HarnessRunRecord;
+        if (updatedRun?.runId) {
+          setRuns((current) => {
+            if (updatedRun.status === 'rejected' || updatedRun.status === 'discarded') {
+              return current.filter((item) => item.ref !== updatedRun.ref && item.runId !== updatedRun.runId);
+            }
+            const idx = current.findIndex((item) => item.ref === updatedRun.ref);
+            if (idx === -1) return [...current, updatedRun];
+            const next = [...current];
+            next[idx] = updatedRun;
+            return next;
+          });
+        }
+        setBoardGeneration((value) => value + 1);
+      }
+    } catch (error) {
+      reportError(error, 'Responder pausa');
+    }
+  };
+
+  const handleStartPlanRun = withFeedback('Planejar spec', async (slug: string): Promise<void> => {
     if (!activeProjectId) throw new Error('Selecione um projeto para continuar.');
-    const res = await apiFetch(`/api/projects/${activeProjectId}/runs/${encodeURIComponent(ref)}/answer`, {
+    try {
+      const res = await apiFetch(`/api/projects/${activeProjectId}/runs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug, kind: 'plan' }),
+      });
+      if (res.ok) {
+        const out = await res.json();
+        const updatedRun = (out.run ?? out) as HarnessRunRecord;
+        if (updatedRun?.runId) {
+          setActiveRunId(updatedRun.runId);
+          setRuns((current) => {
+            const idx = current.findIndex((item) => item.ref === updatedRun.ref);
+            if (idx === -1) return [...current, updatedRun];
+            const next = [...current];
+            next[idx] = updatedRun;
+            return next;
+          });
+        }
+      }
+    } finally {
+      setBoardGeneration((value) => value + 1);
+    }
+  });
+
+  const handleExecuteWave = withFeedback('Executar onda', async (): Promise<void> => {
+    if (!activeProjectId) throw new Error('Selecione um projeto para continuar.');
+    const res = await apiFetch(`/api/projects/${activeProjectId}/waves/execute`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ choice }),
+      body: JSON.stringify({}),
+    });
+    if (res.ok) {
+      const out = await res.json();
+      if (Array.isArray(out.runs)) {
+        const waveRuns = out.runs as HarnessRunRecord[];
+        if (waveRuns[0]?.runId) setActiveRunId(waveRuns[0].runId);
+        setRuns((current) => {
+          const next = [...current];
+          for (const updatedRun of waveRuns) {
+            const idx = next.findIndex((item) => item.ref === updatedRun.ref);
+            if (idx === -1) next.push(updatedRun);
+            else next[idx] = updatedRun;
+          }
+          return next;
+        });
+      }
+      setBoardGeneration((value) => value + 1);
+    }
+  });
+
+  const handleResumeRun = withFeedback('Retomar run', async (ref: string): Promise<void> => {
+    if (!activeProjectId) throw new Error('Selecione um projeto para continuar.');
+    const res = await apiFetch(`/api/projects/${activeProjectId}/runs/${encodeURIComponent(ref)}/resume`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    if (res.ok) {
+      const out = await res.json();
+      const updatedRun = (out.run ?? out) as HarnessRunRecord;
+      if (updatedRun?.runId) {
+        setActiveRunId(updatedRun.runId);
+        setRuns((current) => {
+          const idx = current.findIndex((item) => item.ref === updatedRun.ref);
+          if (idx === -1) return [...current, updatedRun];
+          const next = [...current];
+          next[idx] = updatedRun;
+          return next;
+        });
+      }
+      setBoardGeneration((value) => value + 1);
+    }
+  });
+
+  const handleDiscardRun = withFeedback('Descartar run', async (ref: string): Promise<void> => {
+    if (!activeProjectId) throw new Error('Selecione um projeto para continuar.');
+    const res = await apiFetch(`/api/projects/${activeProjectId}/runs/${encodeURIComponent(ref)}/discard`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    if (res.ok) {
+      setRuns((current) => current.filter((item) => item.ref !== ref));
+      setBoardGeneration((value) => value + 1);
+    }
+  });
+
+  const handleApproveRun = withFeedback('Aprovar run', async (ref: string): Promise<void> => {
+    if (!activeProjectId) throw new Error('Selecione um projeto para continuar.');
+    try {
+      const res = await apiFetch(`/api/projects/${activeProjectId}/runs/${encodeURIComponent(ref)}/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      if (res.ok) {
+        const out = await res.json();
+        const updatedRun = (out.run ?? out) as HarnessRunRecord;
+        if (updatedRun?.runId) {
+          setRuns((current) => {
+            const idx = current.findIndex((item) => item.ref === updatedRun.ref);
+            if (idx === -1) return [...current, updatedRun];
+            const next = [...current];
+            next[idx] = updatedRun;
+            return next;
+          });
+        }
+      }
+    } finally {
+      setBoardGeneration((value) => value + 1);
+    }
+  });
+
+  const handleReopenPr = withFeedback('Reabrir PR', async (ref: string): Promise<void> => {
+    if (!activeProjectId) throw new Error('Selecione um projeto para continuar.');
+    const res = await apiFetch(`/api/projects/${activeProjectId}/runs/${encodeURIComponent(ref)}/reopen`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
     });
     if (res.ok) {
       const out = await res.json();
@@ -1486,7 +1639,13 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
             onOpenPath={(path) => void handleOpenArtifact(path)}
             onFollow={handleFollowAgent}
             onRunIssue={(ref) => void handleRunIssue(ref)}
+            onExecuteWave={() => void handleExecuteWave()}
+            onStartPlan={(slug) => void handleStartPlanRun(slug)}
             onAnswerPause={(ref, choice) => void handleAnswerPause(ref, choice)}
+            onResumeRun={(ref) => void handleResumeRun(ref)}
+            onDiscardRun={(ref) => void handleDiscardRun(ref)}
+            onApproveRun={(ref) => void handleApproveRun(ref)}
+            onReopenPr={(ref) => void handleReopenPr(ref)}
           />
         )}
 
