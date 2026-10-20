@@ -10,19 +10,7 @@ import { WebSocket } from 'ws';
 import { createHarnessServer, type HarnessServerInstance } from '../src/server/app.js';
 import { App } from '../src/client/App.js';
 import { BOARD_LANES } from '../src/boardModel.js';
-
-function findRealPackScriptsDir(): string {
-  const candidates = [
-    path.join(os.homedir(), '.agents', 'skills', 'gantry', 'scripts'),
-    '/home/julio/src/gantry/.agents/skills/gantry/scripts',
-  ];
-  for (const dir of candidates) {
-    if (fs.existsSync(path.join(dir, 'cli.py')) && fs.existsSync(path.join(dir, 'common.py'))) {
-      return dir;
-    }
-  }
-  throw new Error('Could not locate real cli.py and common.py for integration tests');
-}
+import { installPinnedPack } from './packFixture.js';
 
 function initGitRepo(root: string, name: string): string {
   const repo = path.join(root, name);
@@ -50,17 +38,7 @@ function initGitRepo(root: string, name: string): string {
 }
 
 function installRealPack(repo: string): string {
-  const srcDir = findRealPackScriptsDir();
-  const destDir = path.join(repo, '.agents', 'skills', 'gantry', 'scripts');
-  fs.mkdirSync(destDir, { recursive: true });
-  for (const file of ['cli.py', 'common.py', 'roadmap.py', 'acceptance.py']) {
-    const src = path.join(srcDir, file);
-    if (!fs.existsSync(src)) continue;
-    const dest = path.join(destDir, file);
-    fs.copyFileSync(src, dest);
-    fs.chmodSync(dest, 0o755);
-  }
-  return path.join(destDir, 'cli.py');
+  return installPinnedPack(repo);
 }
 
 function writeExecutable(filePath: string, contents: string): void {
@@ -242,6 +220,29 @@ if role == "critic":
     });
 
     const projectId = await registerProject(repo);
+    expect(
+      execFileSync('git', ['ls-files', '.agents/skills/gantry/scripts/cli.py'], {
+        cwd: repo,
+        encoding: 'utf-8',
+      }).trim(),
+    ).toBe('.agents/skills/gantry/scripts/cli.py');
+
+    const boardRes = await fetch(`${apiBaseUrl}/api/projects/${projectId}/board`);
+    expect(boardRes.status).toBe(200);
+    const board = await boardRes.json();
+    expect(board.resolution).toBe('pinned');
+    expect(board.executionEnabled).toBe(true);
+    expect(board.issues.map((issue: { ref: string; title: string; frontierBlocked: boolean }) => ({
+      ref: issue.ref,
+      title: issue.title,
+      frontierBlocked: issue.frontierBlocked,
+    }))).toEqual([
+      { ref: 'feat#01', title: 'First Slice', frontierBlocked: false },
+      { ref: 'feat#02', title: 'Blocked Slice', frontierBlocked: true },
+    ]);
+    expect(board.specs).toEqual([{ slug: 'feat', path: '.scratch/feat/spec.md', executable: false }]);
+    expect(board.frontier).toEqual(['feat#01']);
+
     render(<App apiBaseUrl={apiBaseUrl} />);
 
     const card01 = await screen.findByTestId('issue-card-feat#01');

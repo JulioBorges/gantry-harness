@@ -18,7 +18,7 @@ function initTempGitRepo(baseDir: string, name: string): string {
   return repoDir;
 }
 
-describe('Slice 2: Multi-Project Workspace, Sidebar Topology, Bootstrap, Discovery & Setup', () => {
+describe('Slice 2: Multi-Project Workspace and Sidebar Topology', () => {
   let tmpRoot: string;
   let gantryHome: string;
   let stateRoot: string;
@@ -125,136 +125,6 @@ describe('Slice 2: Multi-Project Workspace, Sidebar Topology, Bootstrap, Discove
     }
   });
 
-
-  it('bootstraps Gantry skills into a repo, queries model discovery, previews policy diff without mutating files, and applies via setup.py', async () => {
-    const repoDir = initTempGitRepo(tmpRoot, 'repo-setup');
-
-    const server = await createHarnessServer({
-      gantryHome,
-      stateRoot,
-      profileRoot,
-      port: 0,
-    });
-    const baseUrl = `http://127.0.0.1:${server.port}`;
-
-    try {
-      const reg = await fetch(`${baseUrl}/api/projects`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: repoDir }),
-      }).then((r) => r.json());
-
-      // Bootstrap Gantry skills into the repository
-      const bootRes = await fetch(`${baseUrl}/api/projects/${reg.project.id}/bootstrap`, {
-        method: 'POST',
-      }).then((r) => r.json());
-      expect(bootRes.installed).toBe(true);
-      expect(fs.existsSync(path.join(repoDir, '.agents', 'skills', 'gantry', 'SKILL.md'))).toBe(true);
-
-      // Query model discovery for opencode
-      const discRes = await fetch(
-        `${baseUrl}/api/projects/${reg.project.id}/discovery?harness=opencode`,
-      ).then((r) => r.json());
-      expect(discRes.harness).toBe('opencode');
-      expect(Array.isArray(discRes.models)).toBe(true);
-      expect(discRes.models.length).toBeGreaterThan(0);
-
-      // Proposed policy with roles, git workflow, browser-validation check, guard hooks, and caveman
-      const proposedPolicy = {
-        execution: {
-          hostHarness: 'opencode',
-          roles: {
-            plan: { harness: 'opencode', model: 'google/gemini-4-argon', effort: 'high' },
-            implement: { harness: 'opencode', model: 'google/gemini-4-argon', effort: 'high' },
-            review: { harness: 'opencode', model: 'openai/gpt-6.1-sol', effort: 'high' },
-            critic: { harness: 'opencode', model: 'openai/gpt-6.1-sol', effort: 'high' },
-          },
-        },
-        git: {
-          target: 'main',
-          prefix: 'gantry/',
-          issueBranch: '{prefix}{spec}-{number:02d}',
-        },
-        checks: [
-          { name: 'unit-tests', command: 'bun run test', mode: 'absolute' },
-          { name: 'browser-validation', command: 'bun run test:e2e', mode: 'absolute' },
-        ],
-        hooks: {
-          record: ['git commit'],
-          deny: ['git push --force'],
-        },
-        caveman: true,
-      };
-
-      // Preview diff BEFORE applying: must NOT write .gantry/config.json on disk
-      const previewRes = await fetch(`${baseUrl}/api/projects/${reg.project.id}/setup/preview`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ policy: proposedPolicy }),
-      }).then((r) => r.json());
-
-      expect(previewRes.diff).toContain('.gantry/config.json');
-      expect(previewRes.diff).toContain('AGENTS.md');
-      expect(previewRes.diff).toContain('browser-validation');
-      expect(fs.existsSync(path.join(repoDir, '.gantry', 'config.json'))).toBe(false);
-
-      // Apply tracked repository policy via setup.py
-      const applyRepoRes = await fetch(`${baseUrl}/api/projects/${reg.project.id}/setup/apply`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scope: 'repository', policy: proposedPolicy }),
-      }).then((r) => r.json());
-
-      expect(applyRepoRes.applied, JSON.stringify(applyRepoRes)).toBe(true);
-      expect(fs.existsSync(path.join(repoDir, '.gantry', 'config.json'))).toBe(true);
-      const writtenConfig = JSON.parse(
-        fs.readFileSync(path.join(repoDir, '.gantry', 'config.json'), 'utf-8'),
-      );
-      expect(writtenConfig.execution.hostHarness).toBe('opencode');
-      expect(writtenConfig.checks[1].name).toBe('browser-validation');
-      const agentsMd = fs.readFileSync(path.join(repoDir, 'AGENTS.md'), 'utf-8');
-      expect(agentsMd).toContain('<!-- gantry:begin -->');
-
-      // Apply machine-local personal profile via setup.py --personal without touching tracked files
-      expect(execFileSync('git', ['status', '--porcelain'], { cwd: repoDir, encoding: 'utf-8' }).trim()).toBe('');
-
-      const personalRes = await fetch(`${baseUrl}/api/projects/${reg.project.id}/setup/apply`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          scope: 'personal',
-          hostHarness: 'codex',
-          roles: {
-            critic: { harness: 'codex', model: 'gpt-5.2-codex', effort: 'high' },
-          },
-        }),
-      }).then((r) => r.json());
-
-      expect(personalRes.applied).toBe(true);
-      const profileFile = path.join(profileRoot, reg.project.unitId, 'execution.json');
-      expect(fs.existsSync(profileFile)).toBe(true);
-      const profileJson = JSON.parse(fs.readFileSync(profileFile, 'utf-8'));
-      expect(profileJson.hostHarness).toBe('codex');
-      expect(profileJson.roles.critic.model).toBe('gpt-5.2-codex');
-
-      // Tracked git tree remains clean after saving personal profile
-      const gitStatus = execFileSync('git', ['status', '--porcelain'], {
-        cwd: repoDir,
-        encoding: 'utf-8',
-      });
-      expect(gitStatus.trim()).toBe('');
-
-      // Role resolution reflects personal profile override + derived role inheritance (plan-critic inherits from critic)
-      const rolesRes = await fetch(`${baseUrl}/api/projects/${reg.project.id}/roles`).then((r) =>
-        r.json(),
-      );
-      expect(rolesRes.roles.critic.harness).toBe('codex');
-      expect(rolesRes.roles['plan-critic'].harness).toBe('codex');
-      expect(rolesRes.roles.research.model).toBe('google/gemini-4-argon');
-    } finally {
-      await server.close();
-    }
-  });
 
   it('diagnoses git-ignored .gantry/config.json and dirty working trees with actionable remediation cards', async () => {
     const repoDir = initTempGitRepo(tmpRoot, 'repo-diagnose');

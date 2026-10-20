@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { runCommand, resolveSkillDir, runGantryScript } from '../src/server/commandRunner.js';
 import { createHarnessServer } from '../src/server/app.js';
 import { runCli } from '../src/cli.js';
+import { installPinnedPack } from './packFixture.js';
 
 function initTempGitRepo(baseDir: string, name: string): string {
   const repoDir = path.join(baseDir, name);
@@ -37,11 +38,24 @@ describe('Slice 1: Command Runner stdin Contract, 4-Home State Persistence & Sin
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   });
 
-  it('pipes stdin payloads to real Gantry runlog.py append without shell interpolation', async () => {
+  it('pipes stdin payloads to the pinned runlog.py append without shell interpolation', async () => {
     const repoDir = initTempGitRepo(tmpRoot, 'repo-stdin');
-    const skillResolution = resolveSkillDir(repoDir);
+    const emptyHome = path.join(tmpRoot, 'empty-home');
+    fs.mkdirSync(emptyHome);
+    installPinnedPack(repoDir, ['runlog.py']);
+    execFileSync('git', ['add', '.agents'], { cwd: repoDir });
+    execFileSync('git', ['commit', '-m', 'Pin Gantry pack'], { cwd: repoDir });
+    expect(
+      execFileSync('git', ['ls-files', '.agents/skills/gantry/scripts/runlog.py'], {
+        cwd: repoDir,
+        encoding: 'utf-8',
+      }).trim(),
+    ).toBe('.agents/skills/gantry/scripts/runlog.py');
+
+    const skillResolution = resolveSkillDir(repoDir, emptyHome);
     expect(skillResolution.found).toBe(true);
-    expect(skillResolution.skillDir).toBeTruthy();
+    expect(skillResolution.source).toBe('repo');
+    expect(skillResolution.skillDir).toBe(fs.realpathSync(path.join(repoDir, '.agents', 'skills', 'gantry')));
 
     const unitRes = await runGantryScript('runlog.py', ['unit-id', '--cwd', repoDir, '--json'], {
       repoRoot: repoDir,

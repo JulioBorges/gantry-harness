@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/JulioBorges/gantry",
+  "commit": "dc5bdd3571253af628ab629f1edcd58fa81fe2b1",
+  "license": "Apache-2.0",
+  "paths": [
+    ".agents/skills/gantry/scripts/acceptance.py",
+    ".agents/skills/gantry/scripts/cli.py",
+    ".agents/skills/gantry/scripts/common.py",
+    ".agents/skills/gantry/scripts/roadmap.py",
+    ".agents/skills/gantry/scripts/runlog.py"
+  ]
+}
