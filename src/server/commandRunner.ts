@@ -160,7 +160,7 @@ export async function runGantryScript(
   return runCommand([python, scriptPath, ...args], {
     cwd: options.cwd ?? options.repoRoot,
     input: options.input,
-    env: options.env,
+    env: { PYTHONDONTWRITEBYTECODE: '1', ...options.env },
     timeoutMs: options.timeoutMs,
   });
 }

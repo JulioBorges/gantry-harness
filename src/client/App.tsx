@@ -1765,6 +1765,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
 <div data-testid="setup-panel" style={{ padding: 16, overflowY: 'auto' }}>
             <h2>Preparar o projeto para execução</h2>
             <p className="section-intro">Cada papel usa um host e só pode receber um modelo desse host. A lista é lida do agente instalado. Esta configuração tem prioridade sobre a global.</p>
+            <p>A instalação das skills e a configuração do repositório criam commits locais na branch atual. Faça commit ou stash das alterações existentes antes de continuar.</p>
             {inspection?.remediationCards.map((card) => <div key={card.kind} className="setup-diagnostic"><strong>{card.title}</strong><p>{card.description}</p><p>{card.remediation}</p></div>)}
             <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
               <button

@@ -26,6 +26,8 @@ The packaged desktop app includes its runtime; end users do not need Bun or Node
 
 Use the navigation button or Cmd/Ctrl+B to collapse the sidebar. Narrow windows use a dismissible navigation drawer. Closing the desktop application stops its local server and terminals. Projects and conversation history remain under `~/.gantry/harness`; processes are not reported as surviving a restart.
 
+Installing/updating Gantry skills and saving repository configuration create local commits on the current branch. Start with a clean Git worktree and a configured Git identity. Existing changes must be committed or stashed first. Personal profiles remain local and do not create commits. No push or PR is created by setup.
+
 ## Build packages
 
 ```sh
