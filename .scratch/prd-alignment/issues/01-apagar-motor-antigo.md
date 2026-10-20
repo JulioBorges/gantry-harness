@@ -1,7 +1,7 @@
 # 01: Apagar o motor antigo
 
 Type: issue
-Status: ready-for-agent
+Status: done
 Slice: `prd-alignment#01`
 Spec: `.scratch/prd-alignment/spec.md`
 Created: 2026-10-20
@@ -18,12 +18,12 @@ O que continua de ponta a ponta: abrir e trocar projeto, o quadro, os terminais 
 
 ## Acceptance criteria
 
-- [ ] Não há superfície, na tela nem na API, para conversa, preparação de comando, plano conversacional, rodada, steering, takeover, recuperação por troca de modelo, lições ou limpeza.
-- [ ] A configuração de provedor de modelo não aparece e não é mais lida.
-- [ ] Abrir projeto, quadro, terminal, arquivos, preferências de terminal e pareamento continuam utilizáveis.
-- [ ] A navegação oferece Quadro, Terminal e Arquivos, e não oferece uma segunda vista de execução nem uma aba de conversa.
-- [ ] Testes cuja única finalidade era o motor removido saem, em vez de serem reescritos contra ele.
-- [ ] A verificação de tipos passa e a suíte que sobrou passa.
+- [x] Não há superfície, na tela nem na API, para conversa, preparação de comando, plano conversacional, rodada, steering, takeover, recuperação por troca de modelo, lições ou limpeza.
+- [x] A configuração de provedor de modelo não aparece e não é mais lida.
+- [x] Abrir projeto, quadro, terminal, arquivos, preferências de terminal e pareamento continuam utilizáveis.
+- [x] A navegação oferece Quadro, Terminal e Arquivos, e não oferece uma segunda vista de execução nem uma aba de conversa.
+- [x] Testes cuja única finalidade era o motor removido saem, em vez de serem reescritos contra ele.
+- [x] A verificação de tipos passa e a suíte que sobrou passa.
 
 ## Blocked by
 
