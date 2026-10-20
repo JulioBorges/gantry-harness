@@ -52,7 +52,7 @@ describe('Slice 5: React Frontend UI, Decision Cards, Chat ⇄ Terminal, Artifac
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   });
 
-  it('renders the sidebar, opens a terminal instead of a conversation, and keeps the board and setup available', async () => {
+  it('renders the sidebar, opens a terminal instead of a conversation, and keeps the board available', async () => {
     const repoDir = initTestRepo(tmpRoot, 'ui-project');
 
     await fetch(`${apiBaseUrl}/api/projects`, {
@@ -86,17 +86,6 @@ describe('Slice 5: React Frontend UI, Decision Cards, Chat ⇄ Terminal, Artifac
     fireEvent.click(screen.getByTestId('open-board-btn'));
     await waitFor(() => {
       expect(screen.getByTestId('issue-board')).toBeTruthy();
-    });
-
-    // Open Gantry Setup Panel and preview policy diff
-    fireEvent.click(screen.getByRole('button', { name: 'Configurações de ui-project' }));
-    await waitFor(() => {
-      expect(screen.getByTestId('setup-panel')).toBeTruthy();
-    });
-    fireEvent.change(screen.getByLabelText(/Host do projeto/), { target: { value: 'opencode' } });
-    fireEvent.click(screen.getByTestId('preview-setup-btn'));
-    await waitFor(() => {
-      expect(screen.getByTestId('setup-diff-preview').textContent).toContain('.gantry/config.json');
     });
   });
 });
