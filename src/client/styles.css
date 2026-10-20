@@ -53,12 +53,12 @@ summary { cursor: pointer; color: var(--slate-400); }
 .sidebar-heading { display: flex; align-items: center; justify-content: space-between; min-height: 30px; padding: 0 10px; color: var(--slate-400); font-size: 12px; }
 .sidebar-heading .icon-button { font-size: 19px; }
 .project-list { display: grid; gap: 3px; }
-.project-row { width: 100%; display: flex; align-items: center; gap: 4px; border-color: transparent; background: transparent; }
+.project-row { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px; border-color: transparent; background: transparent; }
 .project-row.selected { background: #24241f; }
 .project-row-select { flex: 1; min-width: 0; display: flex; gap: 10px; padding: 10px; border-color: transparent; background: transparent; }
 .project-settings { flex: 0 0 auto; }
 .project-row-text { min-width: 0; flex: 1; display: grid; gap: 1px; }
-.project-row strong { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-row strong { font-size: 13px; font-weight: 500; white-space: normal; overflow-wrap: anywhere; }
 .project-row small { color: var(--slate-400); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .folder-icon { color: var(--slate-400); font-size: 22px; line-height: 1; }
 .status-dot { width: 6px; height: 6px; min-width: 6px; display: inline-block; border-radius: 50%; background: var(--slate-400); }
@@ -66,7 +66,7 @@ summary { cursor: pointer; color: var(--slate-400); }
 .status-dot.working { background: #8bbbd9; }
 .status-dot.needs-input { background: var(--amber-accent); }
 .status-dot.blocked { background: var(--red-alert); }
-.project-context { padding: 6px 10px 10px 31px; font-size: 12px; }
+.project-context { grid-column: 1 / -1; min-width: 0; padding: 6px 10px 10px 31px; font-size: 12px; }
 .project-context summary { font-size: 11px; }
 .worktree-row { padding-top: 8px; color: var(--slate-400); overflow-wrap: anywhere; }
 .worktree-row button { font-size: 11px; min-height: 25px; margin-top: 4px; }
@@ -410,3 +410,7 @@ kbd { color: var(--slate-400); font-size: 10px; }
   .issue-board { padding: 12px 16px 16px; }
   .board-lane { flex-basis: min(280px, calc(100vw - 48px)); }
 }
+
+.command-setting { display: grid; gap: 6px; margin-bottom: 16px; }
+.command-setting input { width: 100%; min-width: 0; }
+.worktree-row small { display: block; }

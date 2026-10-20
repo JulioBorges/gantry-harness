@@ -138,9 +138,13 @@ export interface RoleSelection {
   effort?: string;
 }
 
+export interface RoleCommand {
+  command: string;
+}
+
 export interface ExecutionSettings {
   hostHarness?: string;
-  roles?: Record<string, RoleSelection>;
+  roles?: Record<string, RoleCommand>;
 }
 
 export type TerminalShell = 'system' | 'bash' | 'sh' | 'zsh' | 'cmd' | 'powershell' | 'pwsh';

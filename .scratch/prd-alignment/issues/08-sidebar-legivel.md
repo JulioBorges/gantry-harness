@@ -1,7 +1,7 @@
 # 08: Ler o projeto na sidebar
 
 Type: issue
-Status: ready-for-agent
+Status: done
 Slice: `prd-alignment#08`
 Spec: `.scratch/prd-alignment/spec.md`
 Created: 2026-10-20
@@ -16,12 +16,12 @@ O operador identifica o repositório ativo. O nome do projeto continua legível 
 
 ## Acceptance criteria
 
-- [ ] Com a lista de worktrees aberta, o nome do projeto segue legível na sidebar larga e na gaveta estreita.
-- [ ] O checkout principal do repositório não entra na lista.
-- [ ] Uma Issue com Run mostra a worktree dela, identificada pelo ref.
-- [ ] Não há controle de assumir o terminal a partir dessa lista.
-- [ ] Trocar de projeto e abrir a configuração daquele projeto continuam funcionando.
-- [ ] Os casos são provados no seam da suíte portátil.
+- [x] Com a lista de worktrees aberta, o nome do projeto segue legível na sidebar larga e na gaveta estreita.
+- [x] O checkout principal do repositório não entra na lista.
+- [x] Uma Issue com Run mostra a worktree dela, identificada pelo ref.
+- [x] Não há controle de assumir o terminal a partir dessa lista.
+- [x] Trocar de projeto e abrir a configuração daquele projeto continuam funcionando.
+- [x] Os casos são provados no seam da suíte portátil.
 
 ## Blocked by
 

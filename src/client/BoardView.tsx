@@ -26,6 +26,7 @@ export function BoardView({
   onOpenPath,
   onFollow,
   onRunIssue,
+  onConfigureProject,
   onExecuteWave,
   onStartPlan,
   onAnswerPause,
@@ -44,6 +45,7 @@ export function BoardView({
   onOpenPath?: (path: string) => void;
   onFollow?: (ref: string, runId?: string) => void;
   onRunIssue?: (ref: string) => void;
+  onConfigureProject?: () => void;
   onExecuteWave?: () => void;
   onStartPlan?: (slug: string) => void;
   onAnswerPause?: (ref: string, choice: string) => void;
@@ -158,7 +160,7 @@ export function BoardView({
         )}
         {error && (
           <div className="board-run-error" role="alert" data-testid={`run-error-${issue.ref}`}>
-            <strong>{error.reason ? `${error.code} (${error.reason})` : error.code}</strong>
+            {error.code === 'role-command-missing' || error.reason === 'role-command-missing' ? <><strong>Configure um comando executável para cada papel exigido antes de executar esta Issue.</strong><button onClick={onConfigureProject}>Configurar este projeto</button></> : <strong>{error.reason ? `${error.code} (${error.reason})` : error.code}</strong>}
             {error.openBlockers && error.openBlockers.length > 0 && (
               <span>: {error.openBlockers.join(', ')}</span>
             )}

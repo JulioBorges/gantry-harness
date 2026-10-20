@@ -309,7 +309,7 @@ function failedRead(resolution: PackResolutionKind, explanation: string): BoardS
 export async function readBoard(repoRoot: string, homeDir: string = os.homedir()): Promise<BoardSnapshot> {
   const resolved = resolvePackExecutable(repoRoot, homeDir);
   if (resolved.kind === 'none') return emptyBoard('none', resolved.explanation);
-  const result = await runCommand(resolved.command, { cwd: path.resolve(repoRoot) });
+  const result = await runCommand(resolved.command, { cwd: path.resolve(repoRoot), env: { PYTHONDONTWRITEBYTECODE: '1' } });
   if (result.exitCode !== 0) {
     const detail = result.stderr.trim() || result.stdout.trim() || `exit ${result.exitCode}`;
     return failedRead(resolved.kind, `O comando board do pack falhou: ${detail}`);

@@ -6,7 +6,7 @@ Acompanhamento do gantry-harness. A linha `Status:` de cada Issue é a fonte da 
 
 | | Count |
 |---|---|
-| Issues completed | **12 / 19** |
+| Issues completed | **14 / 19** |
 | Specs completed | **1 / 2** |
 | Execution waves | **11** |
 
@@ -28,7 +28,7 @@ Números são a linha `Map:` de cada `spec.md` (`(spec NN)`). A tabela abaixo é
 | # | Spec | Issues done | Waves |
 |---|---|---|---|
 | 01 | `run-orchestration` | 9/9 | 0–3 |
-| 02 | `prd-alignment` | 3/10 | 4–10 |
+| 02 | `prd-alignment` | 5/10 | 4–10 |
 
 <!-- END GENERATED: spec progress -->
 
@@ -74,11 +74,11 @@ Números são a linha `Map:` de cada `spec.md` (`(spec NN)`). A tabela abaixo é
 - [x] **`prd-alignment#09`** — 09: Não abrir o terminal sozinho
   <br>↳ blocked by: prd-alignment#01
 
-### Wave 6 — 0/2 done
+### Wave 6 — 2/2 done
 
-- [ ] **`prd-alignment#03`** — 03: Configurar o comando que o papel vai spawnar
+- [x] **`prd-alignment#03`** — 03: Configurar o comando que o papel vai spawnar
   <br>↳ blocked by: prd-alignment#02
-- [ ] **`prd-alignment#08`** — 08: Ler o projeto na sidebar
+- [x] **`prd-alignment#08`** — 08: Ler o projeto na sidebar
   <br>↳ blocked by: prd-alignment#02
 
 ### Wave 7 — 0/1 done

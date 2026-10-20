@@ -9,6 +9,7 @@ import { createHarnessServer } from '../src/server/app.ts';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const board = {
   issues: [
+    { ref: 'pack#03', spec: 'pack', number: 3, title: 'Sidebar Run', status: 'ready-for-agent', path: '.scratch/pack/issues/03.md', frontierBlocked: false, openBlockers: [] },
     {
       ref: 'pack#02',
       spec: 'pack',
@@ -183,6 +184,7 @@ try {
     stateRoot: path.join(gantryHome, 'state'),
     profileRoot: path.join(gantryHome, 'profiles'),
     port: 0,
+    homeDir: tmp,
     clientDistDir: path.join(root, 'dist', 'client'),
   });
   const pageUrl = `http://127.0.0.1:${server.port}/`;
@@ -194,6 +196,18 @@ try {
     });
     if (!response.ok) throw new Error(`project registration failed: ${response.status}`);
   }
+
+  const packedProject = server.store.listProjects().find((project) => project.path === packed);
+  const issueWorktree = path.join(tmp, 'issue-worktree');
+  execFileSync('git', ['worktree', 'add', '-b', 'gantry/pack-02', issueWorktree], { cwd: packed });
+  const now = new Date().toISOString();
+  server.store.saveRun({
+    runId: 'browser-sidebar-run', projectId: packedProject.id, ref: 'pack#03', slug: 'pack', kind: 'issue',
+    status: 'stopped', childPid: null, pid: null, childHandle: null, lane: null, packPhase: null,
+    branch: 'gantry/pack-02', worktree: issueWorktree, pushed: false, pause: null, error: null,
+    prUrl: null, derivedPhase: 'ready-to-agent', stdoutLines: [], stderrText: '', exitCode: null,
+    createdAt: now, updatedAt: now,
+  });
 
   const debugPort = await new Promise((resolve, reject) => {
     const probe = net.createServer();
@@ -232,6 +246,29 @@ try {
     deviceScaleFactor: 1,
     mobile: false,
   });
+
+  async function inspectSidebar() {
+    return evaluate(session, `(async () => {
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      for (let i = 0; i < 40 && !document.querySelector('.project-context'); i++) await sleep(100);
+      if (document.querySelector('.navigation-toggle').getAttribute('aria-expanded') === 'false') document.querySelector('.navigation-toggle').click();
+      await sleep(300);
+      const details = document.querySelector('.project-context');
+      if (details) details.open = true;
+      const name = document.querySelector('.project-row.selected .project-row-text strong');
+      const row = name?.closest('.project-row');
+      const rect = name?.getBoundingClientRect();
+      const context = details?.getBoundingClientRect();
+      return {
+        name: name?.textContent,
+        nameFits: Boolean(rect && name.scrollWidth <= name.clientWidth && rect.height >= 10 && rect.right <= row.getBoundingClientRect().right),
+        detailsBelow: Boolean(rect && context && context.top >= rect.bottom),
+        issueRefs: [...document.querySelectorAll('.worktree-row strong')].map((el) => el.textContent),
+        hasTakeover: /assumir/i.test(details?.textContent ?? ''),
+      };
+    })()`);
+  }
+  const sidebarDesktop = await inspectSidebar();
 
   const painted = await evaluate(session, `(async () => {
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -272,13 +309,15 @@ try {
     return { width: rect.width, left: rect.left, innerWidth: window.innerWidth };
   })()`);
 
+  const sidebarMobile = await inspectSidebar();
+
   const disabled = await evaluate(session, `(async () => {
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const empty = [...document.querySelectorAll('button')].find((entry) => entry.textContent.includes('empty-repo'));
     if (!empty) return { clicked: false, runDisabled: false, explanation: '', planDisabled: false, approveDisabled: false };
     empty.click();
     for (let attempt = 0; attempt < 40; attempt += 1) {
-      const note = document.querySelector('[data-testid="execution-unavailable"]');
+      const note = document.querySelector('[data-testid="execution-unavailable"], [data-testid="pack-missing"]');
       const run = document.querySelector('[data-testid="run-affordance"]');
       const plan = document.querySelector('[data-testid="plan-affordance"]');
       const approve = document.querySelector('[data-testid="approve-affordance"]');
@@ -287,7 +326,7 @@ try {
       }
       await sleep(250);
     }
-    const note = document.querySelector('[data-testid="execution-unavailable"]');
+    const note = document.querySelector('[data-testid="execution-unavailable"], [data-testid="pack-missing"]');
     return { clicked: true, runDisabled: false, planDisabled: false, approveDisabled: false, explanation: note ? note.textContent : '' };
   })()`);
 
@@ -324,7 +363,8 @@ try {
   })()`);
   session.close();
 
-  const ok = painted.blockedPhase === 'blocked'
+  const sidebarOk = [sidebarDesktop, sidebarMobile].every((result) => result.name === 'packed-repo' && result.nameFits && result.detailsBelow && result.issueRefs.join() === 'pack#03' && !result.hasTakeover);
+  const ok = sidebarOk && painted.blockedPhase === 'blocked'
     && painted.blocker === 'pack#09'
     && painted.blockedText.includes('blocked')
     && painted.doneText.includes('done')
@@ -340,12 +380,12 @@ try {
     && disabled.approveDisabled
     && /gantry/i.test(disabled.explanation)
     && refreshed.title.includes('Shipped revised');
-  const evidence = { ok, chrome, painted, mobile, disabled, refreshed };
+  const evidence = { ok, chrome, painted, mobile, disabled, refreshed, sidebarDesktop, sidebarMobile };
   if (!ok) {
     console.error(JSON.stringify(evidence, null, 2));
     process.exitCode = 1;
   } else {
-    console.log(JSON.stringify({ ok: true, chrome, desktopWidth: painted.desktopWidth, mobileWidth: mobile.width }));
+    console.log(JSON.stringify({ ok: true, chrome, desktopWidth: painted.desktopWidth, mobileWidth: mobile.width, sidebarDesktop, sidebarMobile }));
   }
 } catch (error) {
   console.error(error instanceof Error ? error.stack || error.message : error);

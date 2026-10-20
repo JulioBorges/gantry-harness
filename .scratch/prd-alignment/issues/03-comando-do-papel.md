@@ -1,7 +1,7 @@
 # 03: Configurar o comando que o papel vai spawnar
 
 Type: issue
-Status: ready-for-agent
+Status: done
 Slice: `prd-alignment#03`
 Spec: `.scratch/prd-alignment/spec.md`
 Created: 2026-10-20
@@ -18,12 +18,12 @@ Se o papel exigido não tem comando executável, a Issue não ganha worktree nem
 
 ## Acceptance criteria
 
-- [ ] A configuração do projeto e a global gravam e mostram um comando por papel, e a do projeto vence quando as duas existem.
-- [ ] Não há catálogo de modelo apresentado como o que a Run executa.
-- [ ] Tentar executar uma Issue sem comando executável para o papel exigido não cria worktree nem branch.
-- [ ] Nesse caso o card da Issue explica em português e oferece abrir a configuração do projeto.
-- [ ] Com os comandos exigidos executáveis, executar a Issue cria a Run e o worktree.
-- [ ] Os dois casos são provados no seam da suíte portátil, olhando a tela e o git do repositório temporário.
+- [x] A configuração do projeto e a global gravam e mostram um comando por papel, e a do projeto vence quando as duas existem.
+- [x] Não há catálogo de modelo apresentado como o que a Run executa.
+- [x] Tentar executar uma Issue sem comando executável para o papel exigido não cria worktree nem branch.
+- [x] Nesse caso o card da Issue explica em português e oferece abrir a configuração do projeto.
+- [x] Com os comandos exigidos executáveis, executar a Issue cria a Run e o worktree.
+- [x] Os dois casos são provados no seam da suíte portátil, olhando a tela e o git do repositório temporário.
 
 ## Blocked by
 

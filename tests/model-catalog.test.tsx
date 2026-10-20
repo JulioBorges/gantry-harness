@@ -1,17 +1,10 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { App } from '../src/client/App.js';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
-
-const catalogs: Record<string, Array<{ id: string; name?: string }>> = {
-  codex: [{ id: 'gpt-5.2-codex', name: 'GPT 5.2 Codex' }],
-  'claude-code': [{ id: 'claude-sonnet-4-6' }, { id: 'claude-opus-4-5' }],
-  opencode: [{ id: 'openai/gpt-5.2-codex' }, { id: 'anthropic/claude-opus-4-5' }],
-  antigravity: [{ id: 'gemini-2.5-pro' }],
-};
 
 function mockWorkspace() {
   vi.stubGlobal('queryLocalFonts', vi.fn(async () => []));
@@ -36,10 +29,6 @@ function mockWorkspace() {
         operatorProfile: {}, skillPack: { found: true }, hasTrackedPolicy: true,
       });
     }
-    if (route.includes('/discovery')) {
-      const harness = new URL(route, 'http://127.0.0.1').searchParams.get('harness') ?? '';
-      return Response.json({ harness, models: catalogs[harness] ?? [] });
-    }
     if (route.endsWith('/alerts')) return Response.json({ alerts: [] });
     if (route.endsWith('/kanban')) return Response.json({ runs: [] });
     if (route.endsWith('/board')) return Response.json({ resolution: 'none', executionEnabled: false, explanation: null, issues: [], specs: [], frontier: [] });
@@ -48,25 +37,19 @@ function mockWorkspace() {
   vi.stubGlobal('fetch', fetchMock);
 }
 
-it('offers only the selected role host models and drops a model from another host', async () => {
+it('shows command fields instead of host and model selectors, including with legacy policy', async () => {
   mockWorkspace();
   render(<App />);
   await screen.findAllByText('My project');
   fireEvent.click(screen.getByRole('button', { name: 'Configurações de My project' }));
-  const model = await screen.findByLabelText('Modelo para implement');
-  await waitFor(() => expect(within(model).getByRole('option', { name: /gpt-5.2-codex/ })).toBeTruthy());
-  expect(within(model).queryByRole('option', { name: 'claude-sonnet-4-6' })).toBeNull();
-  expect(within(model).queryByRole('option', { name: 'anthropic/claude-opus-4-5' })).toBeNull();
-  expect(within(model).getByRole('option', { name: /incompatível com Codex/ })).toBeTruthy();
-
-  fireEvent.change(screen.getByLabelText('Host para implement'), { target: { value: 'claude-code' } });
-  const nextModel = screen.getByLabelText('Modelo para implement');
-  await waitFor(() => expect(within(nextModel).getByRole('option', { name: 'claude-sonnet-4-6' })).toBeTruthy());
-  expect(within(nextModel).queryByRole('option', { name: /gpt-5.2-codex/ })).toBeNull();
-  expect(within(nextModel).queryByRole('option', { name: /incompatível/ })).toBeNull();
-  expect((nextModel as HTMLSelectElement).value).toBe('');
-  fireEvent.change(nextModel, { target: { value: 'claude-opus-4-5' } });
-  expect((screen.getByLabelText('Modelo para implement') as HTMLSelectElement).value).toBe('claude-opus-4-5');
+  await screen.findByLabelText('Comando para implement');
+  expect(screen.queryByLabelText('Modelo para implement')).toBeNull();
+  expect(screen.queryByLabelText('Host para implement')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Fechar configurações do projeto' }));
+  fireEvent.click(screen.getByTestId('open-settings-btn'));
+  fireEvent.click(screen.getByRole('tab', { name: 'Gantry' }));
+  expect(screen.getByLabelText('Comando global para implement')).toBeTruthy();
+  expect(screen.queryByLabelText('Host global')).toBeNull();
 });
 
 it('does not offer a coordinator connection tab', async () => {

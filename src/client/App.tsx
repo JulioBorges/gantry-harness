@@ -2,7 +2,7 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useActionFeedback } from './useActionFeedback.js';
 import { FileViewerDialog } from './FileViewerDialog.js';
 import { FileTree, type FileTreeEntry } from './FileTree.js';
-import type { ExecutionSettings, RoleSelection } from '../types.js';
+import type { ExecutionSettings, RoleCommand } from '../types.js';
 import type { ManagedPane } from '../server/ptyManager.js';
 import type { Terminal } from '@xterm/xterm';
 import type { FitAddon } from '@xterm/addon-fit';
@@ -10,7 +10,7 @@ import type { TerminalSettings, TerminalEnvironment } from '../types.js';
 import { SettingsDialog, type SettingsTab } from './SettingsDialog.js';
 import { SystemFontSelect } from './SystemFontSelect.js';
 import { BoardView } from './BoardView.js';
-import { EXECUTION_HOSTS, ModelSelect, discoveryHarness, type CatalogModel } from './ModelSelect.js';
+
 import {
   NO_PACK_EXPLANATION,
   PHASE_LABEL,
@@ -90,18 +90,12 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   } | null>(null);
 
   const [runs, setRuns] = useState<HarnessRunRecord[]>([]);
+  const [commandErrors, setCommandErrors] = useState<Record<string, string>>({});
 
-  const [setupDiffPreview, setSetupDiffPreview] = useState<string>('');
   const [projectSettingsId, setProjectSettingsId] = useState<string | null>(null);
-  const [setupHostHarness, setSetupHostHarness] = useState<string>('opencode');
-  const [globalHost, setGlobalHost] = useState('');
-  const [globalRoles, setGlobalRoles] = useState<Record<string, RoleSelection>>({});
+  const [globalRoles, setGlobalRoles] = useState<Record<string, RoleCommand>>({});
   const globalExecutionLoaded = useRef(false);
-  const [modelsByHarness, setModelsByHarness] = useState<Record<string, CatalogModel[]>>({});
-  const [catalogLoading, setCatalogLoading] = useState<Record<string, boolean>>({});
-  const [catalogErrors, setCatalogErrors] = useState<Record<string, string>>({});
-  const catalogRequests = useRef(new Set<string>());
-  const [roleSelections, setRoleSelections] = useState<Record<string, RoleSelection>>({});
+  const [roleSelections, setRoleSelections] = useState<Record<string, RoleCommand>>({});
   const setupProjectLoaded = useRef<string | null>(null);
   const { feedback, pendingActions, withFeedback, reportError, dismissFeedback } = useActionFeedback();
   const [terminalInput, setTerminalInput] = useState('');
@@ -147,61 +141,10 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     }
     if (!response.ok) {
       const data = await response.clone().json().catch(() => ({}));
-      throw new Error(data.error ?? `A solicitação falhou (HTTP ${response.status}). Tente novamente.`);
+      throw Object.assign(new Error(data.error ?? `A solicitação falhou (HTTP ${response.status}). Tente novamente.`), { code: data.code });
     }
     return response;
   }, [base, authToken]);
-
-  const ensureModelCatalog = useCallback(async (host: string) => {
-    const harness = discoveryHarness(host);
-    if (!activeProjectId || !harness || catalogRequests.current.has(harness)) return;
-    catalogRequests.current.add(harness);
-    setCatalogLoading((current) => ({ ...current, [harness]: true }));
-    try {
-      const response = await apiFetch(`/api/projects/${activeProjectId}/discovery?harness=${encodeURIComponent(harness)}`);
-      const data = await response.json();
-      const models = Array.isArray(data.models) ? data.models as CatalogModel[] : [];
-      setModelsByHarness((current) => ({ ...current, [harness]: models }));
-      setCatalogErrors((current) => ({
-        ...current,
-        [harness]: models.length ? '' : 'O host não retornou modelos. Verifique instalação e autenticação.',
-      }));
-    } catch (error) {
-      catalogRequests.current.delete(harness);
-      setModelsByHarness((current) => ({ ...current, [harness]: [] }));
-      setCatalogErrors((current) => ({
-        ...current,
-        [harness]: error instanceof Error ? error.message : 'Falha ao consultar os modelos deste host.',
-      }));
-    } finally {
-      setCatalogLoading((current) => ({ ...current, [harness]: false }));
-    }
-  }, [activeProjectId, apiFetch]);
-
-  useEffect(() => {
-    catalogRequests.current.clear();
-    setModelsByHarness({});
-    setCatalogErrors({});
-    setCatalogLoading({});
-  }, [activeProjectId]);
-
-  useEffect(() => {
-    if (!activeProjectId) return;
-    const hosts = new Set<string>();
-    if (projectSettingsId && setupHostHarness) hosts.add(setupHostHarness);
-    if (projectSettingsId) {
-      for (const selection of Object.values(roleSelections)) {
-        if (selection.harness) hosts.add(selection.harness);
-      }
-    }
-    if (settingsOpen && settingsTab === 'gantry' && globalHost) hosts.add(globalHost);
-    if (settingsOpen && settingsTab === 'gantry') {
-      for (const selection of Object.values(globalRoles)) {
-        if (selection.harness) hosts.add(selection.harness);
-      }
-    }
-    for (const host of hosts) void ensureModelCatalog(host);
-  }, [settingsOpen, settingsTab, projectSettingsId, activeProjectId, setupHostHarness, roleSelections, globalHost, globalRoles, ensureModelCatalog]);
 
   const loadArtifactAsset = useCallback(async (path: string, signal: AbortSignal): Promise<Blob> => {
     if (!artifactDrawer) throw new Error('Nenhum arquivo selecionado.');
@@ -230,7 +173,6 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
       if (data.terminalEnvironment) setTerminalEnvironment(data.terminalEnvironment);
       if (!globalExecutionLoaded.current && data.globalExecution) {
         const execution = data.globalExecution as ExecutionSettings;
-        setGlobalHost(execution.hostHarness ?? '');
         setGlobalRoles(execution.roles ?? {});
         globalExecutionLoaded.current = true;
       }
@@ -263,8 +205,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
           const projectInspection = await inspRes.json();
           setInspection(projectInspection);
           if (setupProjectLoaded.current !== actProj) {
-            setSetupHostHarness(projectInspection.operatorProfile?.hostHarness ?? projectInspection.policy?.execution?.hostHarness ?? '');
-            setRoleSelections({ ...projectInspection.policy?.execution?.roles, ...projectInspection.operatorProfile?.roles });
+            setRoleSelections(projectInspection.roleCommands ?? {});
             setupProjectLoaded.current = actProj;
           }
         }
@@ -580,11 +521,20 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
 
   const handleRunIssue = withFeedback('Executar issue', async (ref: string): Promise<void> => {
     if (!activeProjectId) throw new Error('Selecione um projeto para continuar.');
-    const res = await apiFetch(`/api/projects/${activeProjectId}/runs`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ref }),
-    });
+    const errorKey = `${activeProjectId}:${ref}`;
+    let res: Response;
+    try {
+      res = await apiFetch(`/api/projects/${activeProjectId}/runs`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ref }),
+      });
+    } catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === 'role-command-missing') {
+        setCommandErrors((current) => ({ ...current, [errorKey]: error.message }));
+        return;
+      }
+      throw error;
+    }
+    setCommandErrors((current) => { const next = { ...current }; delete next[errorKey]; return next; });
     if (res.ok) {
       const out = await res.json();
       const updatedRun = (out.run ?? out) as HarnessRunRecord;
@@ -807,45 +757,11 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   };
 
 
-  const buildProposedPolicy = (): Record<string, unknown> => {
-    if (!setupHostHarness) throw new Error('Selecione o host do projeto antes de salvar a configuração.');
-    const policy = inspection?.policy ?? {};
-    return { ...policy, execution: { ...policy.execution, hostHarness: setupHostHarness, roles: roleSelections } };
-  };
-
-  const handlePreviewSetup = withFeedback("Prévia da configuração", async (): Promise<void> => {
-    if (!activeProjectId) throw new Error('Selecione um projeto para continuar.');
-    const res = await apiFetch(`/api/projects/${activeProjectId}/setup/preview`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ policy: buildProposedPolicy() }),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      setSetupDiffPreview(data.diff ?? '');
-    }
-  });
-
-  const handleApplySetup = withFeedback("Salvar configuração do projeto", async (scope: 'repository' | 'personal'): Promise<void> => {
-    if (!activeProjectId) throw new Error('Selecione um projeto para continuar.');
-    for (const [role, selection] of Object.entries(roleSelections)) {
-      const harness = discoveryHarness(selection.harness);
-      const catalog = modelsByHarness[harness];
-      if (!catalog) throw new Error(`A lista de modelos de ${selection.harness || 'o host'} ainda não carregou para o papel ${role}.`);
-      if (!catalog.some((model) => model.id === selection.model)) {
-        throw new Error(`O modelo do papel ${role} não está disponível em ${selection.harness}. Escolha um modelo desse host.`);
-      }
-    }
-    const policy = buildProposedPolicy();
-    await apiFetch(`/api/projects/${activeProjectId}/setup/apply`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        scope,
-        policy,
-        hostHarness: setupHostHarness,
-        roles: (policy.execution as { roles?: Record<string, unknown> }).roles ?? {},
-      }),
+  const handleApplySetup = withFeedback('Salvar configuração do projeto', async (): Promise<void> => {
+    if (!activeProjectId) return;
+    await apiFetch(`/api/projects/${activeProjectId}/commands`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ roles: roleSelections }),
     });
     setupProjectLoaded.current = null;
     await loadWorkspaceState();
@@ -855,18 +771,11 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     const response = await apiFetch('/api/settings/execution', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hostHarness: globalHost, roles: globalRoles }),
+      body: JSON.stringify({ roles: globalRoles }),
     });
     const data = await response.json() as { execution: ExecutionSettings };
-    setGlobalHost(data.execution.hostHarness ?? '');
     setGlobalRoles(data.execution.roles ?? {});
     globalExecutionLoaded.current = true;
-  });
-
-  const handleBootstrap = withFeedback('Instalar skills do Gantry', async () => {
-    if (!activeProjectId) throw new Error('Selecione um projeto primeiro.');
-    await apiFetch(`/api/projects/${activeProjectId}/bootstrap`, { method: 'POST' });
-    await loadWorkspaceState();
   });
 
   const handleSaveTerminalSettings = withFeedback('Salvar terminal', async () => {
@@ -970,9 +879,9 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
               <span title={STATUS_LABELS[project.badgeState]} className={`status-dot ${project.badgeState?.replace(/\s+/g, '-')}`} />
             </button>
             <button className="icon-button project-settings" aria-label={`Configurações de ${project.name}`} data-testid={`project-settings-${project.id}`} onClick={() => { setProjectSettingsId(project.id); if (project.id !== activeProjectId) void handleSelectProject(project.id); }}>⚙</button>
-            {project.id === activeProjectId && inspection && inspection.worktrees.length > 0 && <details className="project-context">
+            {project.id === activeProjectId && runs.some((run) => run.projectId === project.id && run.kind === 'issue' && run.worktree && run.worktree !== project.path) && <details className="project-context">
               <summary>Worktrees</summary>
-              {inspection.worktrees.map((wt) => <div key={wt.path} className="worktree-row"><span title={wt.path}>{wt.branch} · {STATUS_LABELS[wt.badgeState]}</span></div>)}
+              {runs.filter((run) => run.projectId === project.id && run.kind === 'issue' && run.worktree && run.worktree !== project.path).map((run) => <div key={run.runId} className="worktree-row"><strong>{run.ref}</strong><small title={run.worktree!}>{run.worktree}</small></div>)}
             </details>}
           </div>)}
         </div>
@@ -1014,6 +923,13 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
             onOpenPath={(path) => void handleOpenArtifact(path)}
             onFollow={handleFollowAgent}
             onRunIssue={(ref) => void handleRunIssue(ref)}
+            onConfigureProject={() => setProjectSettingsId(activeProjectId)}
+            issueInteractions={Object.fromEntries((board?.issues ?? []).filter((issue) => commandErrors[`${activeProjectId}:${issue.ref}`]).map((issue) => [issue.ref,
+              <div role="alert" className="board-run-error" data-testid={`run-error-${issue.ref}`}>
+                <p>{commandErrors[`${activeProjectId}:${issue.ref}`]}</p>
+                <button onClick={() => setProjectSettingsId(activeProjectId)}>Configurar este projeto</button>
+              </div>,
+            ]))}
             onExecuteWave={() => void handleExecuteWave()}
             onStartPlan={(slug) => void handleStartPlanRun(slug)}
             onAnswerPause={(ref, choice) => void handleAnswerPause(ref, choice)}
@@ -1083,38 +999,10 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         {settingsTab === 'gantry' && <section className="settings-panel" data-testid="global-gantry-panel">
             <h2>Gantry global</h2>
             <p className="section-intro">Opcional. O processo usa esta configuração quando o projeto não tem a própria. A configuração do projeto tem prioridade.</p>
-            <label htmlFor="global-host">Host global</label>
-            <select id="global-host" value={globalHost} onChange={(event) => setGlobalHost(event.target.value)}>
-              <option value="">Sem host global</option>
-              {EXECUTION_HOSTS.map((host) => <option key={host.id} value={host.id}>{host.label}</option>)}
-            </select>
             <div className="role-settings">
-              <h3>Papéis globais</h3>
-              {Object.entries(globalRoles).map(([role, selection]) => {
-                const harness = discoveryHarness(selection.harness);
-                const hostLabel = EXECUTION_HOSTS.find((host) => host.id === selection.harness)?.label ?? selection.harness;
-                return <div key={role} className="role-setting-row">
-                  <strong>{role}</strong>
-                  <label>Host<select aria-label={`Host global para ${role}`} value={selection.harness} onChange={(event) => {
-                    const nextHarness = event.target.value;
-                    setGlobalRoles((current) => ({ ...current, [role]: { ...selection, harness: nextHarness, model: '' } }));
-                    void ensureModelCatalog(nextHarness);
-                  }}>
-                    {EXECUTION_HOSTS.map((host) => <option key={host.id} value={host.id}>{host.label}</option>)}
-                  </select></label>
-                  <ModelSelect
-                    label="Modelo"
-                    ariaLabel={`Modelo global para ${role}`}
-                    harnessLabel={hostLabel}
-                    models={modelsByHarness[harness] ?? []}
-                    value={selection.model}
-                    loading={catalogLoading[harness] === true}
-                    error={catalogErrors[harness]}
-                    onChange={(modelId) => setGlobalRoles((current) => ({ ...current, [role]: { ...selection, model: modelId } }))}
-                  />
-                </div>;
-              })}
-              {Object.keys(globalRoles).length === 0 && <button disabled={!globalHost} onClick={() => setGlobalRoles(Object.fromEntries(['plan', 'implement', 'review', 'critic'].map((role) => [role, { harness: globalHost, model: '' }])))}>Configurar papéis globais</button>}
+              {['plan', 'implement', 'review', 'critic'].map((role) => <label key={role} className="command-setting">Comando global para {role}
+                <input aria-label={`Comando global para ${role}`} value={globalRoles[role]?.command ?? ''} onChange={(event) => setGlobalRoles((current) => ({ ...current, [role]: { command: event.target.value } }))} />
+              </label>)}
             </div>
             <button className="btn-primary" data-testid="save-global-execution" disabled={pendingActions.includes('Salvar Gantry global')} onClick={() => void handleSaveGlobalExecution()}>{pendingActions.includes('Salvar Gantry global') ? 'Salvando…' : 'Salvar Gantry global'}</button>
           </section>}
@@ -1126,89 +1014,20 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         </SettingsDialog>}
 
         {projectSettingsId && <div className="dialog-backdrop" onClick={(event) => { if (event.target === event.currentTarget) setProjectSettingsId(null); }}>
-          <section className="project-dialog settings-dialog" role="dialog" aria-modal="true" aria-labelledby="project-settings-title">
+          <section onKeyDown={(event) => { if (event.key === 'Escape') setProjectSettingsId(null); }} className="project-dialog settings-dialog" role="dialog" aria-modal="true" aria-labelledby="project-settings-title">
             <div className="dialog-heading"><h2 id="project-settings-title">Configurações de {projects.find((project) => project.id === projectSettingsId)?.name ?? 'projeto'}</h2><button aria-label="Fechar configurações do projeto" onClick={() => setProjectSettingsId(null)}>×</button></div>
-            {activeProjectId === projectSettingsId ? (
-<div data-testid="setup-panel" style={{ padding: 16, overflowY: 'auto' }}>
-            <h2>Preparar o projeto para execução</h2>
-            <p className="section-intro">Cada papel usa um host e só pode receber um modelo desse host. A lista é lida do agente instalado. Esta configuração tem prioridade sobre a global.</p>
-            <p>A instalação das skills e a configuração do repositório criam commits locais na branch atual. Faça commit ou stash das alterações existentes antes de continuar.</p>
-            {inspection?.remediationCards.map((card) => <div key={card.kind} className="setup-diagnostic"><strong>{card.title}</strong><p>{card.description}</p><p>{card.remediation}</p></div>)}
-            <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-              <button
-                data-testid="bootstrap-skills-btn"
-                disabled={!activeProjectId || pendingActions.includes('Instalar skills do Gantry')}
-                onClick={() => void handleBootstrap()}
-              >
-                Instalar / atualizar skills do Gantry
-              </button>
+            {activeProjectId === projectSettingsId && setupProjectLoaded.current === projectSettingsId ? (
+<div data-testid="setup-panel">
+              <p>Informe o caminho do executável que o pack vai abrir em cada papel. O comando do projeto tem prioridade sobre o global. Os comandos salvos aqui são locais a esta máquina. Campos vazios usam o comando do repositório, quando existir, ou o global.</p>
+              {feedback && <p role={feedback.kind === 'error' ? 'alert' : 'status'}>{feedback.message}</p>}
+              <div className="role-settings">
+                {['plan', 'implement', 'review', 'critic'].map((role) => <label key={role} className="command-setting">Comando para {role}
+                  <input aria-label={`Comando para ${role}`} placeholder={globalRoles[role]?.command || 'Caminho do executável'} value={roleSelections[role]?.command ?? ''} onChange={(event) => setRoleSelections((current) => ({ ...current, [role]: { command: event.target.value } }))} />
+                  <small>Global: {globalRoles[role]?.command || 'não configurado'}</small>
+                </label>)}
+              </div>
+              <button data-testid="apply-project-commands" onClick={() => void handleApplySetup()}>Salvar comandos do projeto</button>
             </div>
-            <div>
-              <label>
-                Host do projeto:{' '}
-                <select
-                  value={setupHostHarness}
-                  onChange={(e) => setSetupHostHarness(e.target.value)}
-                >
-                  <option value="">Selecione o host</option>
-                  {EXECUTION_HOSTS.map((host) => <option key={host.id} value={host.id}>{host.label}</option>)}
-                </select>
-              </label>
-            </div>
-            <div className="role-settings">
-              <h3>Modelos por papel</h3>
-              <p>O modelo de cada papel vem do host escolhido nessa linha. Trocar o host limpa um modelo que não pertence a ele.</p>
-              {Object.entries(roleSelections).map(([role, selection]) => {
-                const harness = discoveryHarness(selection.harness);
-                const hostLabel = EXECUTION_HOSTS.find((host) => host.id === selection.harness)?.label ?? selection.harness;
-                return <div key={role} className="role-setting-row">
-                  <strong>{role}</strong>
-                  <label>Host<select aria-label={`Host para ${role}`} value={selection.harness} onChange={(event) => {
-                    const nextHarness = event.target.value;
-                    setRoleSelections((current) => ({ ...current, [role]: { ...selection, harness: nextHarness, model: '' } }));
-                    void ensureModelCatalog(nextHarness);
-                  }}>
-                    {EXECUTION_HOSTS.map((host) => <option key={host.id} value={host.id}>{host.label}</option>)}
-                    {selection.harness && !EXECUTION_HOSTS.some((host) => host.id === selection.harness) && <option value={selection.harness}>{selection.harness}</option>}
-                  </select></label>
-                  <ModelSelect
-                    label="Modelo"
-                    ariaLabel={`Modelo para ${role}`}
-                    harnessLabel={hostLabel}
-                    models={modelsByHarness[harness] ?? []}
-                    value={selection.model}
-                    loading={catalogLoading[harness] === true}
-                    error={catalogErrors[harness]}
-                    onChange={(modelId) => setRoleSelections((current) => ({ ...current, [role]: { ...selection, model: modelId } }))}
-                  />
-                  <label>Esforço<input aria-label={`Esforço para ${role}`} value={selection.effort ?? ''} onChange={(event) => setRoleSelections((current) => ({ ...current, [role]: { ...selection, effort: event.target.value } }))} /></label>
-                </div>;
-              })}
-              {Object.keys(roleSelections).length === 0 && <button disabled={!setupHostHarness} onClick={() => setRoleSelections(Object.fromEntries(['plan', 'implement', 'review', 'critic'].map((role) => [role, { harness: setupHostHarness, model: '' }])))}>Configurar papéis de execução</button>}
-            </div>
-            <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
-              <button data-testid="preview-setup-btn" onClick={() => void handlePreviewSetup()}>
-                Revisar prévia das alterações
-              </button>
-              <button
-                data-testid="apply-repo-setup-btn"
-                onClick={() => void handleApplySetup('repository')}
-              >
-                Salvar no repositório
-              </button>
-              <button
-                data-testid="apply-personal-setup-btn"
-                onClick={() => void handleApplySetup('personal')}
-              >
-                Salvar apenas no perfil pessoal
-              </button>
-            </div>
-            {setupDiffPreview && (
-              <pre data-testid="setup-diff-preview" style={{ marginTop: 12 }}>
-                {setupDiffPreview}
-              </pre>
-            )}
-          </div>
             ) : <p className="settings-empty">Carregando a configuração do projeto…</p>}
           </section>
         </div>}

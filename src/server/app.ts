@@ -1,3 +1,4 @@
+import { commandRoles, projectCommandRoles, saveProjectCommands } from './roleCommands.js';
 import { getTerminalEnvironment } from './terminalSettings.js';
 import http from 'node:http';
 import fs from 'node:fs';
@@ -6,7 +7,6 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { fileURLToPath, URL as NodeURL } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
-import type { ExecutionSettings } from '../types.js';
 import { HarnessStateStore } from './stateStore.js';
 import { resolveSkillDir, runGantryScript } from './commandRunner.js';
 import { readBoard } from './gantryCli.js';
@@ -106,7 +106,7 @@ export async function createHarnessServer(
     }
   };
 
-  const runSupervisor = new RunSupervisor({ store, broadcast, homeDir });
+  const runSupervisor = new RunSupervisor({ store, broadcast, homeDir, profileRoot });
   for (const project of store.listProjects()) {
     await runSupervisor.reattachProject(project);
   }
@@ -365,7 +365,7 @@ export async function createHarnessServer(
             return;
           }
           const inspection = await inspectProject(project, { stateRoot, profileRoot });
-          sendJson(res, 200, inspection);
+          sendJson(res, 200, { ...inspection, roleCommands: projectCommandRoles(project, profileRoot) });
           return;
         }
       }
@@ -424,6 +424,17 @@ export async function createHarnessServer(
           sendJson(res, 200, catalog);
           return;
         }
+      }
+
+      if (pathname.startsWith('/api/projects/') && pathname.endsWith('/commands') && req.method === 'PUT') {
+        const project = store.getProject(pathname.split('/')[3]);
+        if (!project) { sendJson(res, 404, { error: 'Projeto não encontrado.' }); return; }
+        try {
+          const body = await readJsonBody(req);
+          saveProjectCommands(project, profileRoot, body.roles);
+          sendJson(res, 200, { roles: projectCommandRoles(project, profileRoot) });
+        } catch (error) { sendJson(res, 400, { error: error instanceof Error ? error.message : 'Comandos inválidos.' }); }
+        return;
       }
 
       if (pathname.startsWith('/api/projects/') && pathname.endsWith('/roles') && req.method === 'GET') {
@@ -822,7 +833,7 @@ export async function createHarnessServer(
         const body = await readJsonBody(req);
         const execution = store.updateGlobalExecution({
           hostHarness: typeof body.hostHarness === 'string' ? body.hostHarness : undefined,
-          roles: body.roles && typeof body.roles === 'object' ? body.roles as ExecutionSettings['roles'] : {},
+          roles: commandRoles(body.roles ?? {}),
         });
         sendJson(res, 200, { execution });
         return;

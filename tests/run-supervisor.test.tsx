@@ -133,6 +133,116 @@ describe('Run supervisor and Issue execution (run-orchestration#03)', () => {
     return body.project.id as string;
   }
 
+  it('configures executable role commands through the workspace and lists only Issue Run worktrees', async () => {
+    const repo = initGitRepo(tmpRoot, 'project-with-a-long-readable-name');
+    installRealPack(repo);
+    writeArtifacts(repo);
+    execFileSync('git', ['add', '.agents'], { cwd: repo });
+    execFileSync('git', ['commit', '-m', 'Pin pack'], { cwd: repo });
+    const projectId = await registerProject(repo);
+    render(<App apiBaseUrl={apiBaseUrl} />);
+    const card = await screen.findByTestId('issue-card-feat#01');
+    const beforeBranches = execFileSync('git', ['branch', '--list'], { cwd: repo }).toString();
+    fireEvent.click(within(card).getByTestId('run-issue-feat#01'));
+    const failure = await screen.findByTestId('run-error-feat#01');
+    expect(failure.textContent).toContain('comando executável');
+    expect(execFileSync('git', ['branch', '--list'], { cwd: repo }).toString()).toBe(beforeBranches);
+    expect(execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd: repo }).toString().match(/^worktree /gm)).toHaveLength(1);
+    expect(screen.queryByText('Worktrees')).toBeNull();
+    expect(server.store.listRuns(projectId)).toEqual([]);
+    fireEvent.click(within(failure).getByRole('button', { name: 'Configurar este projeto' }));
+    await screen.findByLabelText('Comando para implement');
+    expect(screen.queryByLabelText('Host para implement')).toBeNull();
+    expect(screen.queryByLabelText('Modelo para implement')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Fechar configurações do projeto' }));
+
+    const executable = path.join(tmpRoot, 'role runner.py');
+    writeExecutable(executable, `#!/usr/bin/env python3
+import json, os, subprocess
+from pathlib import Path
+if os.environ['GANTRY_ROLE'] == 'implement':
+    Path('delivered.txt').write_text('project command executed')
+    subprocess.run(['git', 'add', 'delivered.txt'], check=True)
+    subprocess.run(['git', 'commit', '-m', 'Deliver slice'], check=True)
+print(json.dumps({'verdict':'pass'}))
+`);
+    const nonExecutable = path.join(tmpRoot, 'not-executable');
+    fs.writeFileSync(nonExecutable, 'not executable');
+    fs.chmodSync(nonExecutable, 0o644);
+    fireEvent.click(screen.getByTestId('open-settings-btn'));
+    fireEvent.click(screen.getByRole('tab', { name: 'Gantry' }));
+    for (const role of ['plan', 'implement', 'review', 'critic']) {
+      fireEvent.change(screen.getByLabelText(`Comando global para ${role}`), { target: { value: role === 'implement' ? nonExecutable : executable } });
+    }
+    fireEvent.click(screen.getByTestId('save-global-execution'));
+    await waitFor(() => expect(server.store.getGlobalExecution().roles?.review.command).toBe(executable));
+    fireEvent.click(screen.getByRole('button', { name: 'Fechar configurações' }));
+    // A configured path that is not executable is refused before touching Git.
+    const invalid = await fetch(`${apiBaseUrl}/api/projects/${projectId}/runs`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ref: 'feat#01' }),
+    });
+    expect(invalid.status).toBe(400);
+    expect((await invalid.json()).code).toBe('role-command-missing');
+    expect(server.store.listRuns(projectId)).toEqual([]);
+    expect(execFileSync('git', ['branch', '--list'], { cwd: repo }).toString()).toBe(beforeBranches);
+    fireEvent.click(screen.getByTestId(`project-settings-${projectId}`));
+    const input = await screen.findByLabelText('Comando para implement');
+    fireEvent.change(input, { target: { value: executable } });
+    fireEvent.click(screen.getByTestId('apply-project-commands'));
+    await waitFor(async () => {
+      const inspection = await (await fetch(`${apiBaseUrl}/api/projects/${projectId}/inspect`)).json();
+      expect(inspection.roleCommands.implement.command).toBe(executable);
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Fechar configurações do projeto' }));
+    fireEvent.click(screen.getByTestId(`project-settings-${projectId}`));
+    expect((await screen.findByLabelText('Comando para implement') as HTMLInputElement).value).toBe(executable);
+    fireEvent.click(screen.getByRole('button', { name: 'Fechar configurações do projeto' }));
+    fireEvent.click(within(screen.getByTestId('issue-card-feat#01')).getByTestId('run-issue-feat#01'));
+    await waitFor(() => expect(server.store.listRuns(projectId).some((run) => run.status === 'ready-for-approval')).toBe(true), { timeout: 15000 });
+    const run = server.store.listRuns(projectId).find((run) => run.status === 'ready-for-approval')!;
+    expect(fs.readFileSync(path.join(run.worktree!, 'delivered.txt'), 'utf-8')).toBe('project command executed');
+    expect(execFileSync('git', ['branch', '--list', 'gantry/feat-01'], { cwd: repo }).toString()).toContain('gantry/feat-01');
+    const sidebar = screen.getByTestId('sidebar');
+    const details = await within(sidebar).findByText('Worktrees');
+    fireEvent.click(details);
+    const rows = sidebar.querySelectorAll('.worktree-row');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].textContent).toContain('feat#01');
+    expect(rows[0].textContent).toContain(run.worktree);
+    expect(rows[0].textContent).not.toContain('main');
+    expect(sidebar.querySelector('.project-row strong')?.textContent).toBe('project-with-a-long-readable-name');
+    expect(within(sidebar).queryByRole('button', { name: /assumir/i })).toBeNull();
+    expect(fs.existsSync(path.join(repo, '.gantry', 'config.json'))).toBe(false);
+    expect(execFileSync('git', ['diff', '--name-only'], { cwd: repo }).toString()).toBe('');
+
+    // Global commands alone also reach the real pack, in another registered project.
+    const otherRepo = initGitRepo(tmpRoot, 'global-commands-project');
+    installRealPack(otherRepo);
+    writeArtifacts(otherRepo);
+    execFileSync('git', ['add', '.agents'], { cwd: otherRepo });
+    execFileSync('git', ['commit', '-m', 'Pin pack'], { cwd: otherRepo });
+    fireEvent.click(screen.getByTestId('new-project-btn'));
+    fireEvent.change(screen.getByLabelText('Diretório do projeto'), { target: { value: otherRepo } });
+    fireEvent.click(screen.getByTestId('add-project-btn'));
+    await screen.findAllByText('global-commands-project', {}, { timeout: 10000 });
+    const otherId = server.store.listProjects().find((project) => project.path === otherRepo)!.id;
+    await fetch(`${apiBaseUrl}/api/settings/execution`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ roles: Object.fromEntries(['plan', 'implement', 'review', 'critic'].map((role) => [role, { command: executable }])) }),
+    });
+    fireEvent.click(screen.getByTestId(`project-settings-${otherId}`).parentElement!.querySelector('.project-row-select')!);
+    await waitFor(() => expect(screen.getByTestId(`project-settings-${otherId}`).parentElement?.className).toContain('selected'));
+    fireEvent.click(screen.getByTestId(`project-settings-${otherId}`));
+    await screen.findByRole('heading', { name: 'Configurações de global-commands-project' });
+    expect((await screen.findByLabelText('Comando para implement', {}, { timeout: 10000 }) as HTMLInputElement).value).toBe('');
+    fireEvent.click(screen.getByRole('button', { name: 'Fechar configurações do projeto' }));
+    const started = await (await fetch(`${apiBaseUrl}/api/projects/${otherId}/runs`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ref: 'feat#01' }),
+    })).json();
+    expect(started.worktree).toBeTruthy();
+    await waitFor(() => expect(server.store.listRuns(otherId).some((item) => item.status === 'ready-for-approval')).toBe(true), { timeout: 15000 });
+  }, 40000);
+
   it('runs real cli.py execute through worktree, pause (corrections-exhausted), answer validation, continue, and ready-for-approval over HTTP, WS, and UI', async () => {
     const repo = initGitRepo(tmpRoot, 'real-cli-continue');
     installRealPack(repo);

@@ -1,3 +1,4 @@
+import { effectiveCommandRoles, missingCommand, withRoleCommands } from './roleCommands.js';
 import { spawn } from 'cross-spawn';
 import { execFileSync, type ChildProcess } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -162,6 +163,7 @@ export class RunSupervisor {
   private readonly store: HarnessStateStore;
   private readonly broadcast: (payload: Record<string, unknown>) => void;
   private readonly homeDir: string;
+  private readonly profileRoot: string;
   private shuttingDown = false;
   private watchTimer: NodeJS.Timeout | null = null;
   private watching = false;
@@ -170,10 +172,12 @@ export class RunSupervisor {
     store: HarnessStateStore;
     broadcast: (payload: Record<string, unknown>) => void;
     homeDir?: string;
+    profileRoot?: string;
   }) {
     this.store = options.store;
     this.broadcast = options.broadcast;
     this.homeDir = options.homeDir ?? os.homedir();
+    this.profileRoot = options.profileRoot ?? path.join(this.homeDir, ".gantry", "profiles");
     this.startWatcher();
   }
 
@@ -676,6 +680,7 @@ export class RunSupervisor {
     command: string[],
     initialRecord: HarnessRunRecord,
   ): SupervisedChild {
+    command = withRoleCommands(command, effectiveCommandRoles(project, this.profileRoot, this.store.getGlobalExecution().roles));
     const child = spawn(command[0], command.slice(1), {
       cwd: project.path,
       env: {
@@ -873,7 +878,12 @@ export class RunSupervisor {
       throw new RunSupervisorError(400, 'pack-unavailable', resolved.explanation);
     }
 
-    // Pre-spawn check for plan runs: if slug already has a Spec or Issue on target, surface spec-or-issue-exists without spawning
+    // Validate executable commands before creating any Run or Git artifacts.
+    const usesPythonPolicy = (resolved.kind === 'pinned' || resolved.kind === 'global') && fs.existsSync(path.join(path.dirname(resolved.cliPath), 'common.py'));
+    const missingRole = usesPythonPolicy ? missingCommand(effectiveCommandRoles(params.project, this.profileRoot, this.store.getGlobalExecution().roles), kind) : undefined;
+    if (missingRole) {
+      throw new RunSupervisorError(400, 'role-command-missing', `O papel ${missingRole} precisa de um comando executável. Configure este projeto antes de executar a Issue.`);
+    }
     if (kind === 'plan' && hasExistingSpecOrIssue(params.project.path, slug)) {
       const now = new Date().toISOString();
       const errorPayload: GantryErrorPayload = {
