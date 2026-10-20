@@ -31,7 +31,20 @@ function initGitRepo(root: string, name: string): string {
   execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: repo });
   execFileSync('git', ['config', 'user.name', 'Test Operator'], { cwd: repo });
   fs.writeFileSync(path.join(repo, 'README.md'), `# ${name}\n`);
-  execFileSync('git', ['add', 'README.md'], { cwd: repo });
+  fs.writeFileSync(
+    path.join(repo, 'ROADMAP.md'),
+    [
+      '# Roadmap',
+      '',
+      '<!-- BEGIN GENERATED: spec progress -->',
+      '<!-- END GENERATED: spec progress -->',
+      '',
+      '<!-- BEGIN GENERATED: issue checklist -->',
+      '<!-- END GENERATED: issue checklist -->',
+      '',
+    ].join('\n'),
+  );
+  execFileSync('git', ['add', 'README.md', 'ROADMAP.md'], { cwd: repo });
   execFileSync('git', ['commit', '-m', 'Initial commit'], { cwd: repo });
   return fs.realpathSync(repo);
 }
@@ -40,9 +53,11 @@ function installRealPack(repo: string): string {
   const srcDir = findRealPackScriptsDir();
   const destDir = path.join(repo, '.agents', 'skills', 'gantry', 'scripts');
   fs.mkdirSync(destDir, { recursive: true });
-  for (const file of ['cli.py', 'common.py']) {
+  for (const file of ['cli.py', 'common.py', 'roadmap.py', 'acceptance.py']) {
+    const src = path.join(srcDir, file);
+    if (!fs.existsSync(src)) continue;
     const dest = path.join(destDir, file);
-    fs.copyFileSync(path.join(srcDir, file), dest);
+    fs.copyFileSync(src, dest);
     fs.chmodSync(dest, 0o755);
   }
   return path.join(destDir, 'cli.py');
@@ -597,5 +612,698 @@ elif ref == "feat#03":
       expect(card03.getAttribute('data-phase')).toBe('failed');
       expect(within(card03).getByTestId('issue-phase-feat#03').textContent).toBe('failed');
     });
+  });
+
+  it('orchestrates Plan runs (run-orchestration#04): plan-approval with worktree file viewer, approve to ready-for-approval, plan-dirty try-again and reject cleanup, and spec-or-issue-exists pre-spawn refusal', async () => {
+    const repo = initGitRepo(tmpRoot, 'real-cli-plan-runs');
+    installRealPack(repo);
+    writeArtifacts(repo);
+
+    const stateDir = path.join(tmpRoot, 'plan-role-state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const roleScript = path.join(tmpRoot, 'plan-role.py');
+    writeExecutable(
+      roleScript,
+      `#!/usr/bin/env python3
+import json, os, subprocess, sys
+from pathlib import Path
+
+role = os.environ.get("GANTRY_ROLE") or sys.argv[sys.argv.index("--role") + 1]
+state_dir = Path(${JSON.stringify(stateDir)})
+
+if role == "plan":
+    slug = os.environ["GANTRY_SLUG"]
+    num = int(os.environ.get("GANTRY_ISSUE_NUMBER", "1"))
+    issue_ref = f"{slug}#{num:02d}"
+    spec_path = Path.cwd() / os.environ["GANTRY_SPEC_PATH"]
+    issue_path = Path.cwd() / os.environ["GANTRY_ISSUE_PATH"]
+    spec_path.parent.mkdir(parents=True, exist_ok=True)
+    issue_path.parent.mkdir(parents=True, exist_ok=True)
+    spec_path.write_text(f"# Planned Spec for {slug}\\n\\nStatus: draft\\n")
+    issue_path.write_text(
+        f"# Planned Issue for {slug}\\n\\nSlice: \`{issue_ref}\`\\nStatus: ready-for-agent\\n\\n## Blocked by\\n\\n- None\\n\\n## Acceptance criteria\\n\\n- [ ] Deliver {slug}\\n"
+    )
+    if (state_dir / f"dirty-{slug}").exists():
+        # Leave working tree dirty so cli.py triggers plan-dirty pause
+        (Path.cwd() / "uncommitted.txt").write_text("dirty\\n")
+        sys.exit(0)
+    uncommitted = Path.cwd() / "uncommitted.txt"
+    if uncommitted.exists():
+        uncommitted.unlink()
+    subprocess.run(["git", "add", os.environ["GANTRY_SPEC_PATH"], os.environ["GANTRY_ISSUE_PATH"]], cwd=Path.cwd(), check=True)
+    subprocess.run(["git", "commit", "-m", f"plan {issue_ref}"], cwd=Path.cwd(), check=True)
+    sys.exit(0)
+
+if role == "implement":
+    (Path.cwd() / "implemented.txt").write_text("implemented\\n")
+    subprocess.run(["git", "add", "implemented.txt"], cwd=Path.cwd(), check=True)
+    subprocess.run(["git", "commit", "-m", "implement planned issue"], cwd=Path.cwd(), check=True)
+    sys.exit(0)
+
+if role in ("review", "critic"):
+    print(json.dumps({"verdict": "pass"}))
+    sys.exit(0)
+`,
+    );
+
+    fs.mkdirSync(path.join(repo, '.gantry'), { recursive: true });
+    fs.writeFileSync(
+      path.join(repo, '.gantry', 'config.json'),
+      JSON.stringify({
+        checks: ['true'],
+        execution: {
+          roles: {
+            plan: { command: roleScript },
+            implement: { command: roleScript },
+            review: { command: roleScript },
+            critic: { command: roleScript },
+          },
+        },
+      }),
+      'utf-8',
+    );
+    execFileSync('git', ['add', '.gantry/config.json', '.agents'], { cwd: repo });
+    execFileSync('git', ['commit', '-m', 'Configure plan and issue roles'], { cwd: repo });
+
+    const projectId = await registerProject(repo);
+    render(<App apiBaseUrl={apiBaseUrl} />);
+    await screen.findByTestId('issue-card-feat#01');
+
+    // 1. Existing slug 'feat' refuses with spec-or-issue-exists without spawning a worktree
+    const existsRes = await fetch(`${apiBaseUrl}/api/projects/${projectId}/runs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slug: 'feat', kind: 'plan' }),
+    });
+    expect(existsRes.status).toBe(200);
+    const existsRun = await existsRes.json();
+    expect(existsRun.status).toBe('failed');
+    expect(existsRun.worktree).toBeNull();
+    expect(existsRun.error?.code).toBe('spec-or-issue-exists');
+    await waitFor(() => {
+      expect(screen.getByTestId('run-error-feat').textContent).toContain('spec-or-issue-exists');
+    });
+
+    // 2. Start a new Plan Run via the board Plan input + button for 'new-auth'
+    const slugInput = screen.getByTestId('plan-slug-input');
+    fireEvent.change(slugInput, { target: { value: 'new-auth' } });
+    fireEvent.click(screen.getByTestId('plan-affordance'));
+
+    // Wait for the Plan Run to pause at plan-approval in the Plan lane with Spec card in Specs lane
+    await waitFor(() => {
+      const pauseBox = screen.getByTestId('run-pause-new-auth#01');
+      expect(within(pauseBox).getByText('plan-approval')).toBeDefined();
+    });
+
+    const specCard = screen.getByTestId('spec-card-new-auth');
+    expect(specCard.getAttribute('data-lane')).toBe('specs');
+    expect(specCard.getAttribute('data-executable')).toBe('false');
+
+    const planIssueCard = screen.getByTestId('issue-card-new-auth#01');
+    expect(planIssueCard.getAttribute('data-lane')).toBe('plan');
+    expect(planIssueCard.getAttribute('data-phase')).toBe('paused');
+
+    const choicesBox = screen.getByTestId('run-pause-choices-new-auth#01');
+    expect(within(choicesBox).getAllByRole('button').map((b) => b.textContent)).toEqual([
+      'approve',
+      'reject',
+    ]);
+
+    // Verify worktree Spec and Issue links open the files from the worktree via /artifacts
+    const specLink = screen.getByTestId('pause-spec-path-new-auth#01');
+    const issueLink = screen.getByTestId('pause-issue-path-new-auth#01');
+    expect(specLink.textContent).toBe('.scratch/new-auth/spec.md');
+    expect(issueLink.textContent).toBe('.scratch/new-auth/issues/01-new-auth.md');
+
+    const specArtRes = await fetch(
+      `${apiBaseUrl}/api/projects/${projectId}/artifacts?path=${encodeURIComponent('.scratch/new-auth/spec.md')}`,
+    );
+    expect(specArtRes.status).toBe(200);
+    const specArt = await specArtRes.json();
+    expect(specArt.content).toContain('# Planned Spec for new-auth');
+
+    const issueArtRes = await fetch(
+      `${apiBaseUrl}/api/projects/${projectId}/artifacts?path=${encodeURIComponent('.scratch/new-auth/issues/01-new-auth.md')}`,
+    );
+    expect(issueArtRes.status).toBe(200);
+    const issueArt = await issueArtRes.json();
+    expect(issueArt.content).toContain('# Planned Issue for new-auth');
+
+    // Answer 'approve' -> advances through Implement -> Review -> Critic -> ready-for-approval
+    fireEvent.click(screen.getByTestId('pause-choice-new-auth#01-approve'));
+
+    await waitFor(() => {
+      const card = screen.getByTestId('issue-card-new-auth#01');
+      expect(card.getAttribute('data-phase')).toBe('ready-for-approval');
+      expect(card.getAttribute('data-lane')).toBe('critic');
+    });
+
+    // 3. Start another Plan Run 'dirty-plan' to exercise plan-dirty (try-again) and reject cleanup
+    fs.writeFileSync(path.join(stateDir, 'dirty-dirty-plan'), '1', 'utf-8');
+    const dirtyRes = await fetch(`${apiBaseUrl}/api/projects/${projectId}/runs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slug: 'dirty-plan', kind: 'plan' }),
+    });
+    expect(dirtyRes.status).toBe(200);
+
+    await waitFor(() => {
+      const pauseBox = screen.getByTestId('run-pause-dirty-plan#01');
+      expect(within(pauseBox).getByText('plan-dirty')).toBeDefined();
+    });
+    const dirtyChoices = within(screen.getByTestId('run-pause-choices-dirty-plan#01'))
+      .getAllByRole('button')
+      .map((b) => b.textContent);
+    expect(dirtyChoices).toEqual(['try-again', 'reject']);
+
+    const dirtyRun = server.store.getRun(projectId, 'dirty-plan#01');
+    expect(dirtyRun?.worktree).toBeTruthy();
+    const dirtyWorktree = dirtyRun!.worktree!;
+
+    // Clear dirty marker and click 'try-again' -> plan role commits cleanly and reaches plan-approval
+    fs.unlinkSync(path.join(stateDir, 'dirty-dirty-plan'));
+    fireEvent.click(screen.getByTestId('pause-choice-dirty-plan#01-try-again'));
+
+    await waitFor(() => {
+      const pauseBox = screen.getByTestId('run-pause-dirty-plan#01');
+      expect(within(pauseBox).getByText('plan-approval')).toBeDefined();
+    });
+
+    // Now click 'reject' -> worktree and branch are removed and Spec/Issue cards disappear from the board
+    fireEvent.click(screen.getByTestId('pause-choice-dirty-plan#01-reject'));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('issue-card-dirty-plan#01')).toBeNull();
+      expect(screen.queryByTestId('spec-card-dirty-plan')).toBeNull();
+    });
+
+    expect(fs.existsSync(dirtyWorktree)).toBe(false);
+    const dirtyBranch = execFileSync('git', ['branch', '--list', 'gantry/dirty-plan-01'], {
+      cwd: repo,
+      encoding: 'utf-8',
+    }).trim();
+    expect(dirtyBranch).toBe('');
+  });
+
+  it('executes waves and parallel Runs independently (run-orchestration#05): frontier ordering, isolated worktrees/stdio, and frontierBlocked enforcement', async () => {
+    const repo = initGitRepo(tmpRoot, 'real-cli-wave-parallel');
+    installRealPack(repo);
+
+    // Create two unblocked frontier issues (feat#01, feat#02) and one blocked issue (feat#03 blocked by feat#01)
+    const specDir = path.join(repo, '.scratch', 'feat');
+    const issuesDir = path.join(specDir, 'issues');
+    fs.mkdirSync(issuesDir, { recursive: true });
+    fs.writeFileSync(path.join(specDir, 'spec.md'), '# Spec\n\nStatus: approved\n', 'utf-8');
+    fs.writeFileSync(
+      path.join(issuesDir, '01-first.md'),
+      '# First\n\nSlice: `feat#01`\nStatus: ready-for-agent\n\n## Blocked by\n\n- None\n\n## Acceptance criteria\n\n- [ ] One\n',
+      'utf-8',
+    );
+    fs.writeFileSync(
+      path.join(issuesDir, '02-second.md'),
+      '# Second\n\nSlice: `feat#02`\nStatus: ready-for-agent\n\n## Blocked by\n\n- None\n\n## Acceptance criteria\n\n- [ ] Two\n',
+      'utf-8',
+    );
+    fs.writeFileSync(
+      path.join(issuesDir, '03-third.md'),
+      '# Third\n\nSlice: `feat#03`\nStatus: ready-for-agent\n\n## Blocked by\n\n- `feat#01`\n\n## Acceptance criteria\n\n- [ ] Three\n',
+      'utf-8',
+    );
+
+    const stateDir = path.join(tmpRoot, 'wave-state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const roleScript = path.join(tmpRoot, 'wave-role.py');
+    writeExecutable(
+      roleScript,
+      `#!/usr/bin/env python3
+import json, os, subprocess, sys, time
+from pathlib import Path
+
+role = os.environ.get("GANTRY_ROLE") or sys.argv[sys.argv.index("--role") + 1]
+branch = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=Path.cwd(), text=True, capture_output=True, check=True).stdout.strip()
+safe = branch.split("/")[-1]
+state_dir = Path(${JSON.stringify(stateDir)})
+count_file = state_dir / f"{safe}-{role}.count"
+count = int(count_file.read_text()) + 1 if count_file.exists() else 1
+count_file.write_text(str(count))
+
+if role == "implement":
+    (Path.cwd() / f"{safe}.txt").write_text(f"impl-{count}\\n")
+    subprocess.run(["git", "add", f"{safe}.txt"], cwd=Path.cwd(), check=True)
+    subprocess.run(["git", "commit", "-m", f"impl {safe} {count}"], cwd=Path.cwd(), check=True)
+    sys.exit(0)
+
+if role == "review":
+    # Pause feat#01 via corrections-exhausted on its first review while feat#02 waits on a gate in Review
+    if safe == "feat-01" and count == 1:
+        print(json.dumps({"verdict": "fail"}))
+        sys.exit(1)
+    if safe == "feat-02":
+        gate = state_dir / "release-feat-02-review"
+        for _ in range(250):
+            if gate.exists():
+                break
+            time.sleep(0.02)
+    print(json.dumps({"verdict": "pass"}))
+    sys.exit(0)
+
+if role == "critic":
+    print(json.dumps({"verdict": "pass"}))
+    sys.exit(0)
+`,
+    );
+
+    fs.mkdirSync(path.join(repo, '.gantry'), { recursive: true });
+    fs.writeFileSync(
+      path.join(repo, '.gantry', 'config.json'),
+      JSON.stringify({
+        budget: { corrections: 1 },
+        checks: ['true'],
+        execution: {
+          roles: {
+            implement: { command: roleScript },
+            review: { command: roleScript },
+            critic: { command: roleScript },
+          },
+        },
+      }),
+      'utf-8',
+    );
+    execFileSync('git', ['add', '.scratch', '.gantry/config.json', '.agents'], { cwd: repo });
+    execFileSync('git', ['commit', '-m', 'Setup wave repo'], { cwd: repo });
+
+    await registerProject(repo);
+    render(<App apiBaseUrl={apiBaseUrl} />);
+
+    const card03 = await screen.findByTestId('issue-card-feat#03');
+    expect(card03.getAttribute('data-lane')).toBe('issues');
+    expect(card03.getAttribute('data-phase')).toBe('blocked');
+    expect(within(card03).getByTestId('open-blocker').textContent).toBe('feat#01');
+    const runBtn03 = within(card03).getByTestId('run-issue-feat#03') as HTMLButtonElement;
+    expect(runBtn03.disabled).toBe(true);
+
+    // Click top-level Run button to execute the wave
+    fireEvent.click(screen.getByTestId('run-affordance'));
+
+    // Wait until feat#01 pauses at corrections-exhausted and feat#02 is in Review lane
+    await waitFor(
+      () => {
+        expect(screen.getByTestId('run-pause-feat#01')).toBeDefined();
+        const reviewLane = screen.getByTestId('lane-review');
+        expect(within(reviewLane).getByTestId('issue-card-feat#02')).toBeDefined();
+      },
+      { timeout: 5000 },
+    );
+
+    // Each Run has its own process, worktree, branch, and .git/gantry-cli/*.json record
+    expect(fs.existsSync(path.join(repo, '.git', 'gantry-cli', 'feat--01.json'))).toBe(true);
+    expect(fs.existsSync(path.join(repo, '.git', 'gantry-cli', 'feat--02.json'))).toBe(true);
+    expect(fs.existsSync(path.join(repo, '.git', 'gantry-cli', 'feat--03.json'))).toBe(false);
+
+    // Answering feat#01's pause does not unblock feat#02 (which is still waiting on release-feat-02-review)
+    fireEvent.click(screen.getByTestId('pause-choice-feat#01-continue'));
+
+    await waitFor(
+      () => {
+        const card01 = screen.getByTestId('issue-card-feat#01');
+        expect(card01.getAttribute('data-phase')).toBe('ready-for-approval');
+      },
+      { timeout: 5000 },
+    );
+
+    // feat#02 is still running in Review lane until its gate is released
+    expect(screen.getByTestId('issue-card-feat#02').getAttribute('data-lane')).toBe('review');
+
+    // Release feat#02 and verify it completes to ready-for-approval while feat#03 stays blocked in Issues
+    fs.writeFileSync(path.join(stateDir, 'release-feat-02-review'), 'ok');
+    await waitFor(
+      () => {
+        const card02 = screen.getByTestId('issue-card-feat#02');
+        expect(card02.getAttribute('data-phase')).toBe('ready-for-approval');
+      },
+      { timeout: 5000 },
+    );
+    expect(screen.getByTestId('issue-card-feat#03').getAttribute('data-lane')).toBe('issues');
+  });
+
+  it('supports Resume, Discard, and server restart reattach (run-orchestration#06)', async () => {
+    const repo = initGitRepo(tmpRoot, 'real-cli-resume-discard-reattach');
+    installRealPack(repo);
+    writeArtifacts(repo);
+
+    const stateDir = path.join(tmpRoot, 'resume-state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const roleScript = path.join(tmpRoot, 'resume-role.py');
+    writeExecutable(
+      roleScript,
+      `#!/usr/bin/env python3
+import json, os, subprocess, sys
+from pathlib import Path
+
+role = os.environ.get("GANTRY_ROLE") or sys.argv[sys.argv.index("--role") + 1]
+state_dir = Path(${JSON.stringify(stateDir)})
+count_file = state_dir / f"{role}.count"
+count = int(count_file.read_text()) + 1 if count_file.exists() else 1
+count_file.write_text(str(count))
+
+if role == "implement":
+    (Path.cwd() / "impl.txt").write_text(f"impl-{count}\\n")
+    subprocess.run(["git", "add", "impl.txt"], cwd=Path.cwd(), check=True)
+    subprocess.run(["git", "commit", "-m", f"impl {count}"], cwd=Path.cwd(), check=True)
+    sys.exit(0)
+
+if role == "review":
+    if not (state_dir / "pass-review").exists():
+        print(json.dumps({"verdict": "fail"}))
+        sys.exit(1)
+    print(json.dumps({"verdict": "pass"}))
+    sys.exit(0)
+
+if role == "critic":
+    print(json.dumps({"verdict": "pass"}))
+    sys.exit(0)
+`,
+    );
+
+    fs.mkdirSync(path.join(repo, '.gantry'), { recursive: true });
+    fs.writeFileSync(
+      path.join(repo, '.gantry', 'config.json'),
+      JSON.stringify({
+        budget: { corrections: 1 },
+        checks: ['true'],
+        execution: {
+          roles: {
+            implement: { command: roleScript },
+            review: { command: roleScript },
+            critic: { command: roleScript },
+          },
+        },
+      }),
+      'utf-8',
+    );
+    execFileSync('git', ['add', '.gantry/config.json', '.agents'], { cwd: repo });
+    execFileSync('git', ['commit', '-m', 'Configure roles'], { cwd: repo });
+
+    const projectId = await registerProject(repo);
+    const view = render(<App apiBaseUrl={apiBaseUrl} />);
+
+    // Start feat#01 and stop it on pause
+    fireEvent.click(await screen.findByTestId('run-issue-feat#01'));
+    await waitFor(() => expect(screen.getByTestId('pause-choice-feat#01-stop')).toBeDefined());
+    fireEvent.click(screen.getByTestId('pause-choice-feat#01-stop'));
+
+    // Stopped card offers Resume and Discard
+    await waitFor(() => {
+      expect(screen.getByTestId('resume-run-feat#01')).toBeDefined();
+      expect(screen.getByTestId('discard-run-feat#01')).toBeDefined();
+    });
+
+    // Test restart reattach while stopped: delete from SQLite store and close/recreate server
+    server.store.deleteRun(projectId, 'feat#01');
+    const implementCountBeforeReattach = Number(
+      fs.readFileSync(path.join(stateDir, 'implement.count'), 'utf-8'),
+    );
+    view.unmount();
+    const savedGantryHome = server.gantryHome;
+    await server.close();
+    server = await createHarnessServer({
+      gantryHome: savedGantryHome,
+      stateRoot: path.join(savedGantryHome, 'state'),
+      profileRoot: path.join(savedGantryHome, 'profiles'),
+      homeDir: tmpRoot,
+      port: 0,
+    });
+    apiBaseUrl = `http://127.0.0.1:${server.port}`;
+
+    // Reattached from .git/gantry-cli/feat--01.json without spawning a new agent turn
+    const implementCountAfterReattach = Number(
+      fs.readFileSync(path.join(stateDir, 'implement.count'), 'utf-8'),
+    );
+    expect(implementCountAfterReattach).toBe(implementCountBeforeReattach);
+    const reattachedRun = server.store.getRun(projectId, 'feat#01');
+    expect(reattachedRun?.status).toBe('stopped');
+    expect(reattachedRun?.lane).toBe('implement');
+
+    const view2 = render(<App apiBaseUrl={apiBaseUrl} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('resume-run-feat#01')).toBeDefined();
+    });
+
+    // Resume the stopped Run -> cli.py resumes in Implement lane, pauses at corrections-exhausted -> answer continue -> reaches ready-for-approval
+    fs.writeFileSync(path.join(stateDir, 'pass-review'), '1');
+    fireEvent.click(screen.getByTestId('resume-run-feat#01'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('pause-choice-feat#01-continue')).toBeDefined();
+    });
+    fireEvent.click(screen.getByTestId('pause-choice-feat#01-continue'));
+
+    await waitFor(() => {
+      const card = screen.getByTestId('issue-card-feat#01');
+      expect(card.getAttribute('data-phase')).toBe('ready-for-approval');
+    });
+
+    // Reset phase to 'implement' in .git/gantry-cli/feat--01.json to test Discard via real cli.py discard
+    const packRecordPath = path.join(repo, '.git', 'gantry-cli', 'feat--01.json');
+    fs.writeFileSync(
+      packRecordPath,
+      JSON.stringify({
+        ref: 'feat#01',
+        branch: 'gantry/feat-01',
+        phase: 'implement',
+        spent: 1,
+        granted: 1,
+      }),
+      'utf-8',
+    );
+
+    const discardRes = await fetch(
+      `${apiBaseUrl}/api/projects/${projectId}/runs/${encodeURIComponent('feat#01')}/discard`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+    );
+    expect(discardRes.status).toBe(200);
+
+    await waitFor(() => {
+      const card = screen.getByTestId('issue-card-feat#01');
+      expect(card.getAttribute('data-lane')).toBe('issues');
+      expect(card.getAttribute('data-phase')).toBe('ready-to-agent');
+    });
+    expect(fs.existsSync(path.join(repo, '.gantry', 'worktrees', 'gantry-feat-01'))).toBe(false);
+    expect(fs.existsSync(packRecordPath)).toBe(false);
+    const branchAfterDiscard = execFileSync('git', ['branch', '--list', 'gantry/feat-01'], {
+      cwd: repo,
+      encoding: 'utf-8',
+    }).trim();
+    expect(branchAfterDiscard).toBe('');
+
+    // Mark feat#01 as done on target and restart server -> card is in Done lane
+    const issueFile = path.join(repo, '.scratch', 'feat', 'issues', '01-first-slice.md');
+    fs.writeFileSync(
+      issueFile,
+      fs.readFileSync(issueFile, 'utf-8').replace('Status: ready-for-agent', 'Status: done'),
+      'utf-8',
+    );
+    execFileSync('git', ['add', issueFile], { cwd: repo });
+    execFileSync('git', ['commit', '-m', 'Mark feat#01 done'], { cwd: repo });
+
+    view2.unmount();
+    await server.close();
+    server = await createHarnessServer({
+      gantryHome: savedGantryHome,
+      stateRoot: path.join(savedGantryHome, 'state'),
+      profileRoot: path.join(savedGantryHome, 'profiles'),
+      homeDir: tmpRoot,
+      port: 0,
+    });
+    apiBaseUrl = `http://127.0.0.1:${server.port}`;
+
+    render(<App apiBaseUrl={apiBaseUrl} />);
+    await waitFor(() => {
+      const doneLane = screen.getByTestId('lane-done');
+      const card = within(doneLane).getByTestId('issue-card-feat#01');
+      expect(card.getAttribute('data-phase')).toBe('done');
+    });
+  });
+
+  it('handles Approve, PR watching, closed-unmerged PR reopen, and merge-done cleanup (run-orchestration#07)', async () => {
+    const repo = initGitRepo(tmpRoot, 'real-cli-approve-pr');
+    const bareRemote = path.join(tmpRoot, 'remote.git');
+    execFileSync('git', ['init', '--bare', bareRemote]);
+    execFileSync('git', ['remote', 'add', 'origin', bareRemote], { cwd: repo });
+    execFileSync('git', ['push', '-u', 'origin', 'main'], { cwd: repo });
+
+    installRealPack(repo);
+    writeArtifacts(repo);
+
+    const roleScript = path.join(tmpRoot, 'pass-role.py');
+    writeExecutable(
+      roleScript,
+      `#!/usr/bin/env python3
+import json, os, subprocess, sys
+from pathlib import Path
+
+role = os.environ.get("GANTRY_ROLE") or sys.argv[sys.argv.index("--role") + 1]
+if role == "implement":
+    (Path.cwd() / "feature.txt").write_text("shipped\\n")
+    subprocess.run(["git", "add", "feature.txt"], cwd=Path.cwd(), check=True)
+    subprocess.run(["git", "commit", "-m", "implement feature"], cwd=Path.cwd(), check=True)
+    sys.exit(0)
+print(json.dumps({"verdict": "pass"}))
+sys.exit(0)
+`,
+    );
+
+    // Fake gh binary in PATH so real cli.py approve can create/view PRs deterministically
+    const binDir = path.join(tmpRoot, 'fake-bin');
+    const ghStateFile = path.join(tmpRoot, 'gh-state.txt');
+    fs.writeFileSync(ghStateFile, 'FAIL', 'utf-8');
+    writeExecutable(
+      path.join(binDir, 'gh'),
+      `#!/usr/bin/env python3
+import json, sys
+from pathlib import Path
+
+state = Path(${JSON.stringify(ghStateFile)}).read_text().strip()
+args = sys.argv[1:]
+if args[:2] == ["pr", "create"]:
+    if state == "FAIL":
+        sys.stderr.write("gh pr create failed: simulated error\\n")
+        sys.exit(1)
+    print("https://example.test/pr/42")
+    sys.exit(0)
+if args[:2] == ["pr", "view"]:
+    if "--json" in args and "state" in args:
+        print(json.dumps({"state": state}))
+        sys.exit(0)
+    print("https://example.test/pr/42")
+    sys.exit(0)
+sys.exit(0)
+`,
+    );
+    const originalPath = process.env.PATH ?? '';
+    process.env.PATH = `${binDir}:${originalPath}`;
+
+    try {
+      fs.mkdirSync(path.join(repo, '.gantry'), { recursive: true });
+      fs.writeFileSync(
+        path.join(repo, '.gantry', 'config.json'),
+        JSON.stringify({
+          checks: ['true'],
+          execution: {
+            roles: {
+              implement: { command: roleScript },
+              review: { command: roleScript },
+              critic: { command: roleScript },
+            },
+          },
+        }),
+        'utf-8',
+      );
+      execFileSync('git', ['add', '.gantry/config.json', '.agents'], { cwd: repo });
+      execFileSync('git', ['commit', '-m', 'Configure roles'], { cwd: repo });
+      execFileSync('git', ['push', 'origin', 'main'], { cwd: repo });
+
+      const projectId = await registerProject(repo);
+      render(<App apiBaseUrl={apiBaseUrl} />);
+
+      // Start feat#01 and wait for ready-for-approval
+      fireEvent.click(await screen.findByTestId('run-issue-feat#01'));
+      await waitFor(() => {
+        const card = screen.getByTestId('issue-card-feat#01');
+        expect(card.getAttribute('data-phase')).toBe('ready-for-approval');
+      });
+
+      // 1. Approve fails when gh fails -> keeps Run in ready-for-approval and surfaces error on the card
+      fireEvent.click(screen.getByTestId('approve-run-feat#01'));
+      await waitFor(() => {
+        const errBox = screen.getByTestId('run-error-feat#01');
+        expect(errBox.textContent).toContain('pull-request-failed');
+      });
+      expect(screen.getByTestId('issue-card-feat#01').getAttribute('data-phase')).toBe(
+        'ready-for-approval',
+      );
+      // Verify the first approve already created the closing commit on the worktree branch
+      const persistedAfterFail = server.store.getRun(projectId, 'feat#01');
+      expect(persistedAfterFail?.status).toBe('ready-for-approval');
+      const wtPath = persistedAfterFail!.worktree!;
+      const headAfterFirstApprove = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: wtPath,
+        encoding: 'utf-8',
+      }).trim();
+
+      // 2. Allow gh to succeed and repeat approve -> no duplicate closing commit (createdCommit: false) and stores prUrl
+      fs.writeFileSync(ghStateFile, 'OPEN', 'utf-8');
+      const approveRes = await fetch(
+        `${apiBaseUrl}/api/projects/${projectId}/runs/${encodeURIComponent('feat#01')}/approve`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+      );
+      expect(approveRes.status).toBe(200);
+      const approvedRun = await approveRes.json();
+      expect(approvedRun.status).toBe('approved-pending-merge');
+      expect(approvedRun.prUrl).toBe('https://example.test/pr/42');
+      expect(approvedRun.createdCommit).toBe(false);
+      const headAfterSecondApprove = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: wtPath,
+        encoding: 'utf-8',
+      }).trim();
+      expect(headAfterSecondApprove).toBe(headAfterFirstApprove);
+
+      await waitFor(() => {
+        expect(screen.getByTestId('run-pr-url-feat#01').textContent).toBe(
+          'https://example.test/pr/42',
+        );
+      });
+
+      // 3. Close PR without merging -> removes local worktree and moves card to Issues outside ready to agent and Done
+      fs.writeFileSync(ghStateFile, 'CLOSED', 'utf-8');
+      await fetch(
+        `${apiBaseUrl}/api/projects/${projectId}/runs/${encodeURIComponent('feat#01')}/pr-closed`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+      );
+
+      await waitFor(() => {
+        const card = screen.getByTestId('issue-card-feat#01');
+        expect(card.getAttribute('data-lane')).toBe('issues');
+        expect(card.getAttribute('data-phase')).toBe('stopped');
+        expect(within(card).queryByText('ready to agent')).toBeNull();
+      });
+      expect(fs.existsSync(wtPath)).toBe(false);
+
+      // Reopen -> re-offers approval on the card
+      fs.writeFileSync(ghStateFile, 'OPEN', 'utf-8');
+      fireEvent.click(screen.getByTestId('reopen-pr-feat#01'));
+      await waitFor(() => {
+        const card = screen.getByTestId('issue-card-feat#01');
+        expect(card.getAttribute('data-lane')).toBe('issues');
+        expect(card.getAttribute('data-phase')).toBe('ready-for-approval');
+        expect(screen.getByTestId('approve-run-feat#01')).toBeDefined();
+      });
+
+      // Re-approve re-attaches worktree and opens PR
+      fireEvent.click(screen.getByTestId('approve-run-feat#01'));
+      await waitFor(() => {
+        const card = screen.getByTestId('issue-card-feat#01');
+        expect(card.getAttribute('data-phase')).toBe('approved-pending-merge');
+      });
+      expect(fs.existsSync(wtPath)).toBe(true);
+
+      // 4. Merge gantry/feat-01 into target (main) so Issue is done on target -> worktree & branch removed and card moves to Done
+      execFileSync('git', ['merge', '--no-edit', 'gantry/feat-01'], { cwd: repo });
+      fireEvent.click(screen.getByTestId('board-refresh'));
+
+      await waitFor(() => {
+        const doneLane = screen.getByTestId('lane-done');
+        const card = within(doneLane).getByTestId('issue-card-feat#01');
+        expect(card.getAttribute('data-phase')).toBe('done');
+      });
+      expect(fs.existsSync(wtPath)).toBe(false);
+      const branchAfterMerge = execFileSync('git', ['branch', '--list', 'gantry/feat-01'], {
+        cwd: repo,
+        encoding: 'utf-8',
+      }).trim();
+      expect(branchAfterMerge).toBe('');
+    } finally {
+      process.env.PATH = originalPath;
+    }
   });
 });

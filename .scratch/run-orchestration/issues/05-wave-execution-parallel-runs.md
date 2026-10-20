@@ -1,7 +1,7 @@
 # 05: Wave execution and parallel Runs
 
 Type: issue
-Status: ready-for-agent
+Status: done
 Slice: `run-orchestration#05`
 Spec: `.scratch/run-orchestration/spec.md`
 Created: 2026-10-18
@@ -16,11 +16,11 @@ Executing a wave reads `frontier` from the pack and enqueues one `execute` per I
 
 ## Acceptance criteria
 
-- [ ] `POST /api/projects/:id/waves/execute` enqueues one Run per ref in frontier order and returns the started Runs.
-- [ ] Concurrent Runs keep fully isolated stdio and records: a pause answer for ref A is never written to ref B's child.
-- [ ] Each running card sits in its own execution lane and renders its pause inside the card; an answer on one card never writes to another Run.
-- [ ] A `frontierBlocked` card stays in the Issues lane, cannot start from the wave action, and shows its open blockers.
-- [ ] Integration test runs two independent Issues in parallel real `cli.py` children and proves isolated pause/answer routing plus frontier ordering.
+- [x] `POST /api/projects/:id/waves/execute` enqueues one Run per ref in frontier order and returns the started Runs.
+- [x] Concurrent Runs keep fully isolated stdio and records: a pause answer for ref A is never written to ref B's child.
+- [x] Each running card sits in its own execution lane and renders its pause inside the card; an answer on one card never writes to another Run.
+- [x] A `frontierBlocked` card stays in the Issues lane, cannot start from the wave action, and shows its open blockers.
+- [x] Integration test runs two independent Issues in parallel real `cli.py` children and proves isolated pause/answer routing plus frontier ordering.
 
 ## Blocked by
 

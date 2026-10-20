@@ -1,7 +1,7 @@
 # 06: Resume, discard and restart reattach
 
 Type: issue
-Status: ready-for-agent
+Status: done
 Slice: `run-orchestration#06`
 Spec: `.scratch/run-orchestration/spec.md`
 Created: 2026-10-18
@@ -16,11 +16,11 @@ An interrupted Run (stopped, or its child lost to a harness restart) can be resu
 
 ## Acceptance criteria
 
-- [ ] `POST /api/projects/:id/runs/:ref/resume` continues an interrupted Run in the same worktree; a zero-budget record re-opens its pause without invoking a role.
-- [ ] `POST /api/projects/:id/runs/:ref/discard` removes worktree and branch; plan-born refs leave no card in any lane, target-tracked refs return to the Issues lane as ready to agent.
-- [ ] After a server restart, pack run records reappear in Plan (`plan`, `plan-approval`), Implement (`implement`, `checks`), Review (`review`) or Critic (`critic`); `ready` stays out of Done until the target says done. Matching is by Issue branch name and verified worktree.
-- [ ] Done state is always re-read from the target, never from stale harness records.
-- [ ] Integration test kills and restarts the harness server mid-Run and proves reattach, resume and discard against real `cli.py` records.
+- [x] `POST /api/projects/:id/runs/:ref/resume` continues an interrupted Run in the same worktree; a zero-budget record re-opens its pause without invoking a role.
+- [x] `POST /api/projects/:id/runs/:ref/discard` removes worktree and branch; plan-born refs leave no card in any lane, target-tracked refs return to the Issues lane as ready to agent.
+- [x] After a server restart, pack run records reappear in Plan (`plan`, `plan-approval`), Implement (`implement`, `checks`), Review (`review`) or Critic (`critic`); `ready` stays out of Done until the target says done. Matching is by Issue branch name and verified worktree.
+- [x] Done state is always re-read from the target, never from stale harness records.
+- [x] Integration test kills and restarts the harness server mid-Run and proves reattach, resume and discard against real `cli.py` records.
 
 ## Blocked by
 

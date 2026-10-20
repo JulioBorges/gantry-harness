@@ -1,7 +1,7 @@
 # 04: Plan runs
 
 Type: issue
-Status: ready-for-agent
+Status: done
 Slice: `run-orchestration#04`
 Spec: `.scratch/run-orchestration/spec.md`
 Created: 2026-10-18
@@ -16,11 +16,11 @@ The operator starts a Plan for work that has no Spec or Issue yet by providing a
 
 ## Acceptance criteria
 
-- [ ] `POST /api/projects/:id/runs` with a slug (kind `plan`) spawns `execute <slug>` and records kind `plan` with the reserved ref once known.
-- [ ] The Spec card sits in Specs and the Issue card sits in Plan. The `plan-approval` pause is inside the Issue card and shows Spec and Issue paths that open in the file viewer; `approve` moves the same card through Implement, Review and Critic, `reject` removes worktree/branch/record and no card remains in any lane.
-- [ ] The `plan-dirty` pause offers only `try-again`/`reject` and is surfaced without spending budget.
-- [ ] Starting a plan whose slug already has a Spec or Issue shows the pack's `spec-or-issue-exists` error without spawning.
-- [ ] Integration test drives a real `cli.py execute <slug>` with fixture plan/implement/review/critic commands through approval, and through rejection.
+- [x] `POST /api/projects/:id/runs` with a slug (kind `plan`) spawns `execute <slug>` and records kind `plan` with the reserved ref once known.
+- [x] The Spec card sits in Specs and the Issue card sits in Plan. The `plan-approval` pause is inside the Issue card and shows Spec and Issue paths that open in the file viewer; `approve` moves the same card through Implement, Review and Critic, `reject` removes worktree/branch/record and no card remains in any lane.
+- [x] The `plan-dirty` pause offers only `try-again`/`reject` and is surfaced without spending budget.
+- [x] Starting a plan whose slug already has a Spec or Issue shows the pack's `spec-or-issue-exists` error without spawning.
+- [x] Integration test drives a real `cli.py execute <slug>` with fixture plan/implement/review/critic commands through approval, and through rejection.
 
 ## Blocked by
 
