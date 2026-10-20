@@ -1,7 +1,9 @@
+> Superada por .scratch/prd-alignment/spec.md (decisão do Julio, 2026-10-20). Não trabalhar.
+
 # Spec: Gantry Harness (`gantry-harness`)
 
 Type: spec
-Status: ready-for-agent
+Status: blocked
 
 Workspace layout, as of 2026-10-19: primary areas are **Quadro**, **Terminal** and **Files**. The Quadro is the only board (Specs, Issues, Plan, Implement, Review, Critic, Done). There is no separate "Acompanhar execução" Kanban and no conversation session. Terminal panes are the agent surface. Sections below that describe Chat ⇄ Terminal, the eight-column embedded Kanban, coordinator chat and the conversational orchestrator are superseded by `.scratch/run-orchestration/spec.md` and `.scratch/desktop-experience/spec.md`.
 

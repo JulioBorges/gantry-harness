@@ -19,6 +19,8 @@ Números são a linha `Map:` de cada `spec.md` (`(spec NN)`). A tabela abaixo é
 | 01 | `run-orchestration` | done | — | — | supervisor, quadro, registro da Run | integração com o `gantry` pinado no repositório |
 | 02 | `prd-alignment` | approved | — | `run-orchestration` | quadro, configuração de papel, textos, suíte | harness operável segundo `docs/PRD-integration.md` |
 
+`.scratch/gantry-harness/spec.md` está `blocked`: superada por `prd-alignment` (Julio, 2026-10-20). Não tem issues, então o pack não a projeta nem a coloca na fronteira.
+
 ## Progresso por spec
 
 <!-- BEGIN GENERATED: spec progress -->
