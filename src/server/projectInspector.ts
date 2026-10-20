@@ -411,6 +411,32 @@ export async function inspectProject(
   };
 }
 
+async function setupGit(repoRoot: string, args: string[]): Promise<string> {
+  const result = await runCommand(['git', ...args], { cwd: repoRoot });
+  if (result.exitCode !== 0) {
+    throw new Error(`Não foi possível registrar a instalação do Gantry: ${result.stderr.trim() || result.stdout.trim()}. Revise os arquivos e faça commit antes de executar o Gantry.`);
+  }
+  return result.stdout;
+}
+
+async function requireCleanSetupTree(repoRoot: string): Promise<void> {
+  const status = await setupGit(repoRoot, ['status', '--porcelain', '--untracked-files=all']);
+  if (status.trim()) {
+    throw new Error('Faça commit ou stash das alterações existentes antes de instalar ou configurar o Gantry. A instalação cria commits locais na branch atual.');
+  }
+  // Fail before writing if Git cannot create the installation commit.
+  await setupGit(repoRoot, ['var', 'GIT_AUTHOR_IDENT']);
+  await setupGit(repoRoot, ['var', 'GIT_COMMITTER_IDENT']);
+}
+
+async function commitSetupFiles(repoRoot: string, paths: string[], message: string): Promise<void> {
+  const changed = await setupGit(repoRoot, ['ls-files', '--modified', '--others', '--exclude-standard', '-z', '--', ...paths]);
+  const files = [...new Set(changed.split('\0').filter(Boolean))];
+  if (files.length === 0) return;
+  await setupGit(repoRoot, ['add', '--', ...files]);
+  await setupGit(repoRoot, ['commit', '--only', '-m', message, '--', ...files]);
+}
+
 export async function bootstrapProjectSkills(
   repoRoot: string,
   homeDir: string = os.homedir(),
@@ -423,8 +449,21 @@ export async function bootstrapProjectSkills(
     throw new Error(`Global Gantry skill pack not found at ${globalSkillDir}`);
   }
 
+  await requireCleanSetupTree(resolvedRepo);
+  const ignored = await runCommand(['git', 'check-ignore', '--no-index', '--', '.agents/skills/gantry/SKILL.md'], { cwd: resolvedRepo });
+  if (ignored.exitCode === 0) {
+    throw new Error('As skills do Gantry estão ignoradas pelo Git. Ajuste as regras de ignore para .agents/skills/gantry antes de instalar.');
+  }
+  if (ignored.exitCode !== 1) {
+    throw new Error(`Não foi possível verificar as regras de ignore: ${ignored.stderr.trim()}`);
+  }
   fs.mkdirSync(path.dirname(targetDir), { recursive: true });
-  fs.cpSync(fs.realpathSync(globalSkillDir), targetDir, { recursive: true, force: true });
+  fs.cpSync(fs.realpathSync(globalSkillDir), targetDir, {
+    recursive: true,
+    force: true,
+    filter: (source) => path.basename(source) !== '__pycache__' && !source.endsWith('.pyc'),
+  });
+  await commitSetupFiles(resolvedRepo, ['.agents/skills/gantry'], 'chore: install Gantry skills');
 
   return {
     installed: true,
@@ -643,6 +682,7 @@ export async function applyRepositorySetup(
     };
   }
 
+  await requireCleanSetupTree(repoRoot);
   const configPath = path.join(repoRoot, '.gantry', 'config.json');
   const exists = fs.existsSync(configPath);
   const confirmChar = exists ? (input.mode === 'merge' ? 'm\n' : 'o\n') : 'y\n';
@@ -653,6 +693,12 @@ export async function applyRepositorySetup(
     input: confirmChar,
     env: { GANTRY_PROFILE_ROOT: profileRoot },
   });
+
+  if (res.exitCode === 0) {
+    await commitSetupFiles(repoRoot, [
+      '.gantry/config.json', 'AGENTS.md', '.claude/settings.json', '.agents/hooks.json',
+    ], 'chore: configure Gantry');
+  }
 
   return {
     applied: res.exitCode === 0,

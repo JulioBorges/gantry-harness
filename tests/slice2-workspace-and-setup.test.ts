@@ -277,7 +277,7 @@ describe('Slice 2: Multi-Project Workspace, Sidebar Topology, Bootstrap, Discove
         body: JSON.stringify({ scope: 'repository', policy: proposedPolicy }),
       }).then((r) => r.json());
 
-      expect(applyRepoRes.applied).toBe(true);
+      expect(applyRepoRes.applied, JSON.stringify(applyRepoRes)).toBe(true);
       expect(fs.existsSync(path.join(repoDir, '.gantry', 'config.json'))).toBe(true);
       const writtenConfig = JSON.parse(
         fs.readFileSync(path.join(repoDir, '.gantry', 'config.json'), 'utf-8'),
@@ -288,8 +288,7 @@ describe('Slice 2: Multi-Project Workspace, Sidebar Topology, Bootstrap, Discove
       expect(agentsMd).toContain('<!-- gantry:begin -->');
 
       // Apply machine-local personal profile via setup.py --personal without touching tracked files
-      execFileSync('git', ['add', '.'], { cwd: repoDir });
-      execFileSync('git', ['commit', '-m', 'Commit gantry policy'], { cwd: repoDir });
+      expect(execFileSync('git', ['status', '--porcelain'], { cwd: repoDir, encoding: 'utf-8' }).trim()).toBe('');
 
       const personalRes = await fetch(`${baseUrl}/api/projects/${reg.project.id}/setup/apply`, {
         method: 'POST',
