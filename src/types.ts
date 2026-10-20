@@ -79,12 +79,6 @@ export type DecisionCardPayload =
 
 export type LiveBadgeState = 'working' | 'needs input' | 'done' | 'blocked' | 'idle';
 
-export interface PreparedGantryCommand {
-  command: 'plan' | 'run' | 'setup';
-  argument: string;
-  explanation: string;
-}
-
 export interface WorkspaceTab {
   id: string;
   title: string;
@@ -138,21 +132,6 @@ export interface ChatMessageRecord {
   createdAt: string;
 }
 
-export interface ProviderSettingsInput {
-  activeProvider: 'anthropic' | 'openai' | 'gemini' | 'openrouter' | 'cli';
-  mode: 'sdk' | 'cli';
-  cliHarness?: 'claude' | 'codex' | 'opencode' | 'agy';
-  providers?: Record<
-    string,
-    {
-      apiKey?: string;
-      model?: string;
-      baseUrl?: string;
-      modelsByHost?: Record<string, string>;
-    }
-  >;
-}
-
 export interface RoleSelection {
   harness: string;
   model: string;
@@ -162,21 +141,6 @@ export interface RoleSelection {
 export interface ExecutionSettings {
   hostHarness?: string;
   roles?: Record<string, RoleSelection>;
-}
-
-export interface SanitizedProviderSettings {
-  activeProvider: 'anthropic' | 'openai' | 'gemini' | 'openrouter' | 'cli';
-  mode: 'sdk' | 'cli';
-  cliHarness?: 'claude' | 'codex' | 'opencode' | 'agy';
-  providers: Record<
-    string,
-    {
-      hasApiKey: boolean;
-      model?: string;
-      baseUrl?: string;
-      modelsByHost?: Record<string, string>;
-    }
-  >;
 }
 
 export type TerminalShell = 'system' | 'bash' | 'sh' | 'zsh' | 'cmd' | 'powershell' | 'pwsh';

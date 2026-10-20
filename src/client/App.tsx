@@ -4,7 +4,6 @@ import { FileViewerDialog } from './FileViewerDialog.js';
 import { FileTree, type FileTreeEntry } from './FileTree.js';
 import type { ExecutionSettings, RoleSelection } from '../types.js';
 import type { ManagedPane } from '../server/ptyManager.js';
-import type { PreparedGantryCommand } from '../types.js';
 import type { Terminal } from '@xterm/xterm';
 import type { FitAddon } from '@xterm/addon-fit';
 import type { TerminalSettings, TerminalEnvironment } from '../types.js';
@@ -16,14 +15,11 @@ import {
   NO_PACK_EXPLANATION,
   PHASE_LABEL,
   coerceBoard,
-  overlaysFromKanban,
   unavailableBoard,
   type BoardSnapshot,
   type HarnessRunRecord,
 } from '../boardModel.js';
 import type {
-  ChatMessageRecord,
-  DecisionCardPayload,
   LiveBadgeState,
   RegisteredProject,
 } from '../types.js';
@@ -39,28 +35,11 @@ declare global {
 }
 
 const STATUS_LABELS: Record<string, string> = { working: 'Em execução', 'needs input': 'Aguardando você', done: 'Concluído', blocked: 'Bloqueado', idle: 'Pronto' };
-const PHASE_LABELS: Record<string, string> = { idle: 'Pronto para começar', bootstrapping_skills: 'Preparando Gantry', setup_review: 'Revisando configuração', grilling_interview: 'Definindo o objetivo', spec_validation: 'Validando especificação', requirement_review: 'Revisando requisitos', slicing_and_critique: 'Preparando tarefas', awaiting_plan_approval: 'Aguardando aprovação do plano', round_preflight: 'Verificando execução', round_executing: 'Executando tarefas', awaiting_recovery_decision: 'Aguardando recuperação', awaiting_handoff_decisions: 'Aguardando revisão da entrega', completed: 'Execução concluída' };
-
-const CLICKABLE_PATH_RE = /\b([A-Za-z0-9_./-]+\.(?:ts|tsx|js|jsx|py|md|json|css|html))\b/g;
 
 export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   const [projects, setProjects] = useState<RegisteredProject[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-  const [sessions, setSessions] = useState<Array<{ id: string; title: string; slug?: string }>>([]);
-  const [messages, setMessages] = useState<ChatMessageRecord[]>([]);
-  const [alerts, setAlerts] = useState<
-    Array<{
-      id: string;
-      projectId: string;
-      projectName: string;
-      sessionId: string;
-      messageId: string;
-      badgeState: LiveBadgeState;
-      cardKind: string;
-      summary: string;
-    }>
-  >([]);
 
   const [inspection, setInspection] = useState<{
     policy?: { execution?: ExecutionSettings; [key: string]: unknown };
@@ -97,19 +76,11 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   const terminalAppearance = useRef(terminalSettings);
   terminalAppearance.current = terminalSettings;
   const fitAddonRef = useRef<FitAddon | null>(null);
-  const [paneMode, setPaneMode] = useState<'chat' | 'terminal'>('terminal');
+  const [paneMode, setPaneMode] = useState<'terminal'>('terminal');
   const [activePaneId, setActivePaneId] = useState<string | null>(null);
   const [terminalBuffer, setTerminalBuffer] = useState<string>('');
-  const [coordinatorInput, setCoordinatorInput] = useState('');
-  const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
   const [newProjectPath, setNewProjectPath] = useState('');
   const [activeRunId, setActiveRunId] = useState<string>('');
-  const [approvedSlug, setApprovedSlug] = useState<string | null>(null);
-  const [steeringInput, setSteeringInput] = useState('');
-  const [selectedSteeringIssue, setSelectedSteeringIssue] = useState<string>('');
-  const [editInstruction, setEditInstruction] = useState('');
-  const [grillingAnswers, setGrillingAnswers] = useState<Record<string, string>>({});
-  const [selectedReplacementIdx, setSelectedReplacementIdx] = useState<number>(0);
 
   const [artifactDrawer, setArtifactDrawer] = useState<{
     projectId: string;
@@ -118,13 +89,6 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     diff: string;
   } | null>(null);
 
-  const [kanbanRuns, setKanbanRuns] = useState<
-    Array<{
-      runId: string;
-      finished: boolean;
-      columns: Record<string, Array<{ ref: string; phase: string; operatorWaiting: boolean }>>;
-    }>
-  >([]);
   const [runs, setRuns] = useState<HarnessRunRecord[]>([]);
 
   const [setupDiffPreview, setSetupDiffPreview] = useState<string>('');
@@ -145,9 +109,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   const [sidebarOpen, setSidebarOpen] = useState(() => typeof window !== 'undefined' && window.innerWidth >= 760);
   const [wideWorkspace, setWideWorkspace] = useState(() => typeof window !== 'undefined' && window.innerWidth >= 760);
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
-  const [preparedCommand, setPreparedCommand] = useState<(PreparedGantryCommand & { projectId: string; sessionId: string | null }) | null>(null);
   const [showGuide, setShowGuide] = useState(false);
-  const chatEndRef = useRef<HTMLDivElement | null>(null);
   const [pairingCode, setPairingCode] = useState<string>('');
   const [requiresRemotePairing, setRequiresRemotePairing] = useState<boolean>(false);
   const [enteredPairingCode, setEnteredPairingCode] = useState<string>('');
@@ -282,21 +244,13 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
       const actProj = data.layout?.activeProjectId ?? projs[0]?.id ?? null;
       setActiveProjectId(actProj);
       const loadedSessions = data.sessions ?? [];
-      setSessions(loadedSessions);
       const requestedSessionId = data.layout?.activeSessionId;
-      const actSess = loadedSessions.some((session: any) => session.id === requestedSessionId)
+      const actSess = loadedSessions.some((session: { id: string }) => session.id === requestedSessionId)
         ? requestedSessionId
         : loadedSessions[0]?.id ?? null;
       setActiveSessionId(actSess);
-      setMessages((data.messages ?? []).filter((message: ChatMessageRecord) => message.projectId === actProj));
       if (Array.isArray(data.runs)) {
         setRuns(data.runs as HarnessRunRecord[]);
-      }
-
-      const alertRes = await apiFetch('/api/alerts');
-      if (alertRes.ok) {
-        const alertData = await alertRes.json();
-        setAlerts(alertData.alerts ?? []);
       }
 
       if (generation !== workspaceGeneration.current) return;
@@ -314,15 +268,9 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
             setupProjectLoaded.current = actProj;
           }
         }
-        const kbRes = await apiFetch(`/api/projects/${actProj}/kanban`);
-        if (kbRes.ok) {
-          const kbData = await kbRes.json();
-          setKanbanRuns(kbData.runs ?? []);
-        }
       } else {
         setPanes([]);
         setInspection(null);
-        setKanbanRuns([]);
         setRuns([]);
       }
     } catch (error) {
@@ -489,7 +437,6 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     terminalWrittenLength.current = terminalBuffer.length;
   }, [terminalBuffer]);
 
-  useEffect(() => { chatEndRef.current?.scrollIntoView?.({ block: 'end' }); }, [messages.length, activeSessionId]);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (document.querySelector('dialog[open]')) return;
@@ -513,15 +460,6 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   const handleChooseDirectory = withFeedback('Escolher pasta', async () => {
     const directory = await window.gantryDesktop?.chooseDirectory();
     if (directory) { setNewProjectPath(directory); setProjectDialogOpen(true); }
-  });
-
-  const handleNewSession = withFeedback('Nova conversa', async () => {
-    if (!activeProjectId) return;
-    const response = await apiFetch(`/api/projects/${activeProjectId}/sessions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: `Conversa ${sessions.length + 1}` }) });
-    const { session } = await response.json();
-    await apiFetch('/api/workspace/state', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ activeProjectId, activeSessionId: session.id }) });
-    setPaneMode('chat'); setActiveView('factory'); setPreparedCommand(null);
-    await loadWorkspaceState();
   });
 
   const handleSelectPane = withFeedback('Selecionar terminal', async (paneId: string) => {
@@ -565,16 +503,11 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     setArtifactDrawer(null);
     setActivePaneId(null);
     setTerminalBuffer('');
-    setApprovedSlug(null);
     setActiveRunId('');
-    setPreparedCommand(null); if (window.innerWidth < 760) setSidebarOpen(false); setActiveView('board');
+    if (window.innerWidth < 760) setSidebarOpen(false); setActiveView('board');
     setPaneMode('terminal');
     if (projectId !== activeProjectId) {
-      setMessages([]);
-      setSessions([]);
       setActiveSessionId(sessionId ?? null);
-      setPendingPrompt(null);
-      setCoordinatorInput('');
     }
     setActiveProjectId(projectId);
     if (sessionId) setActiveSessionId(sessionId);
@@ -585,18 +518,6 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         activeProjectId: projectId,
         ...(sessionId ? { activeSessionId: sessionId } : {}),
       }),
-    });
-    await loadWorkspaceState();
-  });
-
-  const handleSelectSession = withFeedback("Selecionar sessão", async (sessionId: string): Promise<void> => {
-    if (!activeProjectId) throw new Error('Selecione um projeto antes de selecionar uma sessão.');
-    setActiveSessionId(sessionId);
-    setPaneMode('chat'); setActiveView('factory'); setPreparedCommand(null);
-    await apiFetch(`/api/workspace/state`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ activeProjectId, activeSessionId: sessionId }),
     });
     await loadWorkspaceState();
   });
@@ -642,258 +563,6 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         body: JSON.stringify({ data: keySeq }),
       });
     }
-  });
-
-  const handleSendCoordinatorInput = withFeedback("Aguardando resposta do agente", async (executePrepared = false): Promise<void> => {
-    if (!activeProjectId) throw new Error('Adicione ou selecione um projeto para conversar com o agente.');
-    if (!coordinatorInput.trim()) throw new Error('Escreva uma mensagem ou descreva o que deseja planejar.');
-    const match = coordinatorInput.trim().match(/^\/(plan|run|setup)(?:\s+(.*))?$/s);
-    if (match && !executePrepared) {
-      const response = await apiFetch(`/api/projects/${activeProjectId}/commands/prepare`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command: match[1], request: match[2] ?? '' }),
-      });
-      const { prepared } = await response.json();
-      if (selectedPane.current.projectId === activeProjectId && selectedPane.current.sessionId === activeSessionId) setPreparedCommand({ ...prepared, projectId: activeProjectId, sessionId: activeSessionId });
-      return;
-    }
-    if (executePrepared && (!preparedCommand || preparedCommand.projectId !== activeProjectId || preparedCommand.sessionId !== activeSessionId)) throw new Error('Prepare o comando nesta conversa antes de executar.');
-    const text = executePrepared && preparedCommand ? `/${preparedCommand.command} ${preparedCommand.argument}`.trim() : coordinatorInput.trim();
-    setPreparedCommand(null);
-    if (text === '/setup') { if (activeProjectId) setProjectSettingsId(activeProjectId); else openSettings('gantry'); setCoordinatorInput(''); return; }
-
-    if (executePrepared && preparedCommand?.command === 'plan') {
-      const goal = text.replace(/^\/plan\s*/, '').trim() || 'New feature';
-      const res = await apiFetch(`/api/projects/${activeProjectId}/plan/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ goal, sessionId: activeSessionId }),
-      });
-      if (res.ok) {
-        const out = await res.json();
-        setActiveRunId(out.runId);
-        await loadWorkspaceState();
-        setCoordinatorInput('');
-      }
-      return;
-    }
-
-    if (executePrepared && preparedCommand?.command === 'run') {
-      const scope = text.replace(/^\/run\s*/, '').trim() || approvedSlug || 'all';
-      const res = await apiFetch(`/api/projects/${activeProjectId}/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scope, sessionId: activeSessionId }),
-      });
-      if (res.ok) {
-        const out = await res.json();
-        setActiveRunId(out.runId);
-        await loadWorkspaceState();
-        setCoordinatorInput('');
-      }
-      return;
-    }
-
-    setPendingPrompt(text);
-    setCoordinatorInput('');
-    const sessionId = sessions.some((session) => session.id === activeSessionId) ? activeSessionId : sessions[0]?.id;
-    try {
-      await apiFetch(`/api/projects/${activeProjectId}/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...(sessionId ? { sessionId } : {}), prompt: text }),
-      });
-      await loadWorkspaceState();
-      setPendingPrompt(null);
-    } catch (error) {
-      setPendingPrompt(null);
-      setCoordinatorInput((current) => current.trim() ? current : text);
-      throw error;
-    }
-  });
-
-  const handleAnswerGrilling = withFeedback("Enviar decisões", async (
-    card: Extract<DecisionCardPayload, { kind: 'grilling_round' }>,
-  ): Promise<void> => {
-    if (!activeProjectId) throw new Error('Selecione um projeto para continuar.');
-    const answers: Record<string, string> = {};
-    for (const q of card.questions) {
-      answers[q.id] = grillingAnswers[q.id] ?? q.recommendedAnswer;
-    }
-    await apiFetch(`/api/projects/${activeProjectId}/plan/answer`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        slug: card.slug,
-        runId: activeRunId,
-        sessionId: activeSessionId,
-        roundNumber: card.roundNumber,
-        finishGrilling: true,
-        answers,
-      }),
-    });
-    await loadWorkspaceState();
-  });
-
-  const handleRefineSpec = withFeedback("Revisar especificação", async (
-    card: Extract<DecisionCardPayload, { kind: 'spec_blocked' }>,
-  ): Promise<void> => {
-    if (!activeProjectId) throw new Error('Selecione um projeto para continuar.');
-    await apiFetch(`/api/projects/${activeProjectId}/plan/refine-spec`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        slug: card.slug,
-        sessionId: activeSessionId,
-        amendment: editInstruction || 'Clarified retry and verification constraints.',
-      }),
-    });
-    setEditInstruction('');
-    await loadWorkspaceState();
-  });
-
-  const handleEditDraftIssues = withFeedback("Revisar tarefas", async (
-    slug: string,
-    action: 'split' | 'merge' | 'reorder' | 'refine',
-    targetRef?: string,
-  ): Promise<void> => {
-    if (!activeProjectId) throw new Error('Selecione um projeto para continuar.');
-    await apiFetch(`/api/projects/${activeProjectId}/plan/edit-issues`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        slug,
-        sessionId: activeSessionId,
-        action,
-        targetRef,
-        instruction: editInstruction || 'Additional vertical slice',
-      }),
-    });
-    setEditInstruction('');
-    await loadWorkspaceState();
-  });
-
-  const handleApprovePlan = withFeedback("Aprovar plano", async (slug: string): Promise<void> => {
-    if (!activeProjectId) throw new Error('Selecione um projeto para continuar.');
-    const res = await apiFetch(`/api/projects/${activeProjectId}/plan/approve`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        slug,
-        runId: activeRunId,
-        sessionId: activeSessionId,
-      }),
-    });
-    if (res.ok) {
-      setApprovedSlug(slug);
-      await loadWorkspaceState();
-    }
-  });
-
-  const handleStartRun = withFeedback("Executar plano", async (scope: string): Promise<void> => {
-    if (!activeProjectId) throw new Error('Selecione um projeto para continuar.');
-    const res = await apiFetch(`/api/projects/${activeProjectId}/run`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scope, sessionId: activeSessionId }),
-    });
-    if (res.ok) {
-      const out = await res.json();
-      setActiveRunId(out.runId);
-      await loadWorkspaceState();
-    }
-  });
-
-  const handleTakeoverWorktree = withFeedback("Assumir terminal", async (issueRef: string, worktreePath: string): Promise<void> => {
-    if (!activeProjectId || !activeRunId) return;
-    const res = await apiFetch(`/api/projects/${activeProjectId}/runs/${activeRunId}/takeover`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ issueRef, worktreePath, launcher: 'shell' }),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      setActivePaneId(data.pane.paneId);
-      setTerminalBuffer(data.pane.terminalBuffer ?? '');
-      setPaneMode('terminal');
-    }
-  });
-
-  const handleResumeTakeover = withFeedback("Retomar execução", async (issueRef: string): Promise<void> => {
-    if (!activeProjectId || !activeRunId) return;
-    await apiFetch(`/api/projects/${activeProjectId}/runs/${activeRunId}/resume-takeover`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ issueRef, sessionId: activeSessionId }),
-    });
-    await loadWorkspaceState();
-  });
-
-  const handleRecoverIssue = withFeedback("Recuperar tarefa", async (
-    card: Extract<DecisionCardPayload, { kind: 'issue_recovery' }>,
-  ): Promise<void> => {
-    if (!activeProjectId) throw new Error('Selecione um projeto para continuar.');
-    const replacement =
-      card.availableReplacements[selectedReplacementIdx] ??
-      card.availableReplacements[0] ??
-      card.currentSelection;
-    await apiFetch(`/api/projects/${activeProjectId}/runs/${card.runId}/recover`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        issueRef: card.issueRef,
-        role: 'implement',
-        replacement,
-        sessionId: activeSessionId,
-      }),
-    });
-    await loadWorkspaceState();
-  });
-
-  const handleDecideLesson = withFeedback("Revisar aprendizado", async (
-    runId: string,
-    lesson: { id: string; target: string; draftRule: string },
-    decision: 'accept' | 'dismiss',
-  ): Promise<void> => {
-    if (!activeProjectId) throw new Error('Selecione um projeto para continuar.');
-    await apiFetch(`/api/projects/${activeProjectId}/runs/${runId}/lessons`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        lessonId: lesson.id,
-        decision,
-        targetFile: lesson.target,
-        draftRule: lesson.draftRule,
-      }),
-    });
-    await loadWorkspaceState();
-  });
-
-  const handleCreateDraftPr = withFeedback("Criar PR em rascunho", async (
-    card: Extract<DecisionCardPayload, { kind: 'run_handoff' }>,
-  ): Promise<void> => {
-    if (!activeProjectId) throw new Error('Selecione um projeto para continuar.');
-    await apiFetch(`/api/projects/${activeProjectId}/runs/${card.runId}/pr`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        title: card.prDraft.title,
-        body: card.prDraft.body,
-        runBranch: card.runBranch,
-        targetBranch: card.targetBranch,
-      }),
-    });
-  });
-
-  const handleAuthorizeCleanup = withFeedback("Autorizar limpeza", async (
-    card: Extract<DecisionCardPayload, { kind: 'run_handoff' }>,
-  ): Promise<void> => {
-    if (!activeProjectId) throw new Error('Selecione um projeto para continuar.');
-    await apiFetch(`/api/projects/${activeProjectId}/runs/${card.runId}/cleanup`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ rawPlanJson: card.cleanupPlan.rawPlanJson }),
-    });
-    await loadWorkspaceState();
   });
 
   const loadProjectTree = useCallback(async (relativePath: string, query: string): Promise<FileTreeEntry[]> => {
@@ -1118,10 +787,8 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     const matchedRun = runs.find((item) => (runId && item.runId === runId) || item.ref === ref);
     if (matchedRun) {
       setActiveRunId(matchedRun.runId);
-      setSelectedSteeringIssue(matchedRun.ref);
     } else if (runId) {
       setActiveRunId(runId);
-      setSelectedSteeringIssue(ref);
     }
     const pane = panes.find(
       (item) =>
@@ -1131,12 +798,8 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
           item.worktreePath.includes(ref.split('#')[0] ?? ref)),
     );
     setActiveView('factory');
-    if (pane) {
-      setPaneMode('terminal');
-      setActivePaneId(pane.paneId);
-      return;
-    }
-    setPaneMode('chat');
+    setPaneMode('terminal');
+    if (pane) setActivePaneId(pane.paneId);
   };
 
   const handleSaveArtifact = async (content: string): Promise<void> => {
@@ -1152,22 +815,6 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     setArtifactDrawer((current) => current?.projectId === projectId && current.path === path ? { ...artifact, projectId } : current);
   };
 
-  const handleSteer = withFeedback("Orientar agente", async (mode: 'queue' | 'send_now'): Promise<void> => {
-    if (!activeProjectId || !activeRunId) throw new Error('Inicie ou selecione uma execução para orientar um agente.');
-    if (!steeringInput.trim()) throw new Error('Escreva a orientação para o agente.');
-    const targetIssue =
-      selectedSteeringIssue || inspection?.issues?.[0]?.ref || 'slice#01';
-    await apiFetch(`/api/projects/${activeProjectId}/runs/${activeRunId}/steer`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        issueRef: targetIssue,
-        mode,
-        instruction: steeringInput.trim(),
-      }),
-    });
-    setSteeringInput('');
-  });
 
   const buildProposedPolicy = (): Record<string, unknown> => {
     if (!setupHostHarness) throw new Error('Selecione o host do projeto antes de salvar a configuração.');
@@ -1256,257 +903,6 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     setTerminalInput('');
   });
 
-  const cleanTerminalText = (raw: string): string => {
-    return raw
-      .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
-      .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '')
-      .replace(/\[\?[0-9]+[hl]/g, '')
-      .replace(/\]0;[^\r\n]*/g, '')
-      .replace(/\[[0-9;]+m/g, '');
-  };
-
-  const renderClickableText = (text: string): React.ReactNode => {
-    const cleaned = cleanTerminalText(text);
-    const matches = Array.from(cleaned.matchAll(CLICKABLE_PATH_RE)).map((m) => m[1]);
-    if (matches.length === 0) return cleaned;
-    return (
-      <span>
-        {cleaned}{' '}
-        {Array.from(new Set(matches)).map((p) => (
-          <button
-            key={p}
-            className="btn-file-link"
-            data-testid={`file-link-${p}`}
-            onClick={() => void handleOpenArtifact(p)}
-            style={{ marginLeft: 4 }}
-          >
-            {p}
-          </button>
-        ))}
-      </span>
-    );
-  };
-
-  const renderDecisionCard = (card: DecisionCardPayload): React.ReactElement => {
-    if (card.kind === 'grilling_round') {
-      return (
-        <div className="decision-card" data-testid="decision-card-grilling_round">
-          <h4>
-            Socratic Gate Grilling — {card.slug} (Round {card.roundNumber})
-          </h4>
-          {card.questions.map((q) => (
-            <div key={q.id} style={{ marginBottom: 10 }}>
-              <strong>{q.title}</strong>
-              <p>{q.body}</p>
-              {q.options && (
-                <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
-                  {q.options.map((opt) => (
-                    <button
-                      key={opt.label}
-                      onClick={() =>
-                        setGrillingAnswers((prev) => ({ ...prev, [q.id]: opt.description }))
-                      }
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
-              )}
-              <input
-                value={grillingAnswers[q.id] ?? q.recommendedAnswer}
-                onChange={(e) =>
-                  setGrillingAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))
-                }
-                style={{ width: '100%' }}
-              />
-            </div>
-          ))}
-          <button
-            data-testid="submit-grilling-btn"
-            onClick={() => void handleAnswerGrilling(card)}
-          >
-            Accept Answers & Synthesize Spec
-          </button>
-        </div>
-      );
-    }
-
-    if (card.kind === 'spec_blocked') {
-      return (
-        <div className="decision-card" data-testid="decision-card-spec_blocked">
-          <h4>Spec Blocked ({card.source})</h4>
-          <ul>
-            {card.findings.map((f, i) => (
-              <li key={i}>
-                <code>{f.quote}</code>: {f.reason}
-              </li>
-            ))}
-          </ul>
-          <input
-            placeholder="Enter Spec refinement..."
-            value={editInstruction}
-            onChange={(e) => setEditInstruction(e.target.value)}
-          />
-          <button data-testid="refine-spec-btn" onClick={() => void handleRefineSpec(card)}>
-            Refine & Re-Validate Spec
-          </button>
-        </div>
-      );
-    }
-
-    if (card.kind === 'plan_approval') {
-      return (
-        <div className="decision-card" data-testid="decision-card-plan_approval">
-          <h4>Planning Approval Card — {card.slug}</h4>
-          <div>
-            Spec:{' '}
-            <button
-              data-testid={`file-link-${card.specPath}`}
-              onClick={() => void handleOpenArtifact(card.specPath)}
-            >
-              {card.specPath}
-            </button>
-          </div>
-          <div>
-            Plan Critic Verdict: {card.criticVerdict.acceptable ? 'Acceptable' : 'Refuted'}
-          </div>
-          <div>
-            Waves: {card.waves.map((w, idx) => `Wave ${idx}: [${w.join(', ')}]`).join(' → ')}
-          </div>
-          <ul>
-            {card.issues.map((iss) => (
-              <li key={iss.ref}>
-                <strong>{iss.ref}</strong>: {iss.title} ({iss.estimatedTokens}/{iss.budgetTokens}{' '}
-                tokens {iss.overBudget ? '[OVER BUDGET]' : '[OK]'})
-              </li>
-            ))}
-          </ul>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <input
-              placeholder="Split/refine instruction..."
-              value={editInstruction}
-              onChange={(e) => setEditInstruction(e.target.value)}
-            />
-            <button
-              data-testid="edit-issues-btn"
-              onClick={() => void handleEditDraftIssues(card.slug, 'split', card.issues[0]?.ref)}
-            >
-              Split Slice
-            </button>
-            <button
-              data-testid="approve-plan-btn"
-              onClick={() => void handleApprovePlan(card.slug)}
-            >
-              Approve Plan
-            </button>
-          </div>
-        </div>
-      );
-    }
-
-    if (card.kind === 'issue_recovery') {
-      return (
-        <div className="decision-card" data-testid="decision-card-issue_recovery">
-          <h4>Recovery Card — {card.issueRef}</h4>
-          <div>Reason: {card.failureReason}</div>
-          <div>Corrections Spent: {card.correctionsSpent}</div>
-          <div>Preserved Worktree: {card.worktree}</div>
-          <select
-            value={selectedReplacementIdx}
-            onChange={(e) => setSelectedReplacementIdx(Number(e.target.value))}
-          >
-            {card.availableReplacements.map((rep, idx) => (
-              <option key={idx} value={idx}>
-                {rep.harness} / {rep.model} {rep.effort ? `(${rep.effort})` : ''}
-              </option>
-            ))}
-          </select>
-          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-            <button
-              data-testid="takeover-btn"
-              onClick={() => void handleTakeoverWorktree(card.issueRef, card.worktree)}
-            >
-              Takeover in Terminal
-            </button>
-            <button
-              data-testid="resume-takeover-btn"
-              onClick={() => void handleResumeTakeover(card.issueRef)}
-            >
-              Resume Gantry Pipeline
-            </button>
-            <button
-              data-testid="recover-issue-btn"
-              onClick={() => void handleRecoverIssue(card)}
-            >
-              Apply Role Replacement & Resume Run
-            </button>
-          </div>
-        </div>
-      );
-    }
-
-    return (
-      <div className="decision-card" data-testid="decision-card-run_handoff">
-        <h4>Run Handoff — {card.runId}</h4>
-        <div>
-          Branch: {card.runBranch} → {card.targetBranch} (Tier: {card.tier})
-        </div>
-        {card.lessonCandidates.length > 0 && (
-          <div>
-            <h5>Lesson Candidates</h5>
-            {card.lessonCandidates.map((lc) => (
-              <div key={lc.id}>
-                <span>
-                  {lc.draftRule} ({lc.target})
-                </span>
-                <button
-                  data-testid={`accept-lesson-${lc.id}`}
-                  onClick={() => void handleDecideLesson(card.runId, lc, 'accept')}
-                >
-                  Accept
-                </button>
-                <button onClick={() => void handleDecideLesson(card.runId, lc, 'dismiss')}>
-                  Dismiss
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-        <div>
-          <h5>Draft Pull Request</h5>
-          <pre>{card.prDraft.body}</pre>
-          <button data-testid="create-pr-btn" onClick={() => void handleCreateDraftPr(card)}>
-            Open Draft PR (gh)
-          </button>
-        </div>
-        <div>
-          <h5>Cleanup Plan</h5>
-          <div>Worktrees to remove: {card.cleanupPlan.worktreesToRemove.join(', ') || 'None'}</div>
-          <div>Branches to remove: {card.cleanupPlan.branchesToRemove.join(', ') || 'None'}</div>
-          <button
-            data-testid="authorize-cleanup-btn"
-            onClick={() => void handleAuthorizeCleanup(card)}
-          >
-            Authorize Cleanup (cleanup.py --yes)
-          </button>
-        </div>
-      </div>
-    );
-  };
-
-  const specInteractions: Record<string, React.ReactNode> = {};
-  const issueInteractions: Record<string, React.ReactNode> = {};
-  for (const message of messages) {
-    const card = message.decisionCard;
-    if (!card || card.resolved) continue;
-    if (card.kind === 'issue_recovery') {
-      issueInteractions[card.issueRef] = renderDecisionCard(card);
-      continue;
-    }
-    if (card.kind === 'grilling_round' || card.kind === 'spec_blocked' || card.kind === 'plan_approval') {
-      specInteractions[card.slug] = renderDecisionCard(card);
-    }
-  }
 
   const handleVerifyPairingCode = withFeedback("Conectar dispositivo", async (): Promise<void> => {
     const res = await apiFetch(`/api/auth/pair/verify`, {
@@ -1556,16 +952,9 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   }
 
   const activeProject = projects.find((project) => project.id === activeProjectId);
-  const projectMessages = messages.filter((message) => message.projectId === activeProjectId);
   const activeTerminal = panes.find((pane) => pane.paneId === activePaneId);
   const inlineArtifact = activeView === 'files' && wideWorkspace && artifactDrawer?.projectId === activeProjectId ? artifactDrawer : null;
   const changeView = (view: typeof activeView) => { setActiveView(view); if (window.innerWidth < 760) setSidebarOpen(false); };
-  const commandBusy = pendingActions.includes('Aguardando resposta do agente');
-  const selectShortcut = (command: string) => {
-    setPreparedCommand(null); setPaneMode('chat'); setActiveView('factory');
-    setCoordinatorInput(`/${command} `);
-    document.getElementById('coordinator-message')?.focus();
-  };
 
   /* THESIS: One workspace for Gantry coordination and explicitly separate CLI terminals.
    * OWN-WORLD: The supplied herdr recording: warm charcoal, quiet borders, amber selection, system type.
@@ -1592,14 +981,14 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
             <button className="icon-button project-settings" aria-label={`Configurações de ${project.name}`} data-testid={`project-settings-${project.id}`} onClick={() => { setProjectSettingsId(project.id); if (project.id !== activeProjectId) void handleSelectProject(project.id); }}>⚙</button>
             {project.id === activeProjectId && inspection && inspection.worktrees.length > 0 && <details className="project-context">
               <summary>Worktrees</summary>
-              {inspection.worktrees.map((wt) => <div key={wt.path} className="worktree-row"><span title={wt.path}>{wt.branch} · {STATUS_LABELS[wt.badgeState]}</span>{wt.issueRef && <button onClick={() => void handleTakeoverWorktree(wt.issueRef!, wt.path)}>Assumir</button>}</div>)}
+              {inspection.worktrees.map((wt) => <div key={wt.path} className="worktree-row"><span title={wt.path}>{wt.branch} · {STATUS_LABELS[wt.badgeState]}</span></div>)}
             </details>}
           </div>)}
         </div>
         <button className="new-project-link" onClick={() => setProjectDialogOpen(true)}>+ Abrir projeto</button>
         <div className="sidebar-bottom">
           <div className="sidebar-heading">Workspace</div>
-          <button className={`btn-nav ${activeView === 'board' ? 'btn-nav-active' : ''}`} data-testid="open-board-btn" onClick={() => changeView('board')}><span>Quadro</span>{alerts.length > 0 && <span className="count-badge">{alerts.length}</span>}</button>
+          <button className={`btn-nav ${activeView === 'board' ? 'btn-nav-active' : ''}`} data-testid="open-board-btn" onClick={() => changeView('board')}><span>Quadro</span></button>
           <button className={`btn-nav ${activeView === 'factory' ? 'btn-nav-active' : ''}`} data-testid="open-factory-btn" onClick={() => { setPaneMode('terminal'); changeView('factory'); }}><span>Terminal</span><kbd>⌘ B</kbd></button>
           <div className="sidebar-divider" />
           <button className="btn-nav" data-testid="open-settings-btn" onClick={() => openSettings('terminal')}>Configurações</button>
@@ -1625,16 +1014,11 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         {pendingActions.length > 0 && <div className="action-pending" role="status" aria-live="polite"><span className="working-indicator" />{pendingActions.join(' · ')}…</div>}
         {feedback?.kind === 'error' && !projectDialogOpen && !settingsOpen && !projectSettingsId && <div className="action-feedback error" role="alert"><p>{feedback.message}</p><div className="feedback-actions"><button onClick={() => openSettings('terminal')}>Revisar configuração</button><button aria-label="Fechar aviso" onClick={dismissFeedback}>×</button></div></div>}
         {board?.explanation === NO_PACK_EXPLANATION && activeProjectId && <div className="action-feedback error" role="alert" data-testid="pack-missing"><p>{board.explanation}</p><div className="feedback-actions"><button onClick={() => setProjectSettingsId(activeProjectId)}>Configurar este projeto</button><button onClick={() => openSettings('gantry')}>Configuração global</button></div></div>}
-        {alerts.length > 0 && <button className="alert-banner" data-testid="alert-banner" onClick={() => { const first = alerts[0]; void handleSelectProject(first.projectId, first.sessionId); setActiveView('factory'); }}><span>{alerts[0].projectName} · {alerts[0].summary || STATUS_LABELS[alerts[0].badgeState]}</span><span>Revisar decisão →</span></button>}
-
         {activeView === 'board' && (
           <BoardView
             board={board}
             hasProject={Boolean(activeProjectId)}
-            overlays={overlaysFromKanban(kanbanRuns)}
             runs={runs}
-            specInteractions={specInteractions}
-            issueInteractions={issueInteractions}
             onRefresh={() => setBoardGeneration((value) => value + 1)}
             onOpenPath={(path) => void handleOpenArtifact(path)}
             onFollow={handleFollowAgent}
@@ -1654,8 +1038,6 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
             runs.find((item) => item.runId === activeRunId) ??
             runs.find((item) => item.status === 'running' || item.status === 'paused') ??
             null;
-          const showLifecycleStrip =
-            (activeProject?.lifecycleState && activeProject.lifecycleState !== 'idle') || Boolean(followedRun);
           return <div className="workspace-content">
           <div className="session-bar">
             <div className="session-tabs" aria-label="Terminais">
@@ -1663,25 +1045,19 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
             </div>
             <button className="new-terminal-button" data-testid="launcher-shell" disabled={!activeProjectId || pendingActions.includes('Abrir terminal')} onClick={() => void handleOpenTerminal()}>+ Terminal</button>
           </div>
-          {showLifecycleStrip && (
+          {followedRun && (
             <div className="run-strip" data-testid="run-strip">
               <span className={`status-dot ${(activeProject?.badgeState ?? 'working').replace(/\s+/g, '-')}`} />
-              <strong>
-                {followedRun
-                  ? `${followedRun.ref} · ${PHASE_LABEL[followedRun.derivedPhase] ?? followedRun.status}`
-                  : (PHASE_LABELS[activeProject?.lifecycleState ?? ''] ?? activeProject?.lifecycleState)}
-              </strong>
-              {(followedRun?.runId || activeRunId) && <code>{followedRun?.runId ?? activeRunId}</code>}
-              {followedRun?.worktree && <code data-testid="followed-run-worktree">{followedRun.worktree}</code>}
+              <strong>{followedRun.ref} · {PHASE_LABEL[followedRun.derivedPhase] ?? followedRun.status}</strong>
+              {followedRun.runId && <code>{followedRun.runId}</code>}
+              {followedRun.worktree && <code data-testid="followed-run-worktree">{followedRun.worktree}</code>}
               <button onClick={() => setActiveView('board')}>Ver quadro →</button>
             </div>
           )}
-          {approvedSlug && <div className="run-strip"><span>Plano aprovado: <strong>{approvedSlug}</strong></span><button className="btn-primary" data-testid="start-run-btn" disabled={pendingActions.includes('Executar plano')} onClick={() => void handleStartRun(approvedSlug)}>Executar plano</button></div>}
 
           <div className="terminal-workspace" data-testid="terminal-view">
             {activePaneId ? <><div className="terminal-caption"><span>{activeTerminal?.launcher ?? 'Terminal'} · {activeTerminal?.status === 'exited' ? 'Sessão encerrada' : activeTerminal?.launcher === 'shell' ? 'Shell do sistema' : 'Sessão CLI independente'}</span><code>{activeTerminal?.worktreePath ?? activeProject?.path}</code></div><div className="terminal-surface"><div ref={terminalContainerRef} className="terminal-emulator" aria-label="Terminal interativo" /></div><details className="terminal-tools"><summary>Teclas e envio de comando</summary><form className="terminal-command" onSubmit={(event) => { event.preventDefault(); void handleTerminalCommand(); }}><label htmlFor="terminal-command">Enviar ao terminal</label><input id="terminal-command" value={terminalInput} onChange={(event) => setTerminalInput(event.target.value)} placeholder="Mensagem ou comando para este terminal" /><button type="submit" disabled={!activePaneId}>Enviar</button></form><div className="virtual-keybar" data-testid="virtual-keybar">{[['esc', '\x1b'], ['tab', '\t'], ['^C', '\x03'], ['↑', '\x1b[A'], ['↓', '\x1b[B'], ['←', '\x1b[D'], ['→', '\x1b[C']].map(([label, key]) => <button key={label} className="btn-key" onClick={() => void handleVirtualKey(key)}>{label}</button>)}</div></details></> : <div className="chat-empty"><h1>Abra uma sessão de terminal</h1><p>Abra o shell do sistema para executar comandos ou restaurar sessões do Codex, Claude e OpenCode com os parâmetros que preferir.</p><button onClick={() => void handleOpenTerminal()}>Abrir shell</button></div>}
           </div>
-          {activeRunId && <details className="steering-panel"><summary>Orientar agente em execução · {activeRunId}</summary><div data-testid="steering-bar"><input aria-label="Tarefa a orientar" placeholder="Referência da tarefa" value={selectedSteeringIssue} onChange={(event) => setSelectedSteeringIssue(event.target.value)} /><input aria-label="Orientação para o agente" placeholder="Descreva sua orientação…" value={steeringInput} onChange={(event) => setSteeringInput(event.target.value)} /><button data-testid="steer-queue-btn" onClick={() => void handleSteer('queue')}>Próximo turno</button><button data-testid="steer-send-now-btn" onClick={() => void handleSteer('send_now')}>Enviar agora</button></div></details>}
         </div>;
         })()}
 

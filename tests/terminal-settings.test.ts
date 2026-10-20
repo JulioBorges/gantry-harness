@@ -29,19 +29,17 @@ it.each([
   expect(shellDefinitions(platform).map(({ id }) => id)).toEqual(expected);
 });
 
-it('loads native options and persists terminal preferences independently of the coordinator across restart', async () => {
+it('loads native options and persists terminal preferences across restart', async () => {
   const state = await request('/api/workspace/state').then((res) => res.json());
   expect(state.terminalSettings).toMatchObject({ fontSize: 13, shell: 'system' });
+  expect(state.settings).toBeUndefined();
+  expect(state.connection).toBeUndefined();
   expect(state.terminalEnvironment.platform).toBe(process.platform);
   expect(state.terminalEnvironment.shells.map((item: { id: string }) => item.id)).toEqual(['system', ...shellDefinitions(process.platform).map(({ id }) => id)]);
-  server.store.updateProviderSettings({ mode: 'sdk', activeProvider: 'openai', providers: { openai: { apiKey: 'secret-test-key', model: 'fixture' } } });
+  expect((await request('/api/settings/providers', { activeProvider: 'openai', mode: 'sdk' })).status).toBe(404);
   expect((await request('/api/settings/terminal', settings)).status).toBe(200);
   await server.close();
   server = await start();
-  expect(server.store.getTerminalSettings()).toEqual(settings);
-  expect(server.store.getRawProviderSettings().providers?.openai.apiKey).toBe('secret-test-key');
-  // Saving the coordinator configuration must not overwrite terminal preferences.
-  server.store.updateProviderSettings({ mode: 'cli', activeProvider: 'cli', cliHarness: 'codex' });
   expect(server.store.getTerminalSettings()).toEqual(settings);
 });
 

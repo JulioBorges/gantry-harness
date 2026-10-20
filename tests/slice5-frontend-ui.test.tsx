@@ -43,52 +43,7 @@ describe('Slice 5: React Frontend UI, Decision Cards, Chat ⇄ Terminal, Artifac
       stateRoot,
       profileRoot,
       port: 0,
-      commandPreparer: async (command, request) => ({ command, argument: request, explanation: 'Comando preparado para revisão.' }),
-      roleDispatcher: async (req) => {
-        if (req.role === 'requirement-critic') {
-          return { blocking: [], findings: [] };
-        }
-        if (req.role === 'plan-critic') {
-          return { acceptable: true, problems: [], frontierErrors: [] };
-        }
-        if (req.role === 'implementer') {
-          const wt = String(req.context?.worktreePath ?? tmpRoot);
-          const br = String(req.context?.branch ?? 'gantry/ui-slice-01');
-          const fileName = `uiFeature-${Date.now()}-${Math.random().toString(36).slice(2, 5)}.ts`;
-          fs.writeFileSync(path.join(wt, 'src', fileName), `export const built = true;\n`, 'utf-8');
-          execFileSync('git', ['add', '.'], { cwd: wt });
-          execFileSync('git', ['commit', '-m', `Implement ${fileName}`], { cwd: wt });
-          const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: wt, encoding: 'utf-8' }).trim();
-          return {
-            worktree: wt,
-            branch: br,
-            commits: [sha],
-            summary: 'Implemented uiFeature in src/app.ts',
-            testsAdded: [],
-            gatesResult: 'pass',
-            decisions: [],
-            blockers: [],
-          };
-        }
-        if (req.role === 'reviewer') {
-          return { blocking: [], nonBlocking: [], summary: 'Looks good' };
-        }
-        if (req.role === 'critic') {
-          return {
-            complete: true,
-            criteria: [{ index: 0, met: true, evidence: 'Verified uiFeature' }],
-            gatesVerdict: 'pass',
-            gateResult: { verdict: 'pass', requirements: [] },
-            gateFailures: [],
-            refutations: [],
-            requiredFixes: [],
-            decisionsForOperator: [],
-          };
-        }
-        return {};
-      },
     });
-    server.store.updateProviderSettings({ mode: 'sdk', activeProvider: 'openai', providers: { openai: { apiKey: 'test-only', model: 'fixture' } } });
     apiBaseUrl = `http://127.0.0.1:${server.port}`;
   });
 

@@ -3,27 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHarnessServer } from '../src/server/app.js';
-import { prepareGantryCommand } from '../src/server/aiService.js';
-import * as runner from '../src/server/commandRunner.js';
-import type { ProviderSettingsInput } from '../src/types.js';
 
-const settings: ProviderSettingsInput = { mode: 'cli', activeProvider: 'cli', cliHarness: 'codex', providers: {} };
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
-
-it('formats commands through the configured host and rejects broadened run scope', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gantry-command-'));
-  const command = vi.spyOn(runner, 'runCommand').mockResolvedValue({ stdout: JSON.stringify({ argument: 'Implement login with recovery', explanation: 'Objetivo pronto para revisão.' }), stderr: '', exitCode: 0 });
-  try {
-    const result = await prepareGantryCommand('plan', 'login', settings, root);
-    expect(result.argument).toBe('Implement login with recovery');
-    expect(command.mock.calls[0][0][0]).toBe('codex');
-    expect(command.mock.calls[0][0]).toContain('read-only');
-    command.mockResolvedValue({ stdout: JSON.stringify({ argument: 'all', explanation: 'Execute tudo' }), stderr: '', exitCode: 0 });
-    await expect(prepareGantryCommand('run', 'login', settings, root)).rejects.toThrow('escopo exato');
-    command.mockResolvedValue({ stdout: 'not JSON', stderr: '', exitCode: 0 });
-    await expect(prepareGantryCommand('plan', 'login', settings, root)).rejects.toThrow('comando válido');
-  } finally { fs.rmSync(root, { recursive: true, force: true }); }
-});
 
 it('serves installed assets independently of cwd and manages native PTY sizing and closure', async () => {
   if (process.platform !== 'win32') vi.stubEnv('SHELL', '/bin/sh');
@@ -32,9 +13,7 @@ it('serves installed assets independently of cwd and manages native PTY sizing a
   fs.mkdirSync(path.join(client, 'assets'), { recursive: true });
   fs.writeFileSync(path.join(client, 'index.html'), '<html>Installed desktop client</html>');
   fs.writeFileSync(path.join(client, 'assets', 'entry.js'), 'window.desktop = true;');
-  const server = await createHarnessServer({ gantryHome: path.join(root, 'home'), clientDistDir: client + path.sep, port: 0,
-    commandPreparer: async (command, request) => ({ command, argument: request, explanation: 'Pronto.' }),
-  });
+  const server = await createHarnessServer({ gantryHome: path.join(root, 'home'), clientDistDir: client + path.sep, port: 0 });
   const base = `http://127.0.0.1:${server.port}`;
   const post = (route: string, body: unknown) => fetch(base + route, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   try {
@@ -56,11 +35,13 @@ it('serves installed assets independently of cwd and manages native PTY sizing a
       fs.symlinkSync(os.tmpdir(), path.join(root, 'outside-directory.png'));
       expect((await fetch(`${base}/api/projects/${projectId}/artifact-assets?path=outside-directory.png`)).status).toBe(403);
     }
-    server.store.updateProviderSettings({ mode: 'sdk', activeProvider: 'openai', providers: { openai: { model: 'test', apiKey: 'test-only' } } });
-    const prepared = await post(`/api/projects/${projectId}/commands/prepare`, { command: 'plan', request: 'Build login' });
-    expect(prepared.status).toBe(200);
-    expect(server.store.getProject(projectId)?.lifecycleState).toBe('idle');
-    expect(server.store.listMessages(projectId)).toHaveLength(0);
+    expect((await post(`/api/projects/${projectId}/commands/prepare`, { command: 'plan', request: 'Build login' })).status).toBe(404);
+    expect((await post(`/api/projects/${projectId}/plan/start`, { goal: 'login' })).status).toBe(404);
+    expect((await post(`/api/projects/${projectId}/run`, { scope: 'all' })).status).toBe(404);
+    expect((await fetch(`${base}/api/projects/${projectId}/kanban`)).status).toBe(404);
+    expect((await post(`/api/projects/${projectId}/runs/run-1/steer`, { issueRef: 'x', instruction: 'now' })).status).toBe(404);
+    expect((await post(`/api/projects/${projectId}/runs/run-1/takeover`, { issueRef: 'x', worktreePath: root })).status).toBe(404);
+    expect((await post(`/api/projects/${projectId}/runs/run-1/cleanup`, { rawPlanJson: {} })).status).toBe(404);
     const panes = `/api/projects/${projectId}/panes`;
     const start = await post(panes, { launcher: 'shell', paneId: 'native' });
     expect(start.status).toBe(200);

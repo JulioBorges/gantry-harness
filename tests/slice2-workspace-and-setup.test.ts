@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { WebSocket } from 'ws';
 import { createHarnessServer } from '../src/server/app.js';
 
 function initTempGitRepo(baseDir: string, name: string): string {
@@ -126,77 +125,6 @@ describe('Slice 2: Multi-Project Workspace, Sidebar Topology, Bootstrap, Discove
     }
   });
 
-  it('emits cross-project real-time alerts over WebSocket and /api/alerts when a project transitions to needs input or blocked', async () => {
-    const repoA = initTempGitRepo(tmpRoot, 'alert-repo-a');
-    const repoB = initTempGitRepo(tmpRoot, 'alert-repo-b');
-
-    const server = await createHarnessServer({
-      gantryHome,
-      stateRoot,
-      profileRoot,
-      port: 0,
-    });
-    const baseUrl = `http://127.0.0.1:${server.port}`;
-
-    try {
-      const regA = await fetch(`${baseUrl}/api/projects`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: repoA }),
-      }).then((r) => r.json());
-
-      const regB = await fetch(`${baseUrl}/api/projects`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: repoB }),
-      }).then((r) => r.json());
-
-      const wsEvents: Array<Record<string, unknown>> = [];
-      const ws = new WebSocket(`ws://127.0.0.1:${server.port}`);
-      await new Promise<void>((resolve) => ws.once('open', () => resolve()));
-      ws.on('message', (data) => {
-        wsEvents.push(JSON.parse(data.toString()));
-      });
-
-      // Post a decision card in project B (causes project B to transition to 'needs input' and emit an alert)
-      const msgRes = await fetch(`${baseUrl}/api/projects/${regB.project.id}/messages`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sessionId: regB.defaultSessionId,
-          role: 'assistant',
-          content: 'Decision required for Spec.',
-          decisionCard: {
-            kind: 'grilling_round',
-            slug: 'payments',
-            roundNumber: 1,
-            questions: [
-              {
-                id: 'q1',
-                title: '1. Currency',
-                body: 'Which currencies are supported?',
-                recommendedAnswer: 'USD and BRL',
-              },
-            ],
-          },
-        }),
-      }).then((r) => r.json());
-
-      const alertsRes = await fetch(`${baseUrl}/api/alerts`).then((r) => r.json());
-      expect(alertsRes.alerts).toHaveLength(1);
-      expect(alertsRes.alerts[0].projectId).toBe(regB.project.id);
-      expect(alertsRes.alerts[0].badgeState).toBe('needs input');
-      expect(alertsRes.alerts[0].messageId).toBe(msgRes.message.id);
-
-      const alertWsEvent = wsEvents.find((e) => e.type === 'alert.triggered');
-      expect(alertWsEvent).toBeDefined();
-      expect(alertWsEvent?.projectId).toBe(regB.project.id);
-
-      ws.close();
-    } finally {
-      await server.close();
-    }
-  });
 
   it('bootstraps Gantry skills into a repo, queries model discovery, previews policy diff without mutating files, and applies via setup.py', async () => {
     const repoDir = initTempGitRepo(tmpRoot, 'repo-setup');

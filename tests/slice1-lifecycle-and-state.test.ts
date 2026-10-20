@@ -139,20 +139,6 @@ describe('Slice 1: Command Runner stdin Contract, 4-Home State Persistence & Sin
     });
     expect(saveRes.status).toBe(200);
 
-    // Save global LLM provider settings with an API key and verify scrubbing on GET
-    const settingsRes = await fetch(`${baseUrl1}/api/settings/providers`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        activeProvider: 'anthropic',
-        mode: 'sdk',
-        providers: {
-          anthropic: { apiKey: 'sk-ant-secret-key-9999', model: 'claude-sonnet-4-6' },
-        },
-      }),
-    }).then((r) => r.json());
-    expect(settingsRes.providers.anthropic.hasApiKey).toBe(true);
-    expect(JSON.stringify(settingsRes)).not.toContain('sk-ant-secret-key-9999');
 
     // Verify git working trees of repoA and repoB remain completely clean
     const statusA = execFileSync('git', ['status', '--porcelain'], { cwd: repoA, encoding: 'utf-8' });
@@ -270,98 +256,4 @@ describe('Slice 1: Command Runner stdin Contract, 4-Home State Persistence & Sin
     }
   });
 
-  it('restores conversation transcripts and decision cards across restarts and preserves active session on CLI dispatch', async () => {
-    const repo = initTempGitRepo(tmpRoot, 'transcript-repo');
-    const server1 = await createHarnessServer({
-      gantryHome,
-      stateRoot,
-      profileRoot,
-      port: 0,
-    });
-    const baseUrl1 = `http://127.0.0.1:${server1.port}`;
-
-    // Root URL returns HTML
-    const rootRes = await fetch(`${baseUrl1}/`);
-    expect(rootRes.status).toBe(200);
-    expect(await rootRes.text()).toContain('gantry-harness');
-
-    const reg = await fetch(`${baseUrl1}/api/projects`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: repo }),
-    }).then((r) => r.json());
-
-    // Create a second session and set it active
-    const sess2 = await fetch(`${baseUrl1}/api/projects/${reg.project.id}/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: 'Grilling Session 2', slug: 'auth-flow' }),
-    }).then((r) => r.json());
-
-    await fetch(`${baseUrl1}/api/workspace/state`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        activeProjectId: reg.project.id,
-        activeSessionId: sess2.session.id,
-      }),
-    });
-
-    // Append a message with a grilling_round decision card
-    const msgRes = await fetch(`${baseUrl1}/api/projects/${reg.project.id}/messages`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        sessionId: sess2.session.id,
-        role: 'assistant',
-        content: 'Let us clarify the auth token lifetime.',
-        decisionCard: {
-          kind: 'grilling_round',
-          slug: 'auth-flow',
-          roundNumber: 1,
-          questions: [
-            {
-              id: 'q1',
-              title: '1. Token Lifetime',
-              body: 'How long should tokens remain valid?',
-              recommendedAnswer: '24 hours',
-            },
-          ],
-        },
-      }),
-    }).then((r) => r.json());
-    expect(msgRes.message.decisionCard.kind).toBe('grilling_round');
-
-    // Run CLI with --headless in the same repo; it should reuse server1 and preserve activeSessionId (sess2)
-    const cliHeadless = await runCli(['--headless'], {
-      cwd: repo,
-      gantryHome,
-      stateRoot,
-      profileRoot,
-      openBrowser: false,
-    });
-    expect(cliHeadless.reusedExistingServer).toBe(true);
-    expect(cliHeadless.headless).toBe(true);
-
-    await server1.close();
-
-    // Restart server and verify transcripts and activeSessionId are restored
-    const server2 = await createHarnessServer({
-      gantryHome,
-      stateRoot,
-      profileRoot,
-      port: 0,
-    });
-    try {
-      const state = await fetch(`http://127.0.0.1:${server2.port}/api/workspace/state`).then((r) =>
-        r.json(),
-      );
-      expect(state.layout.activeSessionId).toBe(sess2.session.id);
-      expect(state.sessions).toHaveLength(2);
-      expect(state.messages).toHaveLength(1);
-      expect(state.messages[0].decisionCard.kind).toBe('grilling_round');
-    } finally {
-      await server2.close();
-    }
-  });
 });

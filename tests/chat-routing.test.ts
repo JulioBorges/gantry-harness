@@ -33,7 +33,6 @@ console.log('host response: ' + input.slice(input.lastIndexOf('Operator message:
   }
   vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH}`);
   server = await createHarnessServer({ gantryHome: path.join(root, 'home'), profileRoot, port: 0 });
-  server.store.updateProviderSettings({ mode: 'cli', activeProvider: 'cli', cliHarness: 'opencode', providers: { cli: { model: 'another-host-model' } } });
   const registered = server.store.upsertProject({ path: repo, unitId: 'fixture-unit' });
   projectId = registered.project.id;
   sessionId = registered.defaultSessionId;
@@ -52,14 +51,6 @@ const request = (route: string, body?: unknown) => fetch(`http://127.0.0.1:${ser
 it('does not connect a host through a conversation endpoint', async () => {
   const response = await request(`/api/projects/${projectId}/chat`, { sessionId, prompt: 'hello from the conversation screen' });
   expect(response.status).toBe(404);
-  expect(fs.existsSync(callsPath)).toBe(false);
-});
-
-it('reports invalid saved configuration without falling back to a global host', async () => {
-  fs.writeFileSync(path.join(repo, '.gantry', 'config.json'), JSON.stringify({ execution: { hostHarness: 'unknown-host' } }));
-  const state = await request('/api/workspace/state').then((response) => response.json());
-  expect(state.connection.ready).toBe(false);
-  expect(state.connection.detail).toContain('unknown-host');
   expect(fs.existsSync(callsPath)).toBe(false);
 });
 
