@@ -140,6 +140,7 @@ export function BoardView({
       (run?.status === 'ready-for-approval' && run?.prState !== 'closed') || run?.prState === 'reopened';
     const canReopenPr = run?.prState === 'closed';
     const canStartRun =
+      !issue.synthetic &&
       issue.status !== 'done' &&
       run?.status !== 'running' &&
       run?.status !== 'paused' &&
@@ -153,6 +154,7 @@ export function BoardView({
       <article key={issue.ref} className="board-card" data-testid={`issue-card-${issue.ref}`} data-phase={phase} data-ref={issue.ref} data-lane={lane}>
         <p className="board-ref"><code>{issue.ref}</code></p>
         <h3>{issue.title}</h3>
+        {issue.synthetic && <p className="board-run-origin">Run de planejamento · Issue ainda não publicada no target</p>}
         <p className="board-phase" data-testid={`issue-phase-${issue.ref}`}>{PHASE_LABEL[phase]}</p>
         {phase === 'blocked' && (
           <ul className="board-blockers" aria-label={`Open blockers for ${issue.ref}`}>
@@ -288,7 +290,7 @@ export function BoardView({
 
   const nextRunnableRef =
     effectiveBoard.frontier[0] ??
-    issues.find((item) => item.status !== 'done' && !item.frontierBlocked)?.ref;
+    issues.find((item) => !item.synthetic && item.status !== 'done' && !item.frontierBlocked)?.ref;
   const nextApprovableRef = runs.find(
     (item) => (item.status === 'ready-for-approval' && item.prState !== 'closed') || item.prState === 'reopened',
   )?.ref;

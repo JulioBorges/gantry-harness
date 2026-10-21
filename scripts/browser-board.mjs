@@ -7,9 +7,10 @@ import { chromium, expect } from '@playwright/test';
 import { createHarnessServer } from '../src/server/app.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const evidenceDir = path.resolve(process.env.BROWSER_EVIDENCE_DIR ?? path.join(root, '.scratch/prd-alignment/screenshots/after'));
-fs.mkdirSync(evidenceDir, { recursive: true });
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gantry-browser-board-'));
+const evidenceDir = process.env.BROWSER_EVIDENCE_DIR
+  ? path.resolve(process.env.BROWSER_EVIDENCE_DIR)
+  : path.join(tmp, 'evidence');
 const board = {
   issues: [
     { ref: 'pack#02', spec: 'pack', number: 2, title: 'Waiting', status: 'ready-for-agent', path: '.scratch/pack/issues/02.md', frontierBlocked: true, openBlockers: ['pack#09'] },
@@ -42,6 +43,7 @@ function initRepo(name) {
 let server;
 let browser;
 try {
+  fs.mkdirSync(evidenceDir, { recursive: true });
   execFileSync(path.join(root, 'node_modules/.bin/vite'), ['build'], { cwd: root, stdio: 'inherit' });
   const packedName = 'packed-repo-com-nome-muito-longo-para-identificar-o-projeto';
   const packed = initRepo(packedName);
@@ -152,6 +154,20 @@ try {
     await expect(card).toBeInViewport({ ratio: 0.8 });
     board.issues[0].status = 'ready-for-agent';
     fs.writeFileSync(boardFile, JSON.stringify(board));
+    for (const status of ['stopped', 'failed']) {
+      runSnapshot = { ...runSnapshot, status, derivedPhase: status };
+      await page.getByTestId('board-refresh').click();
+      await expect(card).toHaveAttribute('data-phase', status);
+      await expect(card).toHaveAttribute('data-lane', 'issues');
+      await expect(card).toBeInViewport({ ratio: 0.8 });
+    }
+    runSnapshot = { ...runSnapshot, kind: 'plan', slug: 'new-plan', ref: 'new-plan', worktree: null, prUrl: null, error: { code: 'setup-invalid', reason: 'role-command-missing' } };
+    await page.getByTestId('board-refresh').click();
+    const planCard = page.getByTestId('issue-card-new-plan#01');
+    await expect(planCard).toContainText('Run de planejamento');
+    await expect(planCard).toHaveAttribute('data-phase', 'failed');
+    await expect(planCard.getByRole('button', { name: 'Executar issue' })).toHaveCount(0);
+    await expect(page.getByRole('alert')).toHaveCount(1);
     expect(errors).toEqual([]);
     results.push({ viewport, dimensions, pageErrors: errors });
     await page.close();

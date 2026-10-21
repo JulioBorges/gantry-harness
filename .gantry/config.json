@@ -7,7 +7,7 @@
     },
     {
       "name": "test",
-      "command": "bun run test",
+      "command": "bun run test --maxWorkers=2",
       "mode": "absolute"
     },
     {

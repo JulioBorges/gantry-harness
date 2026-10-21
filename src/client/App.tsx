@@ -14,6 +14,7 @@ import { EXECUTION_HOSTS, ModelSelect, discoveryHarness, type CatalogModel } fro
 import {
   NO_PACK_EXPLANATION,
   PHASE_LABEL,
+  issueWorktreeRuns,
   coerceBoard,
   unavailableBoard,
   type BoardSnapshot,
@@ -945,10 +946,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   }
 
   const activeProject = projects.find((project) => project.id === activeProjectId);
-  const issueWorktreeRuns = runs.filter((run) =>
-    run.projectId === activeProjectId && run.ref.includes('#') && run.worktree &&
-    run.worktree !== activeProject?.path && run.status !== 'discarded' && run.status !== 'rejected',
-  );
+  const worktreeRuns = issueWorktreeRuns(runs, activeProjectId, activeProject?.path);
   const activeTerminal = panes.find((pane) => pane.paneId === activePaneId);
   const inlineArtifact = activeView === 'files' && wideWorkspace && artifactDrawer?.projectId === activeProjectId ? artifactDrawer : null;
   const changeView = (view: typeof activeView) => { setActiveView(view); if (window.innerWidth < 760) setSidebarOpen(false); };
@@ -980,9 +978,9 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
               <span role="img" aria-label={STATUS_LABELS[project.badgeState]} title={STATUS_LABELS[project.badgeState]} className={`status-dot ${project.badgeState?.replace(/\s+/g, '-')}`} />
             </div>
             <details className="project-path-details"><summary>Caminho completo</summary><code className="project-full-path">{project.path}</code></details>
-            {project.id === activeProjectId && issueWorktreeRuns.length > 0 && <details className="project-context">
+            {project.id === activeProjectId && worktreeRuns.length > 0 && <details className="project-context">
               <summary>Worktrees</summary>
-              {issueWorktreeRuns.map((run) => <div key={run.runId} className="worktree-row"><span title={run.worktree ?? undefined}>{run.ref} · {PHASE_LABEL[run.derivedPhase]}</span></div>)}
+              {worktreeRuns.map((run) => <div key={run.runId} className="worktree-row"><span title={run.worktree ?? undefined}>{run.ref} · {PHASE_LABEL[run.derivedPhase]}</span></div>)}
             </details>}
           </div>)}
         </div>

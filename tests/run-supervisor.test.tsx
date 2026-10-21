@@ -462,6 +462,7 @@ sys.exit(1)
     await waitFor(() => {
       const card = screen.getByTestId('issue-card-feat#01');
       expect(card.getAttribute('data-phase')).toBe('stopped');
+      expect(card.getAttribute('data-lane')).toBe('issues');
       expect(within(card).getByTestId('issue-phase-feat#01').textContent).toBe('stopped');
       expect(within(card).queryByText('ready to agent')).toBeNull();
     });
@@ -649,8 +650,8 @@ elif ref == "feat#03":
     });
 
     await waitFor(() => {
-      const criticLane = screen.getByTestId('lane-critic');
-      const card03 = within(criticLane).getByTestId('issue-card-feat#03');
+      const issuesLane = screen.getByTestId('lane-issues');
+      const card03 = within(issuesLane).getByTestId('issue-card-feat#03');
       expect(card03.getAttribute('data-phase')).toBe('failed');
       expect(within(card03).getByTestId('issue-phase-feat#03').textContent).toBe('failed');
     });

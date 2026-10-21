@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { BoardView } from '../src/client/BoardView.js';
-import type { BoardSnapshot, HarnessRunRecord } from '../src/boardModel.js';
+import { issueWorktreeRuns, issueLane, overlaysFromRuns, mergeBoardWithPlanRuns, type BoardSnapshot, type HarnessRunRecord, type HarnessRunStatus } from '../src/boardModel.js';
 
 const board: BoardSnapshot = {
   resolution: 'pinned', executionEnabled: true, explanation: null,
@@ -49,10 +49,54 @@ describe('Run visibility on the board', () => {
   });
 
   it('puts a failed Plan diagnostic on a synthetic Issue card once', () => {
-    render(<BoardView board={{ ...board, issues: [], frontier: [] }} hasProject onRefresh={() => undefined}
+    const onRunIssue = vi.fn();
+    render(<BoardView board={{ ...board, issues: [], frontier: [] }} hasProject onRefresh={() => undefined} onRunIssue={onRunIssue}
       runs={[{ ...run, ref: 'feature', kind: 'plan', status: 'failed', worktree: null, error: { code: 'setup-invalid', reason: 'role-command-missing' } }]} />);
+    expect(screen.getByText(/Run de planejamento/)).toBeTruthy();
+    expect(screen.getByTestId('issue-card-feature#01').getAttribute('data-phase')).toBe('failed');
+    expect(screen.queryByTestId('run-issue-feature#01')).toBeNull();
+    fireEvent.click(screen.getByTestId('run-affordance'));
+    expect(onRunIssue).not.toHaveBeenCalled();
     expect(screen.getAllByRole('alert')).toHaveLength(1);
     expect(within(screen.getByTestId('spec-card-feature')).queryByRole('alert')).toBeNull();
     expect(within(screen.getByTestId('issue-card-feature#01')).getByRole('alert').textContent).toContain('Falta configurar');
+  });
+});
+
+
+describe('Run projections shared by the board and sidebar', () => {
+  it.each<[HarnessRunStatus, string]>([
+    ['running', 'implement'], ['paused', 'implement'], ['stopped', 'issues'], ['failed', 'issues'],
+    ['ready-for-approval', 'issues'], ['approved-pending-merge', 'issues'], ['discarded', 'issues'], ['rejected', 'issues'],
+  ])('places %s Runs in %s while target completion always wins', (status, lane) => {
+    const overlays = overlaysFromRuns([{ ...run, status }]);
+    expect(issueLane(board.issues[0], overlays)).toBe(lane);
+    expect(issueLane({ ...board.issues[0], status: 'done' }, overlays)).toBe('done');
+  });
+
+  it('selects only retained Issue worktrees from the selected project', () => {
+    const retained = ['running', 'paused', 'stopped', 'failed', 'ready-for-approval', 'approved-pending-merge'] as const;
+    const valid = retained.map((status, i) => ({ ...run, runId: `run-${i}`, status }));
+    const excluded: HarnessRunRecord[] = [
+      { ...run, projectId: 'other-project' },
+      { ...run, kind: 'plan', ref: 'feature#01' },
+      { ...run, worktree: null },
+      { ...run, worktree: '/tmp/checkout' },
+      { ...run, status: 'discarded' },
+      { ...run, status: 'rejected' },
+      { ...run, prState: 'closed' },
+      { ...run, prState: 'reopened' },
+    ];
+    expect(issueWorktreeRuns([...valid, ...excluded], 'project-1', '/tmp/checkout')).toEqual(valid);
+    expect(issueWorktreeRuns(valid, null, '/tmp/checkout')).toEqual([]);
+  });
+
+  it('marks Plan-only cards and leaves missing Issue paths absent until the pack supplies them', () => {
+    const empty = { ...board, issues: [], frontier: [] };
+    const plan: HarnessRunRecord = { ...run, kind: 'plan', ref: 'feature', worktree: null, error: { code: 'setup-invalid' } };
+    const synthetic = mergeBoardWithPlanRuns(empty, [plan]).issues[0];
+    expect(synthetic.synthetic).toBe(true);
+    expect(synthetic.path).toBe('');
+    expect(mergeBoardWithPlanRuns(board, [plan]).issues[0]).toBe(board.issues[0]);
   });
 });

@@ -18,7 +18,13 @@ O único runner `scripts/browser-board.mjs` usa Playwright, mantendo o comando e
 
 ## Evidências visuais
 
-As capturas anteriores usam o código de `main` antes das alterações da UI: nome truncado, caminho ausente e listagem de `main`/worktree sem Run. O cenário usa os mesmos repositórios temporários, tamanhos de viewport e expansão de worktrees. As capturas posteriores vêm da execução completa do check Playwright.
+As capturas anteriores usam o código de `main` antes das alterações da UI: nome truncado, caminho ausente e listagem de `main`/worktree sem Run. O cenário usa os mesmos repositórios temporários, tamanhos de viewport e expansão de worktrees. As capturas posteriores arquivadas vieram da execução completa do check Playwright na entrega original. Para regenerar e preservar essa evidência explicitamente:
+
+```sh
+BROWSER_EVIDENCE_DIR=.scratch/prd-alignment/screenshots/after bun scripts/browser-board.mjs
+```
+
+Após a revisão do PR, o check padrão usa uma pasta temporária removida ao terminar; ele não regenera esses arquivos versionados.
 
 | Vista | Antes | Depois |
 |---|---|---|
@@ -38,3 +44,14 @@ As medidas em [results.json](screenshots/after/results.json) mostram nome com la
 - `roadmap.py check --json`: sem drift após registrar #04 e #08.
 
 A execução irrestrita de `bun run test` apresentou timeouts de espera em testes de UI/supervisor sob concorrência alta. Os dois arquivos alterados passaram separadamente (12 testes); a suíte completa passou com dois workers. Não foi alterada a semântica do terminal para contornar esses timeouts. A nova espera inicial de setup permite até cinco segundos para a leitura real do pack.
+
+## Revisão do PR #17 (2026-10-21)
+
+- **A1 confirmado e corrigido:** a reprodução do runner anterior alterou cinco PNGs versionados. O padrão agora usa `<tmp>/evidence`, limpo no `finally`; `BROWSER_EVIDENCE_DIR` é a única forma de preservar a saída. A comparação binária do diff de todos os arquivos versionados antes/depois do check confirmou ausência de alterações. A execução com `BROWSER_EVIDENCE_DIR=/tmp/gantry-pr17-retained-evidence` preservou seis capturas e `results.json`, sem alterar o checkout.
+- **A2 corrigido:** `issueWorktreeRuns` em `boardModel.ts` centraliza a seleção usando `kind: issue`, projeto e worktree diferentes do checkout principal. Exclui Runs descartadas/recusadas e PRs fechados/reabertos, mesmo com caminhos residuais. Mantém worktrees de Runs interrompidas/com falha para recuperação. Um ref numerado não transforma uma Run de Plan em Run de Issue. Testes de modelo fixam esses casos; App apenas consome a projeção.
+- **Concorrência:** o check `test` em `.gantry/config.json`, o README e o AGENTS.md agora usam `bun run test --maxWorkers=2`.
+- **Cards sintéticos:** projeções de Plan carregam `synthetic: true`, identificam a Run de planejamento e não oferecem Executar issue nem entram no fallback da ação Run. A ausência de `issuePath` não fabrica um caminho de arquivo; erros de setup nesse card aparecem como falha. Issues reais do target permanecem autoritativas.
+- **Runs interrompidas:** apenas `running`/`paused` usam a coluna de execução; `stopped`/`failed` voltam para Issues. A fase registrada e as ações de recuperação são preservadas. Há cobertura no modelo, na execução real do pack e no browser.
+- **Fixture de browser:** `server.store.saveRun` permanece restrito à montagem do cenário isolado. As interações são feitas na UI; a suíte portátil continua cobrindo o ciclo real do pack por HTTP/WS. Não foi introduzida uma API de produção para preparar fixtures.
+
+Validação após as correções: `bun run typecheck` e `bun run build` passaram; `bun run test --maxWorkers=2` passou com **97 testes em 20 arquivos**. O check Playwright passou em 1280×800 e 390×844, incluindo `stopped`/`failed` em Issues e identificação da Run de Plan com falha. A comparação binária do diff antes/depois dessa execução também passou, sem regravar capturas versionadas. `roadmap.py check --json` continua sem drift (14/20).

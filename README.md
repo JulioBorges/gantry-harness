@@ -53,7 +53,7 @@ Open the printed loopback URL. Build emits the `gantry-harness` CLI entry as wel
 
 ```sh
 bun run typecheck
-bun run test
+bun run test --maxWorkers=2
 bun run build
 bun audit --production
 ```
@@ -65,4 +65,4 @@ bun x playwright install --with-deps chromium
 bun scripts/browser-board.mjs
 ```
 
-`CHROME_PATH` optionally selects an existing compatible Chromium executable. The check covers the board and project sidebar at 1280×800 and 390×844, including project switching, settings destinations, long paths, scrolling and Issue worktrees. Screenshots and measurements are written to `.scratch/prd-alignment/screenshots/after/`; `BROWSER_EVIDENCE_DIR` changes the output directory.
+`CHROME_PATH` optionally selects an existing compatible Chromium executable. The check covers the board and project sidebar at 1280×800 and 390×844, including project switching, settings destinations, long paths, scrolling and Issue worktrees. Screenshots and measurements use a temporary directory, removed at the end of the check. Set `BROWSER_EVIDENCE_DIR=.scratch/<slug>/screenshots/after` explicitly to retain delivery evidence. The test check uses two workers to avoid UI/supervisor wait timeouts under high concurrency.

@@ -7,6 +7,7 @@ export interface BoardIssue {
   title: string;
   status: string;
   path: string;
+  synthetic?: boolean;
   frontierBlocked: boolean;
   openBlockers: string[];
 }
@@ -257,7 +258,7 @@ export function isSetupRefusalError(error: GantryErrorPayload | null | undefined
 }
 
 export function issuePhase(
-  issue: Pick<BoardIssue, 'status' | 'frontierBlocked'>,
+  issue: Pick<BoardIssue, 'status' | 'frontierBlocked' | 'synthetic'>,
   overlay?: Pick<IssueRunOverlay, 'phase' | 'status'> | null,
   run?: Pick<HarnessRunRecord, 'status' | 'derivedPhase' | 'error' | 'worktree' | 'prState'> | null,
 ): IssueCardPhase {
@@ -271,7 +272,7 @@ export function issuePhase(
     if (run.status === 'approved-pending-merge') return 'approved-pending-merge';
     if (run.status === 'paused') return 'paused';
     if (run.status === 'running') return run.derivedPhase;
-    if (run.status === 'failed' && (!isSetupRefusalError(run.error) || Boolean(run.worktree))) {
+    if (run.status === 'failed' && (issue.synthetic || !isSetupRefusalError(run.error) || Boolean(run.worktree))) {
       return 'failed';
     }
   }
@@ -296,9 +297,7 @@ export function overlaysFromRuns(runs: HarnessRunRecord[]): IssueRunOverlay[] {
       continue;
     }
     const executionLane = run.lane ?? phaseToExecutionLane(run.packPhase, run.kind === 'plan' ? 'plan' : 'implement') ?? 'implement';
-    const lane = run.status === 'ready-for-approval' || run.status === 'approved-pending-merge'
-      ? 'issues'
-      : executionLane;
+    const lane = run.status === 'running' || run.status === 'paused' ? executionLane : 'issues';
     const phase: IssueCardPhase =
       run.status === 'paused'
         ? 'paused'
@@ -327,6 +326,20 @@ export function overlaysFromRuns(runs: HarnessRunRecord[]): IssueRunOverlay[] {
     });
   }
   return overlays;
+}
+
+// Retained Issue worktrees remain useful for recovery even after the process stops.
+// Plan Runs have their own lifecycle and do not become Issue Runs merely by acquiring a numbered ref.
+export function issueWorktreeRuns(
+  runs: HarnessRunRecord[],
+  projectId: string | null,
+  checkoutPath?: string,
+): HarnessRunRecord[] {
+  return runs.filter((run) =>
+    run.projectId === projectId && run.kind === 'issue' && run.worktree &&
+    run.worktree !== checkoutPath && run.status !== 'discarded' && run.status !== 'rejected' &&
+    run.prState !== 'closed' && run.prState !== 'reopened',
+  );
 }
 
 export function mergeBoardWithPlanRuns(
@@ -364,7 +377,8 @@ export function mergeBoardWithPlanRuns(
           number,
           title: run.issueTitle ?? run.slug,
           status: 'ready-for-agent',
-          path: run.issuePath ?? `.scratch/${run.slug}/issues/${String(number).padStart(2, '0')}-${run.slug}.md`,
+          path: run.issuePath ?? '',
+          synthetic: true,
           frontierBlocked: false,
           openBlockers: [],
         },
