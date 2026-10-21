@@ -109,3 +109,9 @@ O [comentário atualizado](https://github.com/JulioBorges/gantry-harness/pull/15
 - #10 sem dependência da #03 para textos gerais e traduções. A nova #11 depende de #03/#10 para textos específicos do setup e remoção da ressalva do pin antigo após evidência do pin compatível.
 - Consulta ao GitHub do pack (nenhuma issue aberta retornada) e busca no tracker local em 2026-10-20 não identificaram item específico que entregue U1/U2/U3. A lacuna é explícita na spec/#03; vincular o artefato upstream e o commit passa a ser condição de desbloqueio. Não foram criadas issues em outro repositório nesta revisão.
 - ROADMAP regenerado pelo comando oficial, com 20 Issues totais e check sem drift. A ADR/relatório preservam a investigação histórica quando a ressalva operacional for retirada do PRD.
+
+## Ajuste de consistência entre spec e #10 — 2026-10-21
+
+Confirmada a contradição residual: a regra geral de textos na spec ainda incluía setup, embora a #10 já o excluísse. A regra passa a distinguir produto disponível (#10) de setup após pin compatível (#11); o comentário de escopo anterior da #10 é explicitamente marcado como substituído e histórico.
+
+Verificação com o `board()` real da fixture pinada em cópia temporária do tracker: mesmo marcando #10 como done e mantendo #03 blocked, #11 com status ready-for-agent retorna `frontierBlocked: true`, `openBlockers: ["prd-alignment#03"]` e não entra em frontier. Isso confirma o caso concreto: status próprio não ignora seus blockers diretos. Não é uma alegação de que o parser percorra todo o grafo transitivamente; #11 já declara #03 como dependência direta. O `execute_issue` também verifica blockers não concluídos antes de criar worktree.

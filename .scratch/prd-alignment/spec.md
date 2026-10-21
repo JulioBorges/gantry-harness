@@ -100,7 +100,7 @@ O quadro mostra onde o trabalho está: contagens, lanes vazias que não ocupam a
 - Identificação e configurações do projeto ficam numa linha própria; worktrees ficam abaixo. Nome pode quebrar linha; caminho pode usar reticências com acesso ao valor completo. Selecionar projeto ou expandir worktrees não oculta informações nem controles. Worktrees são só as de Issue com Run, identificadas pelo ref. O checkout principal não entra. Não há assumir terminal. A experiência é validada em desktop e celular pelo check existente `browser-validation`, cuja implementação CDP será migrada para Playwright, preservando seus cenários e ponto de entrada, conforme a [ADR-0002](../../docs/adr/0002-validacao-de-browser-com-playwright.md).
 - Ir para Terminal não spawna shell. Shell novo é o controle de nova aba. Fechar a aba mata o processo. Processo rodando não usa o estado visual de concluído.
 - O aviso de pack ausente fica no Quadro. Terminal e Arquivos não o repetem.
-- Textos de operador (README, descrição de produto, ajuda, diretório inexistente, pareamento) em português, descrevendo setup do projeto e o processo filho. Não prometem coordenador, chat, nem instalação do pack pelo harness.
+- Textos gerais de operador (README, descrição de produto, ajuda, diretório inexistente, pareamento) em português, descrevendo o produto disponível e o processo filho, sem anunciar o setup integrado (#10). Os textos do setup integrado vêm depois do pin compatível (#11). Não prometem coordenador, chat, nem instalação do pack pelo harness.
 
 ## Pré-requisitos upstream
 

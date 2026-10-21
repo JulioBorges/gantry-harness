@@ -32,9 +32,9 @@ O primeiro texto que o operador lê descreve este produto. README, a descrição
 
 ## Comments
 
-### 2026-10-20 — Alinhamento à revisão de #03 e #08
+### 2026-10-20 — Alinhamento à revisão de #03 e #08 (substituído; ver abaixo e #11)
 
-Os textos explicam a seleção e persistência de modelos por papel em `.gantry/config.json`, a detecção da política existente e a aplicação do setup com prévia, sem commit automático. O Gantry mantém os comandos e as regras do pipeline. A remoção do motor antigo não remove a configuração dos modelos usados pelo Gantry.
+Registro histórico do escopo anterior, transferido para a [#11](11-textos-do-setup-integrado.md); não é requisito vigente da #10. Os textos explicam a seleção e persistência de modelos por papel em `.gantry/config.json`, a detecção da política existente e a aplicação do setup com prévia, sem commit automático. O Gantry mantém os comandos e as regras do pipeline. A remoção do motor antigo não remove a configuração dos modelos usados pelo Gantry.
 
 ### 2026-10-20 — Textos independentes do setup
 
