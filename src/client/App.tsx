@@ -1086,12 +1086,16 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         {settingsTab === 'gantry' && <section className="settings-panel" data-testid="global-gantry-panel">
             <h2>Gantry global</h2>
             <p className="section-intro">Opcional. O processo usa esta configuração quando o projeto não tem a própria. A configuração do projeto tem prioridade.</p>
+            <form className="global-execution-form" onSubmit={(event) => { event.preventDefault(); void handleSaveGlobalExecution(); }}>
+            <div className="settings-field">
             <label htmlFor="global-host">Host global</label>
             <select id="global-host" value={globalHost} onChange={(event) => setGlobalHost(event.target.value)}>
               <option value="">Sem host global</option>
               {EXECUTION_HOSTS.map((host) => <option key={host.id} value={host.id}>{host.label}</option>)}
             </select>
-            <div className="role-settings">
+            <p className="field-help">Host usado por padrão quando o projeto não define um.</p>
+            </div>
+            <div className="role-settings global-role-settings">
               <h3>Papéis globais</h3>
               {Object.entries(globalRoles).map(([role, selection]) => {
                 const harness = discoveryHarness(selection.harness);
@@ -1117,9 +1121,10 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
                   />
                 </div>;
               })}
-              {Object.keys(globalRoles).length === 0 && <button disabled={!globalHost} onClick={() => setGlobalRoles(Object.fromEntries(['plan', 'implement', 'review', 'critic'].map((role) => [role, { harness: globalHost, model: '' }])))}>Configurar papéis globais</button>}
+              {Object.keys(globalRoles).length === 0 && <div className="global-roles-empty"><p className="field-help">{globalHost ? 'Personalize o host e o modelo de cada papel.' : 'Selecione um host global para configurar os papéis.'}</p><button type="button" disabled={!globalHost} onClick={() => setGlobalRoles(Object.fromEntries(['plan', 'implement', 'review', 'critic'].map((role) => [role, { harness: globalHost, model: '' }])))}>Configurar papéis globais</button></div>}
             </div>
-            <button className="btn-primary" data-testid="save-global-execution" disabled={pendingActions.includes('Salvar Gantry global')} onClick={() => void handleSaveGlobalExecution()}>{pendingActions.includes('Salvar Gantry global') ? 'Salvando…' : 'Salvar Gantry global'}</button>
+            <div className="settings-actions"><button className="btn-primary" type="submit" data-testid="save-global-execution" disabled={pendingActions.includes('Salvar Gantry global')}>{pendingActions.includes('Salvar Gantry global') ? 'Salvando…' : 'Salvar Gantry global'}</button></div>
+            </form>
           </section>}
           {settingsTab === 'remote' && (<section className="settings-panel remote-settings"><h2>Acesso remoto por código</h2>
               <p>Gere um código para conectar outro dispositivo pela sua rede ou Tailscale.</p>

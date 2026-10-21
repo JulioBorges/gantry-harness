@@ -364,6 +364,8 @@ kbd { color: var(--slate-400); font-size: 10px; }
 
 .settings-dialog { width: min(920px, calc(100vw - 48px)); height: min(760px, calc(100dvh - 64px)); max-width: none; max-height: none; margin: auto; padding: 0; color: var(--slate-100); background: var(--obsidian-900); border: 1px solid var(--obsidian-600); border-radius: 12px; box-shadow: 0 24px 80px #0008; overflow: hidden; }
 .settings-dialog[open] { display: flex; flex-direction: column; }
+dialog.settings-dialog { width: min(800px, calc(100vw - 48px)); height: fit-content; max-height: min(760px, calc(100dvh - 48px)); }
+dialog.settings-dialog .settings-dialog-content { flex: 0 1 auto; }
 .settings-dialog::backdrop { background: #0009; }
 .settings-dialog-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 20px 24px; flex-shrink: 0; }
 .settings-dialog-header h2 { font-size: 17px; font-weight: 600; }
@@ -374,6 +376,24 @@ kbd { color: var(--slate-400); font-size: 10px; }
 .settings-dialog-content:focus-visible { outline: 2px solid var(--amber-accent); outline-offset: -2px; }
 .settings-dialog-content .settings-panel, .settings-dialog-content [data-testid='setup-panel'] { overflow: visible; }
 .settings-dialog-content .remote-settings { margin-top: 0; }
+.settings-dialog-content .settings-panel { padding: 24px !important; }
+.settings-dialog-content .settings-panel > h2 { font-size: 19px; }
+.settings-dialog-content .settings-panel > p { margin: 8px 0 20px; font-size: 13px; }
+.global-execution-form { display: grid; gap: 20px; min-width: 0; }
+.settings-field { display: grid; gap: 8px; min-width: 0; }
+.settings-field > label { font-size: 13px; font-weight: 600; }
+.settings-field > select { width: 100%; min-height: 40px; }
+.global-role-settings { display: grid; gap: 12px; margin-top: 0; padding: 16px; border: 1px solid var(--obsidian-700); border-radius: 8px; background: var(--obsidian-950); min-width: 0; }
+.global-role-settings > h3 { font-size: 14px; }
+.global-roles-empty { display: grid; justify-items: start; gap: 12px; }
+.global-roles-empty button { max-width: 100%; white-space: normal; }
+.settings-dialog-content .global-role-settings .role-setting-row { grid-template-columns: 80px minmax(0, 1fr) minmax(0, 1.5fr); gap: 12px; padding: 12px 0; align-items: start; }
+.global-role-settings .role-setting-row:last-child { border-bottom: 0; padding-bottom: 0; }
+.global-role-settings .role-setting-row > strong { padding-top: 25px; overflow-wrap: anywhere; font-size: 12px; }
+.global-role-settings .role-setting-row label:last-child { grid-column: auto; }
+.global-role-settings .role-setting-row select { width: 100%; min-width: 0; min-height: 40px; }
+.global-execution-form .field-help { margin: 0; overflow-wrap: anywhere; }
+.settings-actions { display: flex; justify-content: flex-end; gap: 12px; padding-top: 16px; border-top: 1px solid var(--obsidian-700); }
 .settings-dialog-content .role-setting-row { grid-template-columns: 84px repeat(3, minmax(0, 1fr)); }
 .settings-dialog-content [data-testid='setup-panel'] > div { flex-wrap: wrap; }
 .settings-notice { padding: 12px 32px; font-size: 12px; overflow-wrap: anywhere; color: var(--slate-300); background: var(--obsidian-800); }
@@ -383,6 +403,13 @@ kbd { color: var(--slate-400); font-size: 10px; }
 .new-terminal-button { background: transparent; border: 0; white-space: nowrap; flex-shrink: 0; font-size: 12px; color: var(--slate-300); }
 @media (max-width: 640px) {
   .settings-dialog { width: calc(100vw - 16px); height: calc(100dvh - 24px); border-radius: 8px; }
+  dialog.settings-dialog { width: calc(100vw - 16px); max-height: calc(100dvh - 24px); }
+  .settings-dialog-content .settings-panel { padding: 20px 16px !important; }
+  .settings-dialog-content .global-role-settings .role-setting-row { grid-template-columns: minmax(0, 1fr); }
+  .global-role-settings .role-setting-row > strong { padding-top: 0; }
+  .global-role-settings { padding: 12px; }
+  .global-roles-empty { justify-items: stretch; }
+  .settings-actions > button { width: 100%; }
   .settings-dialog-header { padding: 14px 16px; }
   .settings-tabs { padding-inline: 8px; }
   .settings-tabs button { padding-inline: 10px; }
