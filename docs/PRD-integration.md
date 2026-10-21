@@ -42,9 +42,15 @@ Se o plan terminar com arquivos soltos, o harness mostra a pausa depois que o `e
 
 ## Execução
 
-O harness não escolhe o próximo papel e não chama modelo por conta própria. O `execute` abre, sem janela, o comando executável gravado para aquele papel. A configuração do projeto cobre a global. O operador permanece na tela do gantry-harness.
+O harness não escolhe o próximo papel e não chama modelo por conta própria. Ele inicia o pipeline do Gantry, que contém os comandos e as regras de execução e resolve a seleção de cada papel. O operador permanece na tela do gantry-harness.
 
-O contrato de cada papel é esse comando, não um host nem um modelo. A tela configura e mostra o comando que o processo do pack vai spawnar. Se o comando exigido não está gravado ou não é executável, a Run não começa.
+A tela oferece a configuração completa suportada pelo setup do Gantry, com Papéis do pipeline em destaque: `plan`, `implement`, `review` e `critic`, cada um com `harness`, `model` e `effort` opcional. As escolhas são persistidas em `execution.roles` de `.gantry/config.json` no projeto. Não há comandos arbitrários por papel nem dependência de configuração global do harness para essas escolhas. A resolução de execução continua pertencendo ao Gantry. A tela edita os defaults do projeto e mostra separadamente os valores efetivos e suas origens: a precedência publicada pelo pack admite overrides de Issue, Run e perfil pessoal, sem copiá-los para a política compartilhada.
+
+Ao abrir um diretório, o harness identifica a raiz Git do checkout aberto, inclusive worktrees, e carrega sua política e as skills detectadas antes de oferecer configuração inicial. Mostra os caminhos e a origem das skills. Ausência, JSON inválido e pack incompatível são estados diferentes; não copia silenciosamente política de outro checkout. Reabrir a configuração relê o disco, sem misturar perfil pessoal com a política a salvar.
+
+As seções guiadas cobrem também checks, Git e entrega, artefatos e templates, orçamento, hooks, dashboard e Caveman, conforme o contrato versionado de política do pack pinado. O pack fornece descritor/schema, defaults e validação; a tela mantém layout e textos. Campos desconhecidos são preservados. Antes de aplicar, o operador revisa uma prévia concreta da política e dos efeitos em `AGENTS.md` e adapters/hooks. O formulário substitui a coleta e a aprovação de decisões da skill, sem invocá-la. A aplicação é delegada ao script de setup do Gantry e não cria commit automaticamente. Prévia e aplicação precisam de protocolo estruturado que vincule o plano aprovado às pré-condições dos arquivos e trate concorrência e falha parcial. Falhas de configuração são explicadas em português, com acesso à configuração do projeto, conforme o contrato de validação do pack; o harness não inventa outro contrato de execução.
+
+A decisão acima é o comportamento alvo. O pin atual (`dc5bdd3571253af628ab629f1edcd58fa81fe2b1`) ainda exige command por papel em `cli.py execute`, enquanto setup/execution.py usam harness/model/effort. Sua integração e os contratos de setup/política são [pré-requisitos upstream da #03](../.scratch/prd-alignment/spec.md#pré-requisitos-upstream). A fixture é cópia real do pack e só muda por atualização de pin. A entrega integrada do setup permanece bloqueada até esses contratos existirem. A #11 deverá retirar esta ressalva operacional ao documentar o pin compatível e sua evidência, mantendo o histórico na ADR-0001.
 
 Pausas que o harness precisa mostrar:
 
@@ -77,12 +83,16 @@ O motor antigo em TypeScript — plano conversacional, rodada, serviço de model
 
 ## Decisões — 2026-10-20
 
-Julio, dono do produto, fechou duas perguntas da revisão do harness. O texto de Execução acima já reflete a primeira. O que mudou:
+Julio, dono do produto, fechou as decisões abaixo. A primeira foi revista na sessão de alinhamento de setup e sidebar de 2026-10-20; o texto de Execução acima reflete a revisão:
 
-1. **Contrato de papel = comando executável.** A ideia é o harness rodar o `cli.py` do gantry por trás. A tela para de apresentar host e modelo como se fossem executados e passa a configurar e mostrar o comando que esse processo vai spawnar. A configuração do projeto cobre a global. Sem comando executável para o papel exigido, a Run não começa e o quadro explica o motivo.
+1. **Configuração do projeto = política do setup do Gantry.** Substitui a decisão anterior de comando executável por papel para manter uma única semântica de configuração no pack. A tela persiste os defaults do projeto pelo setup, com modelos por papel em destaque; o Gantry mantém execução e precedência. A [ADR-0001](adr/0001-configuracao-do-projeto-e-a-politica-do-setup.md) preserva o contexto, as alternativas e as dependências upstream ainda pendentes.
 2. **O motor TypeScript antigo pode ser apagado.** Saem o plano conversacional, a rodada, o serviço de modelo, as rotas de plano, de run e de preparação de comando, steering, takeover, grilling, cards de limpeza e o kanban antigo. Não ficam atrás de uma flag.
 
 Fonte da verdade: este PRD. README e PRODUCT.md descrevem o produto antigo e serão alinhados por um ticket, não por uma leitura paralela.
+
+## Sidebar
+
+A identificação do projeto e o acesso às suas configurações ocupam uma linha própria; as worktrees ficam abaixo. Expandir a lista não pode ocultar nome, caminho ou controles. O nome pode quebrar linha; o caminho pode usar reticências desde que seu valor completo seja acessível. Só entram worktrees de Issues com Run, identificadas pelo ref, sem checkout principal nem takeover. Seleção e troca entre projetos, expansão e destino da navegação para configuração são validados em desktop e celular migrando o check existente `browser-validation` de CDP direto para Playwright. Preservam-se o ponto de entrada e os cenários do quadro, sem runner paralelo, conforme a [ADR-0002](adr/0002-validacao-de-browser-com-playwright.md). A correção visual é independente da integração do setup; persistência e carregamento completo da política são aceitos na #03.
 
 ## Questões abertas
 

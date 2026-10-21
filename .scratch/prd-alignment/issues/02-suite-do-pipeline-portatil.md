@@ -26,3 +26,9 @@ Quem roda a suíte numa máquina sem checkout pessoal do gantry e sem pack globa
 ## Blocked by
 
 - `prd-alignment#01`
+
+## Comments
+
+### 2026-10-20 — Lacuna de contrato identificada na revisão de #03
+
+O status done registra a entrega de portabilidade original. A comparação com o blob remoto confirmou que a fixture `tests/fixtures/gantry-pack/scripts/cli.py` é idêntica ao upstream pinado em `SOURCE.json` (`dc5bdd3571253af628ab629f1edcd58fa81fe2b1`, também main na consulta). Esse executor exige `execution.roles.<role>.command`; setup/execution.py usam harness/model/effort. A divergência está no pack, não em uma exigência inventada pela fixture. A #03 depende do alinhamento upstream e de um bump do pin seguindo o README, sem edição manual dos scripts. A ausência de cli.py no pack global da primeira investigação não invalida o executor real pinado. Ver [evidências e reprodução](../architecture-review-validation.md#a1--contrato-de-execução).
