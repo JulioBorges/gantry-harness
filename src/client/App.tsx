@@ -963,13 +963,16 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         <div className="sidebar-heading"><span>Projetos</span><button className="icon-button" aria-label="Adicionar projeto" data-testid="new-project-btn" onClick={() => setProjectDialogOpen(true)}>+</button></div>
         <div className="project-list">
           {projects.length === 0 && <p className="sidebar-empty">Abra uma pasta para começar a trabalhar.</p>}
-          {projects.map((project) => <div key={project.id} className={`project-row ${project.id === activeProjectId ? 'selected' : ''}`}>
-            <button className="project-row-select" onClick={() => void handleSelectProject(project.id)} aria-current={project.id === activeProjectId ? 'page' : undefined}>
-              <span className="folder-icon" aria-hidden="true">▱</span>
-              <span className="project-row-text"><strong>{project.name}</strong><small title={project.path}>{project.path}</small></span>
-              <span title={STATUS_LABELS[project.badgeState]} className={`status-dot ${project.badgeState?.replace(/\s+/g, '-')}`} />
-            </button>
-            <button className="icon-button project-settings" aria-label={`Configurações de ${project.name}`} data-testid={`project-settings-${project.id}`} onClick={() => { setProjectSettingsId(project.id); if (project.id !== activeProjectId) void handleSelectProject(project.id); }}>⚙</button>
+          {projects.map((project) => <div key={project.id} className="project-group">
+            <div className={`project-row ${project.id === activeProjectId ? 'selected' : ''}`}>
+              <button className="project-row-select" title={project.path} onClick={() => void handleSelectProject(project.id)} aria-current={project.id === activeProjectId ? 'page' : undefined}>
+                <svg className="project-icon folder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6a2 2 0 0 1 2-2h5l3 3h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /></svg>
+                <svg className="project-icon terminal-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m5 5 6 6-6 6m9 2h6" /></svg>
+                <span className="project-row-text"><strong>{project.name}</strong></span>
+              </button>
+              <button className="icon-button project-settings" aria-label={`Configurações de ${project.name}`} data-testid={`project-settings-${project.id}`} onClick={() => { setProjectSettingsId(project.id); if (project.id !== activeProjectId) void handleSelectProject(project.id); }}><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.6" /><circle cx="12" cy="12" r="1.6" /><circle cx="19" cy="12" r="1.6" /></svg></button>
+              <span role="img" aria-label={STATUS_LABELS[project.badgeState]} title={STATUS_LABELS[project.badgeState]} className={`status-dot ${project.badgeState?.replace(/\s+/g, '-')}`} />
+            </div>
             {project.id === activeProjectId && inspection && inspection.worktrees.length > 0 && <details className="project-context">
               <summary>Worktrees</summary>
               {inspection.worktrees.map((wt) => <div key={wt.path} className="worktree-row"><span title={wt.path}>{wt.branch} · {STATUS_LABELS[wt.badgeState]}</span></div>)}
