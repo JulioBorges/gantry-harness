@@ -58,7 +58,7 @@ it('expands the project tree and opens a file beside the listing', async () => {
   render(<App />);
   await screen.findAllByText('woba-darkforge');
   expect(screen.queryByText('Arquivos e worktrees')).toBeNull();
-  expect(await screen.findByText('Worktrees')).toBeTruthy();
+  expect(screen.queryByText('Worktrees')).toBeNull(); // A checkout without a Run is not listed.
   expect(screen.queryByRole('button', { name: 'Assumir' })).toBeNull();
   fireEvent.click(screen.getByTestId('open-files-btn'));
   const workspace = screen.getByTestId('files-workspace');

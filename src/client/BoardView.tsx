@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useLayoutEffect, useRef } from 'react';
 import {
   BOARD_LANES,
   LANE_LABEL,
   NO_PACK_EXPLANATION,
   PHASE_LABEL,
   issueLane,
+  runErrorMessage,
   issuePhase,
   mergeBoardWithPlanRuns,
   orderedIssues,
@@ -53,6 +54,25 @@ export function BoardView({
   onReopenPr?: (ref: string) => void;
 }): React.ReactElement {
   const [planSlug, setPlanSlug] = useState('');
+  const boardRef = useRef<HTMLDivElement>(null);
+  const previousCards = useRef(new Map<string, string>());
+  useLayoutEffect(() => {
+    const next = new Map<string, string>();
+    for (const card of boardRef.current?.querySelectorAll<HTMLElement>('[data-ref]') ?? []) {
+      const ref = card.dataset.ref!;
+      const state = `${card.dataset.lane}:${card.dataset.phase}`;
+      const previous = previousCards.current.get(ref);
+      next.set(ref, state);
+      if (previous && previous !== state) {
+        const rect = card.getBoundingClientRect();
+        const container = boardRef.current!.getBoundingClientRect();
+        if (rect.left < container.left || rect.right > container.right || rect.top < container.top || rect.bottom > container.bottom) {
+          card.scrollIntoView?.({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
+        }
+      }
+    }
+    previousCards.current = next;
+  });
   if (!hasProject) {
     return (
       <section className="issue-board" data-testid="issue-board" aria-label="Issues e Specs">
@@ -87,18 +107,11 @@ export function BoardView({
 
   for (const spec of effectiveBoard.specs) {
     const interaction = specInteractions[spec.slug];
-    const planRunError = [...runs].reverse().find((item) => item.slug === spec.slug && item.error)?.error ?? null;
     lanes.specs.push(
       <article key={spec.slug} className="board-card spec-card" data-testid={`spec-card-${spec.slug}`} data-executable="false" data-lane="specs">
         <p className="board-ref"><code>{spec.slug}</code></p>
         <h3>{spec.path}</h3>
         <p className="board-phase">non-executable</p>
-        {planRunError && (
-          <div className="board-run-error" role="alert" data-testid={`run-error-${spec.slug}`}>
-            <strong>{planRunError.reason ? `${planRunError.code} (${planRunError.reason})` : planRunError.code}</strong>
-            {planRunError.message && <p>{planRunError.message}</p>}
-          </div>
-        )}
         <div className="board-card-actions">
           <button type="button" data-testid={`open-spec-${spec.slug}`} onClick={() => onOpenPath?.(spec.path)}>Abrir documentação</button>
         </div>
@@ -158,11 +171,14 @@ export function BoardView({
         )}
         {error && (
           <div className="board-run-error" role="alert" data-testid={`run-error-${issue.ref}`}>
+            <p>{runErrorMessage(error)}</p>
+            <details><summary>Detalhes técnicos</summary>
             <strong>{error.reason ? `${error.code} (${error.reason})` : error.code}</strong>
             {error.openBlockers && error.openBlockers.length > 0 && (
               <span>: {error.openBlockers.join(', ')}</span>
             )}
             {error.message && <p>{error.message}</p>}
+            </details>
           </div>
         )}
         <div className="board-card-actions">
@@ -338,7 +354,7 @@ export function BoardView({
       {!executionEnabled && effectiveBoard.explanation && effectiveBoard.explanation !== NO_PACK_EXPLANATION && (
         <p className="board-explanation" data-testid="execution-unavailable">{effectiveBoard.explanation}</p>
       )}
-      <div className="board-lanes" data-testid="board-lanes">
+      <div ref={boardRef} className="board-lanes" data-testid="board-lanes">
         {BOARD_LANES.map((lane) => (
           <section key={lane} className="board-lane" data-testid={`lane-${lane}`} aria-label={LANE_LABEL[lane]}>
             <h3>{LANE_LABEL[lane]} <span>{lanes[lane].length}</span></h3>

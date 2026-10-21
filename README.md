@@ -57,3 +57,12 @@ bun run test
 bun run build
 bun audit --production
 ```
+
+The `browser-validation` check uses Playwright against a served UI and temporary Git repositories. Install Chromium once (and its Linux system libraries if needed), then run the same entry point used by the pipeline:
+
+```sh
+bun x playwright install --with-deps chromium
+bun scripts/browser-board.mjs
+```
+
+`CHROME_PATH` optionally selects an existing compatible Chromium executable. The check covers the board and project sidebar at 1280×800 and 390×844, including project switching, settings destinations, long paths, scrolling and Issue worktrees. Screenshots and measurements are written to `.scratch/prd-alignment/screenshots/after/`; `BROWSER_EVIDENCE_DIR` changes the output directory.

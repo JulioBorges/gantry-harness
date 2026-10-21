@@ -509,6 +509,8 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     if (projectId !== activeProjectId) {
       setActiveSessionId(sessionId ?? null);
     }
+    setInspection(null);
+    setRuns([]);
     setActiveProjectId(projectId);
     if (sessionId) setActiveSessionId(sessionId);
     await apiFetch(`/api/workspace/state`, {
@@ -943,6 +945,10 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   }
 
   const activeProject = projects.find((project) => project.id === activeProjectId);
+  const issueWorktreeRuns = runs.filter((run) =>
+    run.projectId === activeProjectId && run.ref.includes('#') && run.worktree &&
+    run.worktree !== activeProject?.path && run.status !== 'discarded' && run.status !== 'rejected',
+  );
   const activeTerminal = panes.find((pane) => pane.paneId === activePaneId);
   const inlineArtifact = activeView === 'files' && wideWorkspace && artifactDrawer?.projectId === activeProjectId ? artifactDrawer : null;
   const changeView = (view: typeof activeView) => { setActiveView(view); if (window.innerWidth < 760) setSidebarOpen(false); };
@@ -968,14 +974,15 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
               <button className="project-row-select" title={project.path} onClick={() => void handleSelectProject(project.id)} aria-current={project.id === activeProjectId ? 'page' : undefined}>
                 <svg className="project-icon folder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6a2 2 0 0 1 2-2h5l3 3h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /></svg>
                 <svg className="project-icon terminal-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m5 5 6 6-6 6m9 2h6" /></svg>
-                <span className="project-row-text"><strong>{project.name}</strong></span>
+                <span className="project-row-text"><strong>{project.name}</strong><span className="project-path">{project.path}</span></span>
               </button>
               <button className="icon-button project-settings" aria-label={`Configurações de ${project.name}`} data-testid={`project-settings-${project.id}`} onClick={() => { setProjectSettingsId(project.id); if (project.id !== activeProjectId) void handleSelectProject(project.id); }}><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.6" /><circle cx="12" cy="12" r="1.6" /><circle cx="19" cy="12" r="1.6" /></svg></button>
               <span role="img" aria-label={STATUS_LABELS[project.badgeState]} title={STATUS_LABELS[project.badgeState]} className={`status-dot ${project.badgeState?.replace(/\s+/g, '-')}`} />
             </div>
-            {project.id === activeProjectId && inspection && inspection.worktrees.length > 0 && <details className="project-context">
+            <details className="project-path-details"><summary>Caminho completo</summary><code className="project-full-path">{project.path}</code></details>
+            {project.id === activeProjectId && issueWorktreeRuns.length > 0 && <details className="project-context">
               <summary>Worktrees</summary>
-              {inspection.worktrees.map((wt) => <div key={wt.path} className="worktree-row"><span title={wt.path}>{wt.branch} · {STATUS_LABELS[wt.badgeState]}</span></div>)}
+              {issueWorktreeRuns.map((run) => <div key={run.runId} className="worktree-row"><span title={run.worktree ?? undefined}>{run.ref} · {PHASE_LABEL[run.derivedPhase]}</span></div>)}
             </details>}
           </div>)}
         </div>

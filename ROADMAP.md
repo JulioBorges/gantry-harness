@@ -6,7 +6,7 @@ Acompanhamento do gantry-harness. A linha `Status:` de cada Issue é a fonte da 
 
 | | Count |
 |---|---|
-| Issues completed | **12 / 20** |
+| Issues completed | **14 / 20** |
 | Specs completed | **1 / 2** |
 | Execution waves | **11** |
 
@@ -21,7 +21,7 @@ Números são a linha `Map:` de cada `spec.md` (`(spec NN)`). A tabela abaixo é
 
 `.scratch/gantry-harness/spec.md` está `blocked`: superada por `prd-alignment` (Julio, 2026-10-20). Não tem issues, então o pack não a projeta nem a coloca na fronteira.
 
-A wave é uma projeção de dependências locais, não autorização para iniciar toda Issue nela. `prd-alignment#03` está `blocked` pelos contratos upstream U1/U2/U3, descritos na [spec](.scratch/prd-alignment/spec.md#pré-requisitos-upstream). #04 e #08 independem dessa integração e continuam elegíveis conforme seus próprios blockers. A #10 concentra os textos gerais; a #11 aguarda #03/#10 para documentar o setup integrado e retirar ressalvas vencidas sobre o pin.
+A wave é uma projeção de dependências locais, não autorização para iniciar toda Issue nela. `prd-alignment#03` está `blocked` pelos contratos upstream U1/U2/U3, descritos na [spec](.scratch/prd-alignment/spec.md#pré-requisitos-upstream). #04 e #08 foram entregues na wave 6, independentemente dessa integração; [validação e evidências](.scratch/prd-alignment/wave-6-validation.md). A wave 6 permanece parcialmente concluída enquanto #03 aguarda o upstream. A #10 concentra os textos gerais; a #11 aguarda #03/#10 para documentar o setup integrado e retirar ressalvas vencidas sobre o pin.
 
 ## Progresso por spec
 
@@ -30,7 +30,7 @@ A wave é uma projeção de dependências locais, não autorização para inicia
 | # | Spec | Issues done | Waves |
 |---|---|---|---|
 | 01 | `run-orchestration` | 9/9 | 0–3 |
-| 02 | `prd-alignment` | 3/11 | 4–10 |
+| 02 | `prd-alignment` | 5/11 | 4–10 |
 
 <!-- END GENERATED: spec progress -->
 
@@ -76,13 +76,13 @@ A wave é uma projeção de dependências locais, não autorização para inicia
 - [x] **`prd-alignment#09`** — 09: Não abrir o terminal sozinho
   <br>↳ blocked by: prd-alignment#01
 
-### Wave 6 — 0/3 done
+### Wave 6 — 2/3 done
 
 - [ ] **`prd-alignment#03`** — 03: Configurar e persistir o setup do Gantry no projeto
   <br>↳ blocked by: prd-alignment#02
-- [ ] **`prd-alignment#04`** — 04: Mostrar a Run pronta e o erro uma vez só
+- [x] **`prd-alignment#04`** — 04: Mostrar a Run pronta e o erro uma vez só
   <br>↳ blocked by: prd-alignment#02
-- [ ] **`prd-alignment#08`** — 08: Reorganizar a sidebar para identificar e trocar projetos
+- [x] **`prd-alignment#08`** — 08: Reorganizar a sidebar para identificar e trocar projetos
   <br>↳ blocked by: prd-alignment#02
 
 ### Wave 7 — 0/2 done
