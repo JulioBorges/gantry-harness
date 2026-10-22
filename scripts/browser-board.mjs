@@ -157,9 +157,34 @@ try {
     await openNavigation();
     // Reach the last project through the scrolling list, then open settings directly for an inactive project.
     const lastProject = projects.at(-1);
+    // Exercise cleanup only in a disposable empty project, never in the pack fixture or developer checkout.
+    const cleanupHead = git(lastProject.path, 'rev-parse', 'HEAD');
+    const priorStashes = git(lastProject.path, 'stash', 'list');
+    fs.writeFileSync(path.join(lastProject.path, 'README.md'), 'Browser cleanup changes\n');
+    fs.writeFileSync(path.join(lastProject.path, 'new-notes.txt'), 'New notes\n');
+
     await sidebar.getByTestId(`project-settings-${lastProject.id}`).click();
     await expect(page.getByRole('heading', { name: `Configurações de ${lastProject.name}`, exact: true })).toBeVisible();
     await expect(page.getByTestId('setup-panel')).toBeVisible();
+    await page.getByRole('button', { name: 'Limpar worktree', exact: true }).click();
+    const cleanupReview = page.getByRole('region', { name: 'Revisar limpeza da worktree' });
+    await expect(cleanupReview).toContainText(lastProject.path);
+    await expect(cleanupReview).toContainText('README.md');
+    await expect(cleanupReview).toContainText('new-notes.txt');
+    await cleanupReview.getByRole('button', { name: 'Cancelar limpeza' }).click();
+    expect(git(lastProject.path, 'stash', 'list')).toBe(priorStashes);
+    expect(fs.readFileSync(path.join(lastProject.path, 'README.md'), 'utf8')).toBe('Browser cleanup changes\n');
+    await page.getByRole('button', { name: 'Limpar worktree', exact: true }).click();
+    await expect(cleanupReview).toBeVisible();
+    await page.screenshot({ path: path.join(evidenceDir, `cleanup-preview-${viewport.width}.png`) });
+    await cleanupReview.getByRole('button', { name: 'Guardar backup e limpar worktree' }).click();
+    await expect(page.getByTestId('setup-panel')).toContainText('Worktree limpa. As alterações foram guardadas no Git stash.');
+    expect(git(lastProject.path, 'status', '--porcelain')).toBe('');
+    expect(git(lastProject.path, 'rev-parse', 'HEAD')).toBe(cleanupHead);
+    expect(git(lastProject.path, 'stash', 'list')).toContain('gantry-harness-cleanup-');
+    await expect(page.getByRole('button', { name: 'Limpar worktree', exact: true })).toHaveCount(0);
+    await page.screenshot({ path: path.join(evidenceDir, `cleanup-result-${viewport.width}.png`) });
+
     await page.getByRole('button', { name: 'Fechar configurações do projeto' }).click();
     await expect(page.getByTestId('pack-missing')).toContainText('Gantry');
     for (const action of ['run', 'plan', 'approve']) await expect(page.getByTestId(`${action}-affordance`)).toBeDisabled();

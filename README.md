@@ -28,6 +28,8 @@ Use the navigation button or Cmd/Ctrl+B to collapse the sidebar. Narrow windows 
 
 Installing/updating Gantry skills and saving repository configuration create local commits on the current branch. Start with a clean Git worktree and a configured Git identity. Existing changes must be committed or stashed first. Personal profiles remain local and do not create commits. No push or PR is created by setup.
 
+When project settings reports uncommitted changes, **Limpar worktree** previews the affected files. **Guardar backup e limpar worktree** saves staged, unstaged and new files in Git stash, then refreshes the project. Ignored files remain on disk; the result shows the backup hash and its recovery command. Canceling preserves the checkout. Changes after the preview require another review; finish running or paused Runs before cleaning.
+
 ## Build packages
 
 ```sh

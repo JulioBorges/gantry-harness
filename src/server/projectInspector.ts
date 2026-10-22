@@ -373,9 +373,9 @@ export async function inspectProject(
   if (dirtyWorkingTree) {
     remediationCards.push({
       kind: 'dirty_worktree',
-      title: 'Dirty Working Tree Detected',
-      description: `Repository has ${dirtyFiles.length} uncommitted file(s). Gantry preflight requires a clean working tree before starting implementation rounds.`,
-      remediation: 'Commit, stash, or discard uncommitted changes before running /run.',
+      title: 'Árvore de trabalho com alterações',
+      description: `O projeto tem ${dirtyFiles.length} alteração(ões) sem commit. A execução exige uma árvore de trabalho limpa.`,
+      remediation: 'Faça commit das alterações ou use Limpar worktree para guardá-las em um backup no Git stash.',
     });
   }
   if (!skillPack.found) {

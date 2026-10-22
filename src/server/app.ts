@@ -21,6 +21,7 @@ import {
 } from './projectInspector.js';
 import { PtySupervisor, readArtifactAndDiff } from './ptyManager.js';
 import { RunSupervisor, RunSupervisorError } from './runSupervisor.js';
+import { cleanWorktree, previewWorktreeCleanup, WorktreeCleanupError } from './worktreeCleanup.js';
 import { ProjectTreeError, readProjectTree } from './projectTree.js';
 
 export interface HarnessServerOptions {
@@ -368,6 +369,32 @@ export async function createHarnessServer(
           sendJson(res, 200, inspection);
           return;
         }
+      }
+
+      const cleanupRoute = pathname.match(/^\/api\/projects\/([^/]+)\/worktree\/(preview|clean)$/);
+      if (cleanupRoute && req.method === 'POST') {
+        const project = store.getProject(cleanupRoute[1]);
+        if (!project) { sendJson(res, 404, { error: 'Projeto não encontrado.' }); return; }
+        try {
+          const active = store.listProjects().flatMap(item => runSupervisor.listRuns(item.id)).some(run =>
+            (run.status === 'running' || run.status === 'paused') &&
+            (run.projectId === project.id || run.worktree === project.path),
+          );
+          if (active) throw new WorktreeCleanupError('Encerre a Run em execução ou pausada antes de limpar a worktree.');
+          if (cleanupRoute[2] === 'preview') {
+            sendJson(res, 200, await previewWorktreeCleanup(project.path));
+          } else {
+            const body = await readJsonBody(req);
+            if (body.confirmed !== true) throw new WorktreeCleanupError('Confirme a limpeza após revisar os arquivos.', 400);
+            const result = await cleanWorktree(project.path, body.token);
+            broadcast({ type: 'project.worktree.cleaned', projectId: project.id });
+            sendJson(res, 200, result);
+          }
+        } catch (error) {
+          if (error instanceof WorktreeCleanupError) { sendJson(res, error.statusCode, { error: error.message }); }
+          else throw error;
+        }
+        return;
       }
 
       if (pathname.startsWith('/api/projects/') && pathname.endsWith('/tree') && req.method === 'GET') {

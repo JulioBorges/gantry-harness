@@ -6,6 +6,7 @@ import type { ExecutionSettings, RoleSelection } from '../types.js';
 import type { ManagedPane } from '../server/ptyManager.js';
 import type { Terminal } from '@xterm/xterm';
 import type { FitAddon } from '@xterm/addon-fit';
+import type { WorktreeCleanupPreview } from '../server/worktreeCleanup.js';
 import type { TerminalSettings, TerminalEnvironment } from '../types.js';
 import { SettingsDialog, type SettingsTab } from './SettingsDialog.js';
 import { SystemFontSelect } from './SystemFontSelect.js';
@@ -92,6 +93,9 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
 
   const [runs, setRuns] = useState<HarnessRunRecord[]>([]);
 
+  const [cleanupPreview, setCleanupPreview] = useState<(WorktreeCleanupPreview & { projectId: string }) | null>(null);
+  const [cleanupBusy, setCleanupBusy] = useState(false);
+  const [cleanupNotice, setCleanupNotice] = useState<{ projectId: string; error: boolean; message: string; backup?: string } | null>(null);
   const [setupDiffPreview, setSetupDiffPreview] = useState<string>('');
   const [projectSettingsId, setProjectSettingsId] = useState<string | null>(null);
   const [setupHostHarness, setSetupHostHarness] = useState<string>('opencode');
@@ -511,6 +515,8 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
       setActiveSessionId(sessionId ?? null);
     }
     setInspection(null);
+    setCleanupPreview(null);
+    setCleanupNotice(null);
     setRuns([]);
     setActiveProjectId(projectId);
     if (sessionId) setActiveSessionId(sessionId);
@@ -524,6 +530,46 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     });
     await loadWorkspaceState();
   });
+
+  const handlePreviewCleanup = async () => {
+    if (!projectSettingsId || cleanupBusy) return;
+    const projectId = projectSettingsId;
+    setCleanupBusy(true);
+    setCleanupPreview(null);
+    setCleanupNotice(null);
+    try {
+      const response = await apiFetch(`/api/projects/${projectId}/worktree/preview`, { method: 'POST' });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? 'Não foi possível revisar a limpeza.');
+      if (!payload.files.length) {
+        setCleanupNotice({ projectId, error: false, message: 'A worktree já está limpa.' });
+        await loadWorkspaceState();
+      } else setCleanupPreview({ ...payload, projectId });
+    } catch (error) {
+      setCleanupNotice({ projectId, error: true, message: error instanceof Error ? error.message : String(error) });
+    } finally { setCleanupBusy(false); }
+  };
+
+  const handleCleanWorktree = async () => {
+    if (!cleanupPreview || cleanupPreview.projectId !== projectSettingsId || cleanupBusy) return;
+    const { projectId, token } = cleanupPreview;
+    setCleanupBusy(true);
+    try {
+      const response = await apiFetch(`/api/projects/${projectId}/worktree/clean`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmed: true, token }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? 'Não foi possível limpar a worktree.');
+      setCleanupNotice({ projectId, error: !payload.clean, backup: payload.backup, message: payload.clean
+        ? 'Worktree limpa. As alterações foram guardadas no Git stash.'
+        : 'Backup criado, mas ainda há alterações na worktree. Revise o estado do projeto.' });
+      setupProjectLoaded.current = null;
+      await loadWorkspaceState();
+      setBoardGeneration(value => value + 1);
+    } catch (error) {
+      setCleanupNotice({ projectId, error: true, message: error instanceof Error ? error.message : String(error) });
+    } finally { setCleanupPreview(null); setCleanupBusy(false); }
+  };
 
   const handleOpenTerminal = withFeedback("Abrir terminal", async (): Promise<void> => {
     if (!activeProjectId) throw new Error('Adicione ou selecione um projeto antes de abrir um terminal.');
@@ -1146,7 +1192,23 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
             <h2>Preparar o projeto para execução</h2>
             <p className="section-intro">Cada papel usa um host e só pode receber um modelo desse host. A lista é lida do agente instalado. Esta configuração tem prioridade sobre a global.</p>
             <p>A instalação das skills e a configuração do repositório criam commits locais na branch atual. Faça commit ou stash das alterações existentes antes de continuar.</p>
-            {inspection?.remediationCards.map((card) => <div key={card.kind} className="setup-diagnostic"><strong>{card.title}</strong><p>{card.description}</p><p>{card.remediation}</p></div>)}
+            {inspection?.remediationCards.map((card) => <div key={card.kind} className="setup-diagnostic"><strong>{card.title}</strong><p>{card.description}</p><p>{card.remediation}</p>
+              {card.kind === 'dirty_worktree' && <button type="button" disabled={cleanupBusy} onClick={() => void handlePreviewCleanup()}>{cleanupBusy ? 'Preparando limpeza…' : 'Limpar worktree'}</button>}
+            </div>)}
+            {cleanupPreview?.projectId === projectSettingsId && <section className="worktree-cleanup-preview" aria-label="Revisar limpeza da worktree">
+              <h3>Limpar worktree de {projects.find(project => project.id === projectSettingsId)?.name}?</h3>
+              <p>As alterações abaixo serão retiradas da worktree e guardadas em um backup no Git stash, incluindo arquivos novos. Arquivos ignorados pelo Git permanecem no projeto.</p>
+              <code>{cleanupPreview.root}</code>
+              <ul>{cleanupPreview.files.map(file => <li key={file.path}><code>{file.status} {file.originalPath ? `${file.originalPath} → ` : ''}{file.path}</code></li>)}</ul>
+              <div className="project-setup-actions">
+                <button type="button" disabled={cleanupBusy} onClick={() => setCleanupPreview(null)}>Cancelar limpeza</button>
+                <button type="button" disabled={cleanupBusy} onClick={() => void handleCleanWorktree()}>{cleanupBusy ? 'Limpando…' : 'Guardar backup e limpar worktree'}</button>
+              </div>
+            </section>}
+            {cleanupNotice?.projectId === projectSettingsId && <div className="setup-diagnostic" role={cleanupNotice.error ? 'alert' : 'status'}>
+              <p>{cleanupNotice.message}</p>
+              {cleanupNotice.backup && <p>Para recuperar as alterações no terminal: <code>git stash apply --index {cleanupNotice.backup}</code></p>}
+            </div>}
             <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
               <button
                 data-testid="bootstrap-skills-btn"
