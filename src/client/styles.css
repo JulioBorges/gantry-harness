@@ -449,3 +449,24 @@ dialog.settings-dialog .settings-dialog-content { flex: 0 1 auto; }
 .project-full-path { display: block; padding-top: 6px; overflow-wrap: anywhere; white-space: normal; }
 .project-context { min-width: 0; }
 .project-context[open] { max-height: 220px; overflow-y: auto; }
+
+.project-settings-dialog { display: flex; flex-direction: column; }
+.project-settings-dialog > .dialog-heading { flex: 0 0 auto; min-width: 0; align-items: flex-start; padding: 20px 24px; border-bottom: 1px solid var(--obsidian-700); }
+.project-settings-dialog .dialog-heading h2 { min-width: 0; overflow-wrap: anywhere; }
+.project-settings-dialog .dialog-heading button { flex: 0 0 32px; }
+.project-settings-dialog .project-settings-content { flex: 1; min-height: 0; overflow-y: scroll; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.project-settings-dialog .role-setting-row { grid-template-columns: 72px minmax(112px, 1fr) minmax(0, 2fr) minmax(88px, .8fr); align-items: start; }
+.project-settings-dialog .role-setting-row > strong { padding-top: 25px; overflow-wrap: anywhere; }
+.project-settings-dialog .role-setting-row label { display: grid; gap: 6px; grid-column: auto; margin: 0; }
+.project-settings-dialog .role-setting-row select,
+.project-settings-dialog .role-setting-row input { width: 100%; min-width: 0; min-height: 40px; }
+.project-settings-dialog .field-help { overflow-wrap: anywhere; }
+.project-setup-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--obsidian-700); }
+.project-setup-actions button { min-width: 0; max-width: 100%; white-space: normal; }
+@media (max-width: 640px) {
+  .project-settings-dialog > .dialog-heading { padding: 14px 16px; }
+  .project-settings-dialog .role-setting-row { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .project-settings-dialog .role-setting-row > strong { padding-top: 0; }
+  .project-setup-actions { flex-direction: column; }
+  .project-setup-actions button { width: 100%; }
+}

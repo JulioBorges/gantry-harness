@@ -1,0 +1,64 @@
+{
+  "ok": true,
+  "results": [
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "dimensions": {
+        "width": 143,
+        "height": 84
+      },
+      "projectSettings": [
+        {
+          "viewport": {
+            "width": 951,
+            "height": 785
+          },
+          "scroll": {
+            "height": 636,
+            "contentHeight": 939,
+            "overflow": "scroll"
+          }
+        },
+        {
+          "viewport": {
+            "width": 844,
+            "height": 390
+          },
+          "scroll": {
+            "height": 241,
+            "contentHeight": 960,
+            "overflow": "scroll"
+          }
+        }
+      ],
+      "pageErrors": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "dimensions": {
+        "width": 129,
+        "height": 84
+      },
+      "projectSettings": [
+        {
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "scroll": {
+            "height": 708,
+            "contentHeight": 2015,
+            "overflow": "scroll"
+          }
+        }
+      ],
+      "pageErrors": []
+    }
+  ]
+}

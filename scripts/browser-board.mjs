@@ -52,6 +52,11 @@ try {
   fs.writeFileSync(cliPath, cli);
   const boardFile = path.join(packed, '.board.json');
   fs.writeFileSync(boardFile, JSON.stringify(board));
+  fs.mkdirSync(path.join(packed, '.gantry'), { recursive: true });
+  fs.writeFileSync(path.join(packed, '.gantry/config.json'), JSON.stringify({ execution: {
+    hostHarness: 'codex',
+    roles: Object.fromEntries(['plan', 'implement', 'review', 'critic'].map(role => [role, { harness: 'codex', model: 'google/gemini-4-argon-modelo-com-nome-longo', effort: 'high' }])),
+  } }));
   const gantryHome = path.join(tmp, '.gantry');
   server = await createHarnessServer({ gantryHome, stateRoot: path.join(gantryHome, 'state'), profileRoot: path.join(gantryHome, 'profiles'), homeDir: tmp, port: 0, clientDistDir: path.join(root, 'dist/client') });
   const url = `http://127.0.0.1:${server.port}/`;
@@ -74,6 +79,8 @@ try {
     const page = await browser.newPage({ viewport });
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
+    // Keep layout validation independent of installed model CLIs, including an unknown saved model.
+    await page.route('**/api/projects/*/discovery?*', route => route.fulfill({ json: { models: [{ id: 'codex-test-model' }] } }));
     await page.goto(url);
     const sidebar = page.getByTestId('sidebar');
     const openNavigation = async () => {
@@ -106,6 +113,46 @@ try {
     expect(await sidebar.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
     await sidebar.getByTestId(`project-settings-${projects[0].id}`).click();
     await expect(page.getByRole('heading', { name: `Configurações de ${packedName}`, exact: true })).toBeVisible();
+    const originalViewport = page.viewportSize();
+    const modalChecks = [];
+    for (const modalViewport of viewport.width === 1280 ? [{ width: 951, height: 785 }, { width: 844, height: 390 }] : [viewport]) {
+      await page.setViewportSize(modalViewport);
+      const dialog = page.getByRole('dialog', { name: `Configurações de ${packedName}`, exact: true });
+      const panel = page.getByTestId('setup-panel');
+      await expect(panel.getByLabel('Esforço para critic')).toHaveValue('high');
+      await page.screenshot({ path: path.join(evidenceDir, `project-settings-${modalViewport.width}.png`) });
+      const scroll = await panel.evaluate(el => ({ height: el.clientHeight, contentHeight: el.scrollHeight, overflow: getComputedStyle(el).overflowY }));
+      expect(scroll.height, 'Project settings must constrain its scrolling body').toBeLessThan(scroll.contentHeight);
+      expect(['auto', 'scroll']).toContain(scroll.overflow);
+      modalChecks.push({ viewport: modalViewport, scroll });
+      expect(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+      expect(await panel.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+      for (const role of ['plan', 'implement', 'review', 'critic']) {
+        for (const field of ['Host', 'Modelo', 'Esforço']) {
+          const control = panel.getByLabel(`${field} para ${role}`, { exact: true });
+          await control.scrollIntoViewIfNeeded();
+          await expect(control).toBeInViewport({ ratio: 1 });
+          const labelPosition = await control.evaluate(el => {
+            const text = Array.from(el.parentElement.childNodes).find(node => node.nodeType === Node.TEXT_NODE && node.textContent.trim());
+            const range = document.createRange();
+            range.selectNodeContents(text);
+            return { labelBottom: range.getBoundingClientRect().bottom, fieldTop: el.getBoundingClientRect().top };
+          });
+          expect(labelPosition.labelBottom).toBeLessThanOrEqual(labelPosition.fieldTop);
+        }
+      }
+      const effort = panel.getByLabel('Esforço para critic');
+      await effort.fill('medium');
+      await expect(effort).toHaveValue('medium');
+      await effort.fill('high');
+      const save = page.getByTestId('apply-personal-setup-btn');
+      await save.scrollIntoViewIfNeeded();
+      await expect(save).toBeInViewport({ ratio: 1 });
+      await expect(dialog.getByRole('button', { name: 'Fechar configurações do projeto' })).toBeInViewport({ ratio: 1 });
+      expect(await panel.evaluate(el => el.scrollTop)).toBeGreaterThan(0);
+      await page.screenshot({ path: path.join(evidenceDir, `project-settings-actions-${modalViewport.width}.png`) });
+    }
+    await page.setViewportSize(originalViewport);
     await page.getByRole('button', { name: 'Fechar configurações do projeto' }).click();
     await openNavigation();
     // Reach the last project through the scrolling list, then open settings directly for an inactive project.
@@ -169,7 +216,7 @@ try {
     await expect(planCard.getByRole('button', { name: 'Executar issue' })).toHaveCount(0);
     await expect(page.getByRole('alert')).toHaveCount(1);
     expect(errors).toEqual([]);
-    results.push({ viewport, dimensions, pageErrors: errors });
+    results.push({ viewport, dimensions, projectSettings: modalChecks, pageErrors: errors });
     await page.close();
   }
   fs.writeFileSync(path.join(evidenceDir, 'results.json'), JSON.stringify({ ok: true, results }, null, 2));

@@ -1139,10 +1139,10 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         </SettingsDialog>}
 
         {projectSettingsId && <div className="dialog-backdrop" onClick={(event) => { if (event.target === event.currentTarget) setProjectSettingsId(null); }}>
-          <section className="project-dialog settings-dialog" role="dialog" aria-modal="true" aria-labelledby="project-settings-title">
+          <section className="project-dialog settings-dialog project-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="project-settings-title">
             <div className="dialog-heading"><h2 id="project-settings-title">Configurações de {projects.find((project) => project.id === projectSettingsId)?.name ?? 'projeto'}</h2><button aria-label="Fechar configurações do projeto" onClick={() => setProjectSettingsId(null)}>×</button></div>
             {activeProjectId === projectSettingsId ? (
-<div data-testid="setup-panel" style={{ padding: 16, overflowY: 'auto' }}>
+<div className="project-settings-content" data-testid="setup-panel">
             <h2>Preparar o projeto para execução</h2>
             <p className="section-intro">Cada papel usa um host e só pode receber um modelo desse host. A lista é lida do agente instalado. Esta configuração tem prioridade sobre a global.</p>
             <p>A instalação das skills e a configuração do repositório criam commits locais na branch atual. Faça commit ou stash das alterações existentes antes de continuar.</p>
@@ -1199,7 +1199,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
               })}
               {Object.keys(roleSelections).length === 0 && <button disabled={!setupHostHarness} onClick={() => setRoleSelections(Object.fromEntries(['plan', 'implement', 'review', 'critic'].map((role) => [role, { harness: setupHostHarness, model: '' }])))}>Configurar papéis de execução</button>}
             </div>
-            <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+            <div className="project-setup-actions">
               <button data-testid="preview-setup-btn" onClick={() => void handlePreviewSetup()}>
                 Revisar prévia das alterações
               </button>
