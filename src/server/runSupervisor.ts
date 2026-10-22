@@ -158,6 +158,10 @@ function ghSupportsPrStateInspection(): boolean {
 }
 
 export class RunSupervisor {
+  private readonly scopes = new Map<string, string>();
+  private readonly reconciling = new Map<string, Promise<void>>();
+  private readonly quiesced = new Set<string>();
+  private readonly operations = new Map<string, number>();
   private readonly active = new Map<string, SupervisedChild>();
   private readonly store: HarnessStateStore;
   private readonly broadcast: (payload: Record<string, unknown>) => void;
@@ -180,33 +184,87 @@ export class RunSupervisor {
   private startWatcher(): void {
     this.watchTimer = setInterval(() => {
       if (this.shuttingDown || this.watching) return;
-      const projects = this.store.listProjects();
-      const needsWatch = projects.some((proj) => {
-        const runs = this.store.listRuns(proj.id);
-        return runs.some(
-          (r) =>
-            r.status === 'approved-pending-merge' ||
-            r.prState === 'closed' ||
-            r.prState === 'reopened' ||
-            r.status === 'ready-for-approval',
-        );
-      });
-      if (!needsWatch) return;
+      const projects = this.store.listProjects().filter(project => this.store.listRuns(project.id).some(run =>
+        run.status === 'approved-pending-merge' || run.prState === 'closed' ||
+        run.prState === 'reopened' || run.status === 'ready-for-approval',
+      ));
+      if (!projects.length) return;
       this.watching = true;
       void (async () => {
         try {
           for (const project of projects) {
             if (this.shuttingDown) break;
-            await this.syncProjectWithTarget(project);
+            try { await this.refreshProject(project); }
+            catch { /* One unavailable project must not interrupt the other refreshes. */ }
           }
-        } catch {
-          // ignore background watcher errors
         } finally {
           this.watching = false;
         }
       })();
     }, 300);
     this.watchTimer.unref?.();
+  }
+
+  private repositoryScope(checkout: string): string {
+    const key = path.resolve(checkout);
+    const cached = this.scopes.get(key);
+    if (cached) return cached;
+    try {
+      const common = execFileSync('git', ['rev-parse', '--git-common-dir'], { cwd: checkout, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      const scope = fs.realpathSync(path.resolve(checkout, common));
+      this.scopes.set(key, scope);
+      return scope;
+    } catch { return key; } // Do not cache plain folders: they may become Git repositories later.
+  }
+
+  private async withRunOperation<T>(project: RegisteredProject, operation: () => Promise<T>): Promise<T> {
+    const scope = this.repositoryScope(project.path);
+    if (this.quiesced.has(scope)) throw new RunSupervisorError(409, 'cleanup-in-progress', 'Aguarde a limpeza da worktree terminar.');
+    // Reserve before the first await: cleanup must also see operations still preparing a child.
+    this.operations.set(scope, (this.operations.get(scope) ?? 0) + 1);
+    try { return await operation(); }
+    finally {
+      const remaining = (this.operations.get(scope) ?? 1) - 1;
+      if (remaining) this.operations.set(scope, remaining);
+      else this.operations.delete(scope);
+    }
+  }
+
+  private assertNoRunOperation(scope: string): void {
+    const liveChild = [...this.active.values()].some(entry => !entry.exited && this.repositoryScope(entry.repoPath) === scope);
+    const suspendedOrRunning = this.store.listProjects().some(item => this.repositoryScope(item.path) === scope &&
+      this.store.listRuns(item.id).some(run => run.status === 'running' || run.status === 'paused'));
+    if (this.operations.has(scope)) throw new RunSupervisorError(409, 'run-active', 'Aguarde a operação da Run terminar antes de limpar a worktree.');
+    if (liveChild || suspendedOrRunning) {
+      throw new RunSupervisorError(409, 'run-active', 'Encerre a Run em execução ou pausada antes de limpar a worktree.');
+    }
+  }
+
+  public async withProjectQuiesced<T>(project: RegisteredProject, operation: () => Promise<T>): Promise<T> {
+    const scope = this.repositoryScope(project.path);
+    if (this.quiesced.has(scope)) throw new RunSupervisorError(409, 'cleanup-in-progress', 'Já existe uma limpeza em andamento neste repositório.');
+    this.assertNoRunOperation(scope);
+    this.quiesced.add(scope);
+    try {
+      // New reads return persisted state; already running reconciliation drains before any cleanup write.
+      await this.reconciling.get(scope);
+      this.assertNoRunOperation(scope);
+      return await operation();
+    } finally { this.quiesced.delete(scope); }
+  }
+
+  public async refreshProject(project: RegisteredProject, boardSnapshot?: BoardSnapshot): Promise<HarnessRunRecord[]> {
+    const scope = this.repositoryScope(project.path);
+    if (this.quiesced.has(scope)) return this.store.listRuns(project.id);
+    // Serialize all refreshes of a common-dir, including distinct registered linked worktrees.
+    const previous = this.reconciling.get(scope) ?? Promise.resolve();
+    const pending = previous.then(() => this.quiesced.has(scope)
+      ? this.store.listRuns(project.id)
+      : this.syncProjectWithTargetOperation(project, boardSnapshot));
+    const settled = pending.then(() => undefined, () => undefined);
+    this.reconciling.set(scope, settled);
+    try { return await pending; }
+    finally { if (this.reconciling.get(scope) === settled) this.reconciling.delete(scope); }
   }
 
   private key(projectId: string, ref: string): string {
@@ -855,6 +913,15 @@ export class RunSupervisor {
     slug?: string;
     kind?: HarnessRunKind;
   }): Promise<HarnessRunRecord> {
+    return this.withRunOperation(params.project, () => this.startRunOperation(params));
+  }
+
+  private async startRunOperation(params: {
+    project: RegisteredProject;
+    ref?: string;
+    slug?: string;
+    kind?: HarnessRunKind;
+  }): Promise<HarnessRunRecord> {
     const rawInput = (params.ref || params.slug || '').trim();
     if (!rawInput) {
       throw new RunSupervisorError(400, 'issue-missing', 'A referência da Issue ou slug do Plan é obrigatória.');
@@ -982,6 +1049,12 @@ export class RunSupervisor {
   }
 
   public async executeWave(params: {
+    project: RegisteredProject;
+  }): Promise<{ runs: HarnessRunRecord[]; frontier: string[] }> {
+    return this.withRunOperation(params.project, () => this.executeWaveOperation(params));
+  }
+
+  private async executeWaveOperation(params: {
     project: RegisteredProject;
   }): Promise<{ runs: HarnessRunRecord[]; frontier: string[] }> {
     const board = await readBoard(params.project.path, this.homeDir);
@@ -1135,6 +1208,13 @@ export class RunSupervisor {
     project: RegisteredProject;
     ref: string;
   }): Promise<HarnessRunRecord> {
+    return this.withRunOperation(params.project, () => this.resumeRunOperation(params));
+  }
+
+  private async resumeRunOperation(params: {
+    project: RegisteredProject;
+    ref: string;
+  }): Promise<HarnessRunRecord> {
     const rawRef = params.ref.trim();
     if (!rawRef) {
       throw new RunSupervisorError(400, 'issue-missing', 'A referência da Issue é obrigatória.');
@@ -1217,6 +1297,13 @@ export class RunSupervisor {
   }
 
   public async discardRun(params: {
+    project: RegisteredProject;
+    ref: string;
+  }): Promise<HarnessRunRecord> {
+    return this.withRunOperation(params.project, () => this.discardRunOperation(params));
+  }
+
+  private async discardRunOperation(params: {
     project: RegisteredProject;
     ref: string;
   }): Promise<HarnessRunRecord> {
@@ -1338,6 +1425,13 @@ export class RunSupervisor {
   }
 
   public async approveRun(params: {
+    project: RegisteredProject;
+    ref: string;
+  }): Promise<HarnessRunRecord> {
+    return this.withRunOperation(params.project, () => this.approveRunOperation(params));
+  }
+
+  private async approveRunOperation(params: {
     project: RegisteredProject;
     ref: string;
   }): Promise<HarnessRunRecord> {
@@ -1473,6 +1567,13 @@ export class RunSupervisor {
     project: RegisteredProject;
     ref: string;
   }): Promise<HarnessRunRecord> {
+    return this.withRunOperation(params.project, () => this.markPullRequestClosedOperation(params));
+  }
+
+  private async markPullRequestClosedOperation(params: {
+    project: RegisteredProject;
+    ref: string;
+  }): Promise<HarnessRunRecord> {
     const canonicalRef = normaliseIssueRef(params.ref);
     const stored = this.findStoredRun(params.project.id, canonicalRef);
     if (!stored) {
@@ -1504,6 +1605,13 @@ export class RunSupervisor {
   }
 
   public async reopenPullRequest(params: {
+    project: RegisteredProject;
+    ref: string;
+  }): Promise<HarnessRunRecord> {
+    return this.withRunOperation(params.project, () => this.reopenPullRequestOperation(params));
+  }
+
+  private async reopenPullRequestOperation(params: {
     project: RegisteredProject;
     ref: string;
   }): Promise<HarnessRunRecord> {
@@ -1563,6 +1671,7 @@ export class RunSupervisor {
     return null;
   }
 
+  /** Mutation-only reconciliation; read endpoints and the watcher must use refreshProject. */
   public async reattachProject(
     project: RegisteredProject,
     boardSnapshot?: BoardSnapshot,
@@ -1571,6 +1680,14 @@ export class RunSupervisor {
   }
 
   public async syncProjectWithTarget(
+    project: RegisteredProject,
+    boardSnapshot?: BoardSnapshot,
+  ): Promise<HarnessRunRecord[]> {
+    return this.withRunOperation(project, () => this.syncProjectWithTargetOperation(project, boardSnapshot));
+  }
+
+  // Caller owns either a Run mutation reservation or a tracked refresh slot.
+  private async syncProjectWithTargetOperation(
     project: RegisteredProject,
     boardSnapshot?: BoardSnapshot,
   ): Promise<HarnessRunRecord[]> {
@@ -1745,10 +1862,10 @@ export class RunSupervisor {
       if (run.status === 'approved-pending-merge' || run.prState === 'closed') {
         const prState = await this.inspectPullRequestState(project.path, run);
         if (prState === 'closed' && run.prState !== 'closed') {
-          await this.markPullRequestClosed({ project, ref: run.ref });
+          await this.markPullRequestClosedOperation({ project, ref: run.ref });
           changed = true;
         } else if (prState === 'open' && run.prState === 'closed') {
-          await this.reopenPullRequest({ project, ref: run.ref });
+          await this.reopenPullRequestOperation({ project, ref: run.ref });
           changed = true;
         }
       }

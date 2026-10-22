@@ -21,6 +21,8 @@ import {
 } from './projectInspector.js';
 import { PtySupervisor, readArtifactAndDiff } from './ptyManager.js';
 import { RunSupervisor, RunSupervisorError } from './runSupervisor.js';
+import { GitError } from './git.js';
+import { cleanWorktree, previewWorktreeCleanup, WorktreeCleanupError } from './worktreeCleanup.js';
 import { ProjectTreeError, readProjectTree } from './projectTree.js';
 
 export interface HarnessServerOptions {
@@ -108,7 +110,7 @@ export async function createHarnessServer(
 
   const runSupervisor = new RunSupervisor({ store, broadcast, homeDir });
   for (const project of store.listProjects()) {
-    await runSupervisor.reattachProject(project);
+    await runSupervisor.refreshProject(project);
   }
 
   const resolveArtifactBasePath = (projectId: string, projectPath: string, relPath: string): string => {
@@ -268,7 +270,7 @@ export async function createHarnessServer(
         }
         const activeProject = projects.find((project) => project.id === activeProjectId);
         if (activeProject) {
-          await runSupervisor.reattachProject(activeProject);
+          await runSupervisor.refreshProject(activeProject);
         }
         const runs = activeProjectId ? runSupervisor.listRuns(activeProjectId) : [];
         sendJson(res, 200, {
@@ -321,7 +323,7 @@ export async function createHarnessServer(
           name: body.name ? String(body.name) : undefined,
           unitId,
         });
-        await runSupervisor.reattachProject(result.project);
+        await runSupervisor.refreshProject(result.project);
         const inspection = await inspectProject(result.project, { stateRoot, profileRoot });
         broadcast({ type: 'project.registered', project: result.project, inspection });
         sendJson(res, 200, { ...result, inspection });
@@ -348,7 +350,7 @@ export async function createHarnessServer(
             return;
           }
           const rawBoard = await readBoard(project.path, homeDir);
-          const runs = await runSupervisor.syncProjectWithTarget(project, rawBoard);
+          const runs = await runSupervisor.refreshProject(project, rawBoard);
           const board = mergeBoardWithPlanRuns(rawBoard, runs);
           sendJson(res, 200, { ...board, runs });
           return;
@@ -368,6 +370,29 @@ export async function createHarnessServer(
           sendJson(res, 200, inspection);
           return;
         }
+      }
+
+      const cleanupRoute = pathname.match(/^\/api\/projects\/([^/]+)\/worktree\/(preview|clean)$/);
+      if (cleanupRoute && req.method === 'POST') {
+        const project = store.getProject(cleanupRoute[1]);
+        if (!project) { sendJson(res, 404, { error: 'Projeto não encontrado.' }); return; }
+        try {
+          if (cleanupRoute[2] === 'preview') {
+            sendJson(res, 200, await runSupervisor.withProjectQuiesced(project, () => previewWorktreeCleanup(project.path)));
+          } else {
+            const body = await readJsonBody(req);
+            if (body.confirmed !== true) throw new WorktreeCleanupError('Confirme a limpeza após revisar os arquivos.', 400);
+            const result = await runSupervisor.withProjectQuiesced(project, () => cleanWorktree(project.path, body.token));
+            broadcast({ type: 'project.worktree.cleaned', projectId: project.id });
+            sendJson(res, 200, result);
+          }
+        } catch (error) {
+          if (error instanceof RunSupervisorError) sendJson(res, error.statusCode, { error: error.message, code: error.code });
+          else if (error instanceof GitError) sendJson(res, 409, { error: error.message });
+          else if (error instanceof WorktreeCleanupError) { sendJson(res, error.statusCode, { error: error.message }); }
+          else throw error;
+        }
+        return;
       }
 
       if (pathname.startsWith('/api/projects/') && pathname.endsWith('/tree') && req.method === 'GET') {
@@ -883,8 +908,9 @@ export async function createHarnessServer(
 
       sendJson(res, 404, { error: `Not found: ${pathname}` });
     } catch (err) {
-      sendJson(res, 500, {
+      sendJson(res, err instanceof GitError ? 503 : 500, {
         error: err instanceof Error ? err.message : 'Internal server error',
+        ...(err instanceof GitError ? { code: 'git-unavailable' } : {}),
       });
     }
   });

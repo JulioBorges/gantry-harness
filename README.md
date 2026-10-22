@@ -28,6 +28,8 @@ Use the navigation button or Cmd/Ctrl+B to collapse the sidebar. Narrow windows 
 
 Installing/updating Gantry skills and saving repository configuration create local commits on the current branch. Start with a clean Git worktree and a configured Git identity. Existing changes must be committed or stashed first. Personal profiles remain local and do not create commits. No push or PR is created by setup.
 
+When project settings reports uncommitted changes, **Limpar worktree** previews the affected files. **Guardar backup e limpar worktree** saves staged, unstaged and new files in Git stash, then refreshes the project. Ignored files remain on disk; the result shows the backup hash and its recovery command. Canceling preserves the checkout. Changes after the preview require another review; finish running or paused Runs before cleaning.
+
 ## Build packages
 
 ```sh
@@ -53,7 +55,16 @@ Open the printed loopback URL. Build emits the `gantry-harness` CLI entry as wel
 
 ```sh
 bun run typecheck
-bun run test
+bun run test --maxWorkers=2
 bun run build
 bun audit --production
 ```
+
+The `browser-validation` check uses Playwright against a served UI and temporary Git repositories. Install Chromium once (and its Linux system libraries if needed), then run the same entry point used by the pipeline:
+
+```sh
+bun x playwright install --with-deps chromium
+bun scripts/browser-board.mjs
+```
+
+`CHROME_PATH` optionally selects an existing compatible Chromium executable. The check covers the board and project sidebar at 1280×800 and 390×844, including project switching, settings destinations, long paths, scrolling and Issue worktrees. Screenshots and measurements use a temporary directory, removed at the end of the check. Set `BROWSER_EVIDENCE_DIR=.scratch/<slug>/screenshots/after` explicitly to retain delivery evidence. The test check uses two workers to avoid UI/supervisor wait timeouts under high concurrency.

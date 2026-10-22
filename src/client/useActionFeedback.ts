@@ -11,11 +11,17 @@ export function useActionFeedback() {
     setFeedback({ kind: 'error', message: error instanceof Error ? error.message : String(error), action });
   };
 
-  const withFeedback = <Args extends unknown[]>(label: string, task: (...args: Args) => Promise<void>) =>
+  const withPending = <Args extends unknown[]>(label: string, task: (...args: Args) => Promise<void>) =>
     async (...args: Args): Promise<void> => {
       if (running.current.has(label)) return;
       running.current.add(label);
       setPendingActions([...running.current]);
+      try { await task(...args); }
+      finally { running.current.delete(label); setPendingActions([...running.current]); }
+    };
+
+  const withFeedback = <Args extends unknown[]>(label: string, task: (...args: Args) => Promise<void>) =>
+    withPending(label, async (...args: Args): Promise<void> => {
       setFeedback(null);
       const previousErrors = errorCount.current;
       try {
@@ -25,11 +31,8 @@ export function useActionFeedback() {
         }
       } catch (error) {
         reportError(error, label);
-      } finally {
-        running.current.delete(label);
-        setPendingActions([...running.current]);
       }
-    };
+    });
 
-  return { feedback, pendingActions, withFeedback, reportError, dismissFeedback: () => setFeedback(null) };
+  return { feedback, pendingActions, withFeedback, withPending, reportError, dismissFeedback: () => setFeedback(null) };
 }
