@@ -110,7 +110,7 @@ export async function createHarnessServer(
 
   const runSupervisor = new RunSupervisor({ store, broadcast, homeDir });
   for (const project of store.listProjects()) {
-    await runSupervisor.reattachProject(project);
+    await runSupervisor.refreshProject(project);
   }
 
   const resolveArtifactBasePath = (projectId: string, projectPath: string, relPath: string): string => {
@@ -270,7 +270,7 @@ export async function createHarnessServer(
         }
         const activeProject = projects.find((project) => project.id === activeProjectId);
         if (activeProject) {
-          await runSupervisor.reattachProject(activeProject);
+          await runSupervisor.refreshProject(activeProject);
         }
         const runs = activeProjectId ? runSupervisor.listRuns(activeProjectId) : [];
         sendJson(res, 200, {
@@ -323,7 +323,7 @@ export async function createHarnessServer(
           name: body.name ? String(body.name) : undefined,
           unitId,
         });
-        await runSupervisor.reattachProject(result.project);
+        await runSupervisor.refreshProject(result.project);
         const inspection = await inspectProject(result.project, { stateRoot, profileRoot });
         broadcast({ type: 'project.registered', project: result.project, inspection });
         sendJson(res, 200, { ...result, inspection });
@@ -350,7 +350,7 @@ export async function createHarnessServer(
             return;
           }
           const rawBoard = await readBoard(project.path, homeDir);
-          const runs = await runSupervisor.syncProjectWithTarget(project, rawBoard);
+          const runs = await runSupervisor.refreshProject(project, rawBoard);
           const board = mergeBoardWithPlanRuns(rawBoard, runs);
           sendJson(res, 200, { ...board, runs });
           return;
@@ -908,8 +908,9 @@ export async function createHarnessServer(
 
       sendJson(res, 404, { error: `Not found: ${pathname}` });
     } catch (err) {
-      sendJson(res, 500, {
+      sendJson(res, err instanceof GitError ? 503 : 500, {
         error: err instanceof Error ? err.message : 'Internal server error',
+        ...(err instanceof GitError ? { code: 'git-unavailable' } : {}),
       });
     }
   });

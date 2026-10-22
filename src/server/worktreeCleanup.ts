@@ -41,6 +41,7 @@ export async function previewWorktreeCleanup(checkout: string): Promise<Worktree
   return { root, token: hash.digest('hex'), files };
 }
 
+// ADR-0003: the supervisor coordinates Runs; this writer lock also protects direct callers.
 const cleaning = new Set<string>();
 
 export async function cleanWorktree(checkout: string, token: unknown): Promise<{ backup: string; clean: boolean }> {

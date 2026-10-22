@@ -29,12 +29,15 @@ async function register(dir: string) {
 function request(id: string, action: 'preview' | 'clean', body: object = {}) {
   return fetch(`http://127.0.0.1:${server.port}/api/projects/${id}/worktree/${action}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 }
+function seedReady(projectId: string) {
+  server.store.saveRun({ runId: `ready-${projectId}`, projectId, ref: 'watch#01', slug: 'watch', kind: 'issue', status: 'ready-for-approval', childPid: null, pid: null, childHandle: null, lane: 'critic', packPhase: 'ready', branch: null, worktree: null, pushed: false, pause: null, pausedReason: null, pausedChoices: null, terminalEvent: 'ready-for-approval', error: null, prUrl: null, derivedPhase: 'ready-for-approval', createdAt: '', updatedAt: '' });
+}
 beforeEach(async () => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'gantry-cleanup-test-'));
   repo = initRepo('project');
   server = await createHarnessServer({ port: 0, gantryHome: path.join(root, 'home'), homeDir: root, stateRoot: path.join(root, 'state'), profileRoot: path.join(root, 'profiles') });
 });
-afterEach(async () => { await server.close(); fs.rmSync(root, { recursive: true, force: true }); });
+afterEach(async () => { vi.restoreAllMocks(); await server.close(); fs.rmSync(root, { recursive: true, force: true }); });
 
 describe('Worktree cleanup over HTTP', () => {
   it('previews without writes and backs up staged, unstaged and new files before cleaning', async () => {
@@ -241,6 +244,85 @@ else:
     try {
       await expect(server.runSupervisor.withProjectQuiesced(project, async () => undefined)).rejects.toMatchObject({ code: 'run-active' });
     } finally { fs.writeFileSync(path.join(repo, 'child-release'), ''); }
+  });
+
+  it('keeps board, workspace and project registration readable during cleanup', async () => {
+    const id = await register(repo);
+    const project = server.store.getProject(id)!;
+    seedReady(id);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const cleanup = server.runSupervisor.withProjectQuiesced(project, () => gate);
+    try {
+      const base = `http://127.0.0.1:${server.port}`;
+      const boardResponse = await fetch(`${base}/api/projects/${id}/board`);
+      expect(boardResponse.status).toBe(200);
+      expect((await boardResponse.json()).runs.map((run: { ref: string }) => run.ref)).toContain('watch#01');
+      const workspace = await fetch(`${base}/api/workspace/state`);
+      expect(workspace.status).toBe(200);
+      expect((await workspace.json()).projects.some((item: { id: string }) => item.id === id)).toBe(true);
+      expect(await register(repo)).toBe(id);
+    } finally { release(); await cleanup; }
+  });
+
+  it('waits for an in-flight refresh rather than refusing cleanup and returns stored state to later readers', async () => {
+    const id = await register(repo);
+    const project = server.store.getProject(id)!;
+    const scripts = path.join(repo, '.agents/skills/gantry/scripts');
+    fs.mkdirSync(scripts, { recursive: true });
+    fs.writeFileSync(path.join(scripts, 'cli.py'), `import json, pathlib, time
+root = pathlib.Path.cwd()
+(root / 'refresh-entered').touch()
+while not (root / 'refresh-release').exists():
+    time.sleep(0.01)
+print(json.dumps({'issues': [], 'specs': [], 'frontier': []}))
+`);
+    const refresh = server.runSupervisor.refreshProject(project);
+    await vi.waitFor(() => expect(fs.existsSync(path.join(repo, 'refresh-entered'))).toBe(true), { timeout: 5000 });
+    let cleaned = false;
+    const cleanup = server.runSupervisor.withProjectQuiesced(project, async () => { cleaned = true; });
+    try {
+      await expect(server.runSupervisor.refreshProject(project)).resolves.toEqual([]);
+      expect(cleaned).toBe(false);
+    } finally { fs.writeFileSync(path.join(repo, 'refresh-release'), ''); }
+    await refresh;
+    await cleanup;
+    expect(cleaned).toBe(true);
+  });
+
+  it('does not let a ready Run in another repository make the watcher reserve the clean project', async () => {
+    const id = await register(repo);
+    const other = initRepo('watched-project');
+    const otherId = await register(other);
+    const refresh = vi.spyOn(server.runSupervisor, 'refreshProject');
+    seedReady(otherId);
+    await vi.waitFor(() => expect(refresh.mock.calls.some(([project]) => project.id === otherId)).toBe(true), { timeout: 5000 });
+    expect(refresh.mock.calls.some(([project]) => project.id === id)).toBe(false);
+    expect((await request(id, 'preview')).status).toBe(200);
+  });
+
+  it('continues refreshing other watched projects after one refresh fails', async () => {
+    const id = await register(repo);
+    const otherId = await register(initRepo('watched-after-failure'));
+    const original = server.runSupervisor.refreshProject.bind(server.runSupervisor);
+    const refresh = vi.spyOn(server.runSupervisor, 'refreshProject').mockImplementation((project, board) => {
+      if (project.id === id) return Promise.reject(new Error('Unavailable first project'));
+      return original(project, board);
+    });
+    seedReady(id);
+    seedReady(otherId);
+    await vi.waitFor(() => expect(refresh.mock.calls.some(([project]) => project.id === otherId)).toBe(true), { timeout: 5000 });
+    expect(refresh.mock.calls.some(([project]) => project.id === id)).toBe(true);
+  });
+
+  it('reports an unavailable Git inspection as a managed service error', async () => {
+    const id = await register(repo);
+    git(repo, 'config', 'core.bare', 'true');
+    try {
+      const response = await fetch(`http://127.0.0.1:${server.port}/api/projects/${id}/inspect`);
+      expect(response.status).toBe(503);
+      expect((await response.json()).code).toBe('git-unavailable');
+    } finally { git(repo, 'config', 'core.bare', 'false'); }
   });
 
 });
