@@ -6,14 +6,25 @@ A prévia é vinculada ao checkout, HEAD, estado do índice e conteúdo rastread
 
 Runs em execução/pausadas impedem a limpeza. Conflitos, submódulos alterados e repositórios aninhados não rastreados exigem resolução específica e recebem diagnóstico, sem iniciar o stash. A ação é independente da integração de setup da #03 e não muda seu status.
 
+A [ADR-0003](../../docs/adr/0003-limpeza-da-worktree-pelo-operador.md) e a Issue #12 registram a autorização do produto e os limites desta ação. O supervisor reserva o repositório contra operações de Run antes do primeiro await, incluindo preparação sem filho vivo, e usa o common-dir canônico para aliases/worktrees vinculadas.
+
 ## Verificação
 
-- `tests/worktree-cleanup.test.ts`: dez testes sobre HTTP e Git reais em repositórios temporários. Cobrem prévia/cancelamento sem escrita, confirmação obrigatória, preservação e recuperação de alterações staged/unstaged/new, nomes com espaço/quebra de linha/caracteres de shell, arquivos ignorados, recusa de prévias antigas e tokens de outro projeto, isolamento entre checkout principal/worktree vinculada, renomeações/exclusões, submódulos, repositórios aninhados e Run pausada.
-- `bun run test --maxWorkers=2`: **107 testes em 21 arquivos**, todos passaram.
+- `tests/worktree-cleanup.test.ts`: testes sobre HTTP e Git reais em repositórios temporários. Cobrem prévia/cancelamento sem escrita, confirmação obrigatória, preservação e recuperação de alterações staged/unstaged/new, nomes com espaço/quebra de linha/caracteres de shell, arquivos ignorados, recusa de prévias antigas e tokens de outro projeto, isolamento entre checkout principal/worktree vinculada, renomeações/exclusões, submódulos, repositórios aninhados e Run pausada.
+- Resultados da suíte e demais checks: [validação consolidada](pr-17-review-validation.md).
 - `bun run typecheck` e `bun run build`: passaram.
 - `bun scripts/browser-board.mjs`: o check existente exercita o fluxo de preview → cancelar → preview → confirmar no desktop e no celular contra a API real. Somente repositórios temporários do cenário são limpos; nenhuma worktree do operador é modificada. Verifica o backup, HEAD inalterado, worktree limpa e desaparecimento do botão/diagnóstico de árvore suja.
 
 ## Capturas
 
-- [Prévia e confirmação no celular](screenshots/worktree-cleanup/preview-mobile.png).
-- [Resultado e instrução para recuperar o backup](screenshots/worktree-cleanup/result-desktop.png).
+- [Prévia e confirmação no celular](screenshots/worktree-cleanup/cleanup-preview-390.png).
+- [Resultado e instrução para recuperar o backup](screenshots/worktree-cleanup/cleanup-result-1280.png).
+
+
+Para regenerar os mesmos nomes de evidência:
+
+```sh
+BROWSER_EVIDENCE_DIR=.scratch/prd-alignment/screenshots/worktree-cleanup bun scripts/browser-board.mjs
+```
+
+O runner emite os nomes usados pelos links diretamente; a saída padrão continua temporária.

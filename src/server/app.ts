@@ -21,6 +21,7 @@ import {
 } from './projectInspector.js';
 import { PtySupervisor, readArtifactAndDiff } from './ptyManager.js';
 import { RunSupervisor, RunSupervisorError } from './runSupervisor.js';
+import { GitError } from './git.js';
 import { cleanWorktree, previewWorktreeCleanup, WorktreeCleanupError } from './worktreeCleanup.js';
 import { ProjectTreeError, readProjectTree } from './projectTree.js';
 
@@ -376,22 +377,19 @@ export async function createHarnessServer(
         const project = store.getProject(cleanupRoute[1]);
         if (!project) { sendJson(res, 404, { error: 'Projeto não encontrado.' }); return; }
         try {
-          const active = store.listProjects().flatMap(item => runSupervisor.listRuns(item.id)).some(run =>
-            (run.status === 'running' || run.status === 'paused') &&
-            (run.projectId === project.id || run.worktree === project.path),
-          );
-          if (active) throw new WorktreeCleanupError('Encerre a Run em execução ou pausada antes de limpar a worktree.');
           if (cleanupRoute[2] === 'preview') {
-            sendJson(res, 200, await previewWorktreeCleanup(project.path));
+            sendJson(res, 200, await runSupervisor.withProjectQuiesced(project, () => previewWorktreeCleanup(project.path)));
           } else {
             const body = await readJsonBody(req);
             if (body.confirmed !== true) throw new WorktreeCleanupError('Confirme a limpeza após revisar os arquivos.', 400);
-            const result = await cleanWorktree(project.path, body.token);
+            const result = await runSupervisor.withProjectQuiesced(project, () => cleanWorktree(project.path, body.token));
             broadcast({ type: 'project.worktree.cleaned', projectId: project.id });
             sendJson(res, 200, result);
           }
         } catch (error) {
-          if (error instanceof WorktreeCleanupError) { sendJson(res, error.statusCode, { error: error.message }); }
+          if (error instanceof RunSupervisorError) sendJson(res, error.statusCode, { error: error.message, code: error.code });
+          else if (error instanceof GitError) sendJson(res, 409, { error: error.message });
+          else if (error instanceof WorktreeCleanupError) { sendJson(res, error.statusCode, { error: error.message }); }
           else throw error;
         }
         return;

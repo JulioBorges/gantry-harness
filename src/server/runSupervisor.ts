@@ -158,6 +158,8 @@ function ghSupportsPrStateInspection(): boolean {
 }
 
 export class RunSupervisor {
+  private readonly quiesced = new Set<string>();
+  private readonly operations = new Map<string, number>();
   private readonly active = new Map<string, SupervisedChild>();
   private readonly store: HarnessStateStore;
   private readonly broadcast: (payload: Record<string, unknown>) => void;
@@ -207,6 +209,41 @@ export class RunSupervisor {
       })();
     }, 300);
     this.watchTimer.unref?.();
+  }
+
+  private repositoryScope(checkout: string): string {
+    try {
+      const common = execFileSync('git', ['rev-parse', '--git-common-dir'], { cwd: checkout, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      return fs.realpathSync(path.resolve(checkout, common));
+    } catch { return path.resolve(checkout); }
+  }
+
+  private async withRunOperation<T>(project: RegisteredProject, operation: () => Promise<T>): Promise<T> {
+    const scope = this.repositoryScope(project.path);
+    if (this.quiesced.has(scope)) throw new RunSupervisorError(409, 'cleanup-in-progress', 'Aguarde a limpeza da worktree terminar.');
+    // Reserve before the first await: cleanup must also see operations still preparing a child.
+    this.operations.set(scope, (this.operations.get(scope) ?? 0) + 1);
+    try { return await operation(); }
+    finally {
+      const remaining = (this.operations.get(scope) ?? 1) - 1;
+      if (remaining) this.operations.set(scope, remaining);
+      else this.operations.delete(scope);
+    }
+  }
+
+  public async withProjectQuiesced<T>(project: RegisteredProject, operation: () => Promise<T>): Promise<T> {
+    const scope = this.repositoryScope(project.path);
+    if (this.quiesced.has(scope)) throw new RunSupervisorError(409, 'cleanup-in-progress', 'Já existe uma limpeza em andamento neste repositório.');
+    const liveChild = [...this.active.values()].some(entry => !entry.exited && this.repositoryScope(entry.repoPath) === scope);
+    const suspendedOrRunning = this.store.listProjects().some(item => this.repositoryScope(item.path) === scope &&
+      this.store.listRuns(item.id).some(run => run.status === 'running' || run.status === 'paused'));
+    if (this.operations.has(scope)) throw new RunSupervisorError(409, 'run-active', 'Aguarde a operação da Run terminar antes de limpar a worktree.');
+    if (liveChild || suspendedOrRunning) {
+      throw new RunSupervisorError(409, 'run-active', 'Encerre a Run em execução ou pausada antes de limpar a worktree.');
+    }
+    this.quiesced.add(scope);
+    try { return await operation(); }
+    finally { this.quiesced.delete(scope); }
   }
 
   private key(projectId: string, ref: string): string {
@@ -855,6 +892,15 @@ export class RunSupervisor {
     slug?: string;
     kind?: HarnessRunKind;
   }): Promise<HarnessRunRecord> {
+    return this.withRunOperation(params.project, () => this.startRunOperation(params));
+  }
+
+  private async startRunOperation(params: {
+    project: RegisteredProject;
+    ref?: string;
+    slug?: string;
+    kind?: HarnessRunKind;
+  }): Promise<HarnessRunRecord> {
     const rawInput = (params.ref || params.slug || '').trim();
     if (!rawInput) {
       throw new RunSupervisorError(400, 'issue-missing', 'A referência da Issue ou slug do Plan é obrigatória.');
@@ -982,6 +1028,12 @@ export class RunSupervisor {
   }
 
   public async executeWave(params: {
+    project: RegisteredProject;
+  }): Promise<{ runs: HarnessRunRecord[]; frontier: string[] }> {
+    return this.withRunOperation(params.project, () => this.executeWaveOperation(params));
+  }
+
+  private async executeWaveOperation(params: {
     project: RegisteredProject;
   }): Promise<{ runs: HarnessRunRecord[]; frontier: string[] }> {
     const board = await readBoard(params.project.path, this.homeDir);
@@ -1135,6 +1187,13 @@ export class RunSupervisor {
     project: RegisteredProject;
     ref: string;
   }): Promise<HarnessRunRecord> {
+    return this.withRunOperation(params.project, () => this.resumeRunOperation(params));
+  }
+
+  private async resumeRunOperation(params: {
+    project: RegisteredProject;
+    ref: string;
+  }): Promise<HarnessRunRecord> {
     const rawRef = params.ref.trim();
     if (!rawRef) {
       throw new RunSupervisorError(400, 'issue-missing', 'A referência da Issue é obrigatória.');
@@ -1217,6 +1276,13 @@ export class RunSupervisor {
   }
 
   public async discardRun(params: {
+    project: RegisteredProject;
+    ref: string;
+  }): Promise<HarnessRunRecord> {
+    return this.withRunOperation(params.project, () => this.discardRunOperation(params));
+  }
+
+  private async discardRunOperation(params: {
     project: RegisteredProject;
     ref: string;
   }): Promise<HarnessRunRecord> {
@@ -1338,6 +1404,13 @@ export class RunSupervisor {
   }
 
   public async approveRun(params: {
+    project: RegisteredProject;
+    ref: string;
+  }): Promise<HarnessRunRecord> {
+    return this.withRunOperation(params.project, () => this.approveRunOperation(params));
+  }
+
+  private async approveRunOperation(params: {
     project: RegisteredProject;
     ref: string;
   }): Promise<HarnessRunRecord> {
@@ -1473,6 +1546,13 @@ export class RunSupervisor {
     project: RegisteredProject;
     ref: string;
   }): Promise<HarnessRunRecord> {
+    return this.withRunOperation(params.project, () => this.markPullRequestClosedOperation(params));
+  }
+
+  private async markPullRequestClosedOperation(params: {
+    project: RegisteredProject;
+    ref: string;
+  }): Promise<HarnessRunRecord> {
     const canonicalRef = normaliseIssueRef(params.ref);
     const stored = this.findStoredRun(params.project.id, canonicalRef);
     if (!stored) {
@@ -1504,6 +1584,13 @@ export class RunSupervisor {
   }
 
   public async reopenPullRequest(params: {
+    project: RegisteredProject;
+    ref: string;
+  }): Promise<HarnessRunRecord> {
+    return this.withRunOperation(params.project, () => this.reopenPullRequestOperation(params));
+  }
+
+  private async reopenPullRequestOperation(params: {
     project: RegisteredProject;
     ref: string;
   }): Promise<HarnessRunRecord> {
@@ -1571,6 +1658,13 @@ export class RunSupervisor {
   }
 
   public async syncProjectWithTarget(
+    project: RegisteredProject,
+    boardSnapshot?: BoardSnapshot,
+  ): Promise<HarnessRunRecord[]> {
+    return this.withRunOperation(project, () => this.syncProjectWithTargetOperation(project, boardSnapshot));
+  }
+
+  private async syncProjectWithTargetOperation(
     project: RegisteredProject,
     boardSnapshot?: BoardSnapshot,
   ): Promise<HarnessRunRecord[]> {

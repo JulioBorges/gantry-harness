@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -162,4 +162,85 @@ describe('Worktree cleanup over HTTP', () => {
     expect(git(repo, 'stash', 'list')).toBe('');
     expect(fs.readFileSync(path.join(repo, 'README.md'), 'utf8')).toBe('Keep\n');
   });
+  it('prevents lifecycle mutations through aliases and linked worktrees until cleanup releases its reservation', async () => {
+    const id = await register(repo);
+    const project = server.store.getProject(id)!;
+    const linked = path.join(root, 'linked-lock');
+    git(repo, 'worktree', 'add', '-b', 'lock-test', linked);
+    const linkedProject = server.store.getProject(await register(linked))!;
+    const alias = path.join(root, 'alias');
+    fs.symlinkSync(repo, alias, 'dir');
+    const aliasedProject = { ...project, id: 'alias-project', path: alias };
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const cleaning = server.runSupervisor.withProjectQuiesced(project, () => gate);
+    try {
+      for (const target of [project, linkedProject, aliasedProject]) {
+        await expect(server.runSupervisor.startRun({ project: target, ref: 'test#01' })).rejects.toMatchObject({ code: 'cleanup-in-progress' });
+        await expect(server.runSupervisor.executeWave({ project: target })).rejects.toMatchObject({ code: 'cleanup-in-progress' });
+        await expect(server.runSupervisor.resumeRun({ project: target, ref: 'test#01' })).rejects.toMatchObject({ code: 'cleanup-in-progress' });
+        await expect(server.runSupervisor.approveRun({ project: target, ref: 'test#01' })).rejects.toMatchObject({ code: 'cleanup-in-progress' });
+        await expect(server.runSupervisor.reattachProject(target)).rejects.toMatchObject({ code: 'cleanup-in-progress' });
+        await expect(server.runSupervisor.withProjectQuiesced(target, async () => undefined)).rejects.toMatchObject({ code: 'cleanup-in-progress' });
+      }
+    } finally { release(); await cleaning; }
+    expect((await request(id, 'preview')).status).toBe(200);
+    await expect(server.runSupervisor.withProjectQuiesced(project, async () => { throw new Error('failure'); })).rejects.toThrow('failure');
+    expect((await request(id, 'preview')).status).toBe(200);
+  });
+
+  it('reserves wave preparation before the first child exists and releases the reservation after failure', async () => {
+    const id = await register(repo);
+    const project = server.store.getProject(id)!;
+    const scripts = path.join(repo, '.agents/skills/gantry/scripts');
+    fs.mkdirSync(scripts, { recursive: true });
+    fs.writeFileSync(path.join(scripts, 'cli.py'), `import pathlib, time
+root = pathlib.Path.cwd()
+(root / 'wave-entered').touch()
+while not (root / 'wave-release').exists():
+    time.sleep(0.01)
+print('invalid board output')
+`);
+    const wave = server.runSupervisor.executeWave({ project }).catch(error => error);
+    await vi.waitFor(() => expect(fs.existsSync(path.join(repo, 'wave-entered'))).toBe(true), { timeout: 5000 });
+    try {
+      await expect(server.runSupervisor.withProjectQuiesced(project, async () => undefined)).rejects.toMatchObject({ code: 'run-active' });
+    } finally { fs.writeFileSync(path.join(repo, 'wave-release'), ''); }
+    await wave;
+    await expect(server.runSupervisor.withProjectQuiesced(project, async () => 'released')).resolves.toBe('released');
+  });
+
+  it('counts exactly the same changed files in inspection and cleanup preview', async () => {
+    const id = await register(repo);
+    fs.mkdirSync(path.join(repo, 'notes'));
+    fs.writeFileSync(path.join(repo, 'notes/first.txt'), 'First');
+    fs.writeFileSync(path.join(repo, 'notes/second.txt'), 'Second');
+    const preview = await (await request(id, 'preview')).json();
+    const inspection = await fetch(`http://127.0.0.1:${server.port}/api/projects/${id}/inspect`).then(response => response.json());
+    expect(preview.files).toHaveLength(2);
+    expect(inspection.diagnostics.dirtyFiles).toHaveLength(preview.files.length);
+    expect(inspection.remediationCards.find((card: { kind: string }) => card.kind === 'dirty_worktree').description).toContain('2 alteração');
+  });
+
+  it('checks the live child even when a persisted status no longer says running', async () => {
+    const id = await register(repo);
+    const project = server.store.getProject(id)!;
+    const scripts = path.join(repo, '.agents/skills/gantry/scripts');
+    fs.mkdirSync(scripts, { recursive: true });
+    fs.writeFileSync(path.join(scripts, 'cli.py'), `import json, pathlib, sys, time
+root = pathlib.Path.cwd()
+if 'board' in sys.argv:
+    print(json.dumps({'issues': [], 'specs': [], 'frontier': []}))
+else:
+    print(json.dumps({'event': 'worktree', 'branch': 'test', 'worktree': str(root), 'pushed': False}), flush=True)
+    while not (root / 'child-release').exists():
+        time.sleep(0.01)
+`);
+    const started = await server.runSupervisor.startRun({ project, ref: 'test#01' });
+    server.store.saveRun({ ...started, status: 'stopped' });
+    try {
+      await expect(server.runSupervisor.withProjectQuiesced(project, async () => undefined)).rejects.toMatchObject({ code: 'run-active' });
+    } finally { fs.writeFileSync(path.join(repo, 'child-release'), ''); }
+  });
+
 });

@@ -94,7 +94,6 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   const [runs, setRuns] = useState<HarnessRunRecord[]>([]);
 
   const [cleanupPreview, setCleanupPreview] = useState<(WorktreeCleanupPreview & { projectId: string }) | null>(null);
-  const [cleanupBusy, setCleanupBusy] = useState(false);
   const [cleanupNotice, setCleanupNotice] = useState<{ projectId: string; error: boolean; message: string; backup?: string } | null>(null);
   const [setupDiffPreview, setSetupDiffPreview] = useState<string>('');
   const [projectSettingsId, setProjectSettingsId] = useState<string | null>(null);
@@ -108,7 +107,8 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   const catalogRequests = useRef(new Set<string>());
   const [roleSelections, setRoleSelections] = useState<Record<string, RoleSelection>>({});
   const setupProjectLoaded = useRef<string | null>(null);
-  const { feedback, pendingActions, withFeedback, reportError, dismissFeedback } = useActionFeedback();
+  const { feedback, pendingActions, withFeedback, withPending, reportError, dismissFeedback } = useActionFeedback();
+  const cleanupBusy = pendingActions.includes('Limpeza da worktree');
   const [terminalInput, setTerminalInput] = useState('');
   const [panes, setPanes] = useState<ManagedPane[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(() => typeof window !== 'undefined' && window.innerWidth >= 760);
@@ -354,7 +354,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
               setBoardGeneration((value) => value + 1);
             }
             void loadWorkspaceState();
-          } else if (payload.type === 'board.changed') {
+          } else if (payload.type === 'board.changed' || payload.type === 'project.worktree.cleaned' || payload.type === 'project.setup.applied') {
             if (!selectedPane.current.projectId || payload.projectId === selectedPane.current.projectId) {
               setBoardGeneration((value) => value + 1);
             }
@@ -531,10 +531,9 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     await loadWorkspaceState();
   });
 
-  const handlePreviewCleanup = async () => {
+  const handlePreviewCleanup = withPending('Limpeza da worktree', async () => {
     if (!projectSettingsId || cleanupBusy) return;
     const projectId = projectSettingsId;
-    setCleanupBusy(true);
     setCleanupPreview(null);
     setCleanupNotice(null);
     try {
@@ -547,13 +546,12 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
       } else setCleanupPreview({ ...payload, projectId });
     } catch (error) {
       setCleanupNotice({ projectId, error: true, message: error instanceof Error ? error.message : String(error) });
-    } finally { setCleanupBusy(false); }
-  };
+    }
+  });
 
-  const handleCleanWorktree = async () => {
+  const handleCleanWorktree = withPending('Limpeza da worktree', async () => {
     if (!cleanupPreview || cleanupPreview.projectId !== projectSettingsId || cleanupBusy) return;
     const { projectId, token } = cleanupPreview;
-    setCleanupBusy(true);
     try {
       const response = await apiFetch(`/api/projects/${projectId}/worktree/clean`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmed: true, token }),
@@ -568,8 +566,8 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
       setBoardGeneration(value => value + 1);
     } catch (error) {
       setCleanupNotice({ projectId, error: true, message: error instanceof Error ? error.message : String(error) });
-    } finally { setCleanupPreview(null); setCleanupBusy(false); }
-  };
+    } finally { setCleanupPreview(null); }
+  });
 
   const handleOpenTerminal = withFeedback("Abrir terminal", async (): Promise<void> => {
     if (!activeProjectId) throw new Error('Adicione ou selecione um projeto antes de abrir um terminal.');
@@ -1186,12 +1184,12 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
 
         {projectSettingsId && <div className="dialog-backdrop" onClick={(event) => { if (event.target === event.currentTarget) setProjectSettingsId(null); }}>
           <section className="project-dialog settings-dialog project-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="project-settings-title">
-            <div className="dialog-heading"><h2 id="project-settings-title">Configurações de {projects.find((project) => project.id === projectSettingsId)?.name ?? 'projeto'}</h2><button aria-label="Fechar configurações do projeto" onClick={() => setProjectSettingsId(null)}>×</button></div>
+            <div className="settings-dialog-header"><h2 id="project-settings-title">Configurações de {projects.find((project) => project.id === projectSettingsId)?.name ?? 'projeto'}</h2><button aria-label="Fechar configurações do projeto" onClick={() => setProjectSettingsId(null)}>×</button></div>
             {activeProjectId === projectSettingsId ? (
-<div className="project-settings-content" data-testid="setup-panel">
+<div className="settings-dialog-content project-settings-content" data-testid="setup-panel">
             <h2>Preparar o projeto para execução</h2>
             <p className="section-intro">Cada papel usa um host e só pode receber um modelo desse host. A lista é lida do agente instalado. Esta configuração tem prioridade sobre a global.</p>
-            <p>A instalação das skills e a configuração do repositório criam commits locais na branch atual. Faça commit ou stash das alterações existentes antes de continuar.</p>
+            <p>A instalação das skills e a configuração do repositório criam commits locais na branch atual. Faça commit das alterações ou use Limpar worktree no aviso abaixo para guardá-las em um backup antes de continuar.</p>
             {inspection?.remediationCards.map((card) => <div key={card.kind} className="setup-diagnostic"><strong>{card.title}</strong><p>{card.description}</p><p>{card.remediation}</p>
               {card.kind === 'dirty_worktree' && <button type="button" disabled={cleanupBusy} onClick={() => void handlePreviewCleanup()}>{cleanupBusy ? 'Preparando limpeza…' : 'Limpar worktree'}</button>}
             </div>)}

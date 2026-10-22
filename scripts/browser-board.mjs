@@ -155,6 +155,38 @@ try {
     await page.setViewportSize(originalViewport);
     await page.getByRole('button', { name: 'Fechar configurações do projeto' }).click();
     await openNavigation();
+    await page.getByTestId('open-settings-btn').click();
+    await page.getByRole('tab', { name: 'Gantry', exact: true }).click();
+    const globalPanel = page.getByTestId('global-gantry-panel');
+    await globalPanel.getByLabel('Host global', { exact: true }).selectOption('codex');
+    const configureRoles = globalPanel.getByRole('button', { name: 'Configurar papéis globais' });
+    if (await configureRoles.count()) await configureRoles.click();
+    for (const role of ['plan', 'implement', 'review', 'critic']) {
+      for (const field of ['Host', 'Modelo']) {
+        const control = globalPanel.getByLabel(`${field} global para ${role}`, { exact: true });
+        await control.scrollIntoViewIfNeeded();
+        await expect(control).toBeInViewport({ ratio: 1 });
+        const bounds = await control.evaluate(el => {
+          const text = Array.from(el.parentElement.childNodes).find(node => node.nodeType === Node.TEXT_NODE && node.textContent.trim());
+          const range = document.createRange();
+          range.selectNodeContents(text);
+          return { labelBottom: range.getBoundingClientRect().bottom, fieldTop: el.getBoundingClientRect().top };
+        });
+        expect(bounds.labelBottom).toBeLessThanOrEqual(bounds.fieldTop);
+      }
+    }
+    const globalDialog = page.getByRole('dialog', { name: 'Configurações', exact: true });
+    expect(await globalDialog.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+    await page.getByTestId('save-global-execution').scrollIntoViewIfNeeded();
+    await expect(page.getByTestId('save-global-execution')).toBeInViewport({ ratio: 1 });
+    await expect(globalDialog.getByRole('button', { name: 'Fechar configurações', exact: true })).toBeInViewport({ ratio: 1 });
+    await page.screenshot({ path: path.join(evidenceDir, `global-settings-${viewport.width}.png`) });
+    await page.getByRole('button', { name: 'Fechar configurações', exact: true }).click();
+    await openNavigation();
+    await sidebar.getByTestId(`project-settings-${projects[0].id}`).click();
+
+    await page.getByRole('button', { name: 'Fechar configurações do projeto' }).click();
+    await openNavigation();
     // Reach the last project through the scrolling list, then open settings directly for an inactive project.
     const lastProject = projects.at(-1);
     // Exercise cleanup only in a disposable empty project, never in the pack fixture or developer checkout.
@@ -177,12 +209,20 @@ try {
     await page.getByRole('button', { name: 'Limpar worktree', exact: true }).click();
     await expect(cleanupReview).toBeVisible();
     await page.screenshot({ path: path.join(evidenceDir, `cleanup-preview-${viewport.width}.png`) });
+    const observer = await browser.newPage({ viewport });
+    await observer.goto(url);
+    const observerSidebar = observer.getByTestId('sidebar');
+    if (!await observerSidebar.isVisible()) await observer.getByRole('button', { name: 'Alternar navegação' }).click();
+    await observerSidebar.getByTestId(`project-settings-${lastProject.id}`).click();
+    await expect(observer.getByRole('button', { name: 'Limpar worktree', exact: true })).toBeVisible();
     await cleanupReview.getByRole('button', { name: 'Guardar backup e limpar worktree' }).click();
     await expect(page.getByTestId('setup-panel')).toContainText('Worktree limpa. As alterações foram guardadas no Git stash.');
     expect(git(lastProject.path, 'status', '--porcelain')).toBe('');
     expect(git(lastProject.path, 'rev-parse', 'HEAD')).toBe(cleanupHead);
     expect(git(lastProject.path, 'stash', 'list')).toContain('gantry-harness-cleanup-');
     await expect(page.getByRole('button', { name: 'Limpar worktree', exact: true })).toHaveCount(0);
+    await expect(observer.getByRole('button', { name: 'Limpar worktree', exact: true })).toHaveCount(0);
+    await observer.close();
     await page.screenshot({ path: path.join(evidenceDir, `cleanup-result-${viewport.width}.png`) });
 
     await page.getByRole('button', { name: 'Fechar configurações do projeto' }).click();
@@ -244,6 +284,7 @@ try {
     results.push({ viewport, dimensions, projectSettings: modalChecks, pageErrors: errors });
     await page.close();
   }
+  fs.writeFileSync(path.join(evidenceDir, 'project-settings-results.json'), JSON.stringify(results.flatMap(result => result.projectSettings), null, 2));
   fs.writeFileSync(path.join(evidenceDir, 'results.json'), JSON.stringify({ ok: true, results }, null, 2));
   console.log(JSON.stringify({ ok: true, results }));
 } finally {

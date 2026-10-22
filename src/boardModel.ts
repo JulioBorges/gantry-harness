@@ -6,7 +6,7 @@ export interface BoardIssue {
   number: number;
   title: string;
   status: string;
-  path: string;
+  path?: string;
   synthetic?: boolean;
   frontierBlocked: boolean;
   openBlockers: string[];
@@ -286,19 +286,25 @@ export function issueLane(issue: Pick<BoardIssue, 'status' | 'ref'>, overlays: I
   return overlay?.lane ?? 'issues';
 }
 
+function isAbandonedRun(run: Pick<HarnessRunRecord, 'status'>): boolean {
+  return run.status === 'discarded' || run.status === 'rejected';
+}
+
+export function isRetiredRun(run: Pick<HarnessRunRecord, 'status' | 'prState'>): boolean {
+  return isAbandonedRun(run) || run.prState === 'closed';
+}
+
 export function overlaysFromRuns(runs: HarnessRunRecord[]): IssueRunOverlay[] {
   const overlays: IssueRunOverlay[] = [];
   for (const run of runs) {
-    if (run.status === 'discarded' || run.status === 'rejected') continue;
+    if (isRetiredRun(run)) continue;
     if (run.status === 'failed' && isSetupRefusalError(run.error) && !run.worktree) {
       continue;
     }
-    if (run.prState === 'closed' || run.prState === 'reopened') {
-      continue;
-    }
     const executionLane = run.lane ?? phaseToExecutionLane(run.packPhase, run.kind === 'plan' ? 'plan' : 'implement') ?? 'implement';
-    const lane = run.status === 'running' || run.status === 'paused' ? executionLane : 'issues';
+    const lane = run.prState !== 'reopened' && (run.status === 'running' || run.status === 'paused') ? executionLane : 'issues';
     const phase: IssueCardPhase =
+      run.prState === 'reopened' ? 'ready-for-approval' :
       run.status === 'paused'
         ? 'paused'
         : run.status === 'stopped'
@@ -337,8 +343,7 @@ export function issueWorktreeRuns(
 ): HarnessRunRecord[] {
   return runs.filter((run) =>
     run.projectId === projectId && run.kind === 'issue' && run.worktree &&
-    run.worktree !== checkoutPath && run.status !== 'discarded' && run.status !== 'rejected' &&
-    run.prState !== 'closed' && run.prState !== 'reopened',
+    run.worktree !== checkoutPath && !isRetiredRun(run),
   );
 }
 
@@ -377,7 +382,7 @@ export function mergeBoardWithPlanRuns(
           number,
           title: run.issueTitle ?? run.slug,
           status: 'ready-for-agent',
-          path: run.issuePath ?? '',
+          path: run.issuePath ?? undefined,
           synthetic: true,
           frontierBlocked: false,
           openBlockers: [],

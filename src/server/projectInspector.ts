@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { findExecutable, resolveSkillDir, runCommand, runGantryScript } from './commandRunner.js';
+import { git, readWorktreeStatus } from './git.js';
 import type { LiveBadgeState, RegisteredProject } from '../types.js';
 
 export interface SpecSummary {
@@ -348,11 +349,9 @@ export async function inspectProject(
   });
   const policyIgnored = ignoreRes.exitCode === 0;
 
-  const statusRes = await runCommand(['git', 'status', '--porcelain'], { cwd: repoRoot });
-  const dirtyFiles = statusRes.stdout
-    .split('\n')
-    .map((l) => l.trim())
-    .filter(Boolean);
+  // Plain folders are valid workspace projects; only Git checkouts have a worktree status.
+  const status = wtRes.exitCode === 0 ? await readWorktreeStatus(repoRoot) : { files: [] };
+  const dirtyFiles = status.files.map(file => `${file.status} ${file.path}`.trim());
   const dirtyWorkingTree = dirtyFiles.length > 0;
   const tracked = await runCommand(['git', 'ls-files'], { cwd: repoRoot });
   const trackedFiles = tracked.exitCode === 0
@@ -412,16 +411,15 @@ export async function inspectProject(
 }
 
 async function setupGit(repoRoot: string, args: string[]): Promise<string> {
-  const result = await runCommand(['git', ...args], { cwd: repoRoot });
-  if (result.exitCode !== 0) {
-    throw new Error(`Não foi possível registrar a instalação do Gantry: ${result.stderr.trim() || result.stdout.trim()}. Revise os arquivos e faça commit antes de executar o Gantry.`);
+  try { return await git(repoRoot, ...args); }
+  catch (error) {
+    throw new Error(`Não foi possível registrar a instalação do Gantry: ${error instanceof Error ? error.message : String(error)}. Revise os arquivos e faça commit antes de executar o Gantry.`);
   }
-  return result.stdout;
 }
 
 async function requireCleanSetupTree(repoRoot: string): Promise<void> {
-  const status = await setupGit(repoRoot, ['status', '--porcelain', '--untracked-files=all']);
-  if (status.trim()) {
+  const status = await readWorktreeStatus(repoRoot);
+  if (status.files.length) {
     throw new Error('Faça commit ou stash das alterações existentes antes de instalar ou configurar o Gantry. A instalação cria commits locais na branch atual.');
   }
   // Fail before writing if Git cannot create the installation commit.

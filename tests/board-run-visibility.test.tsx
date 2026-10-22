@@ -85,10 +85,18 @@ describe('Run projections shared by the board and sidebar', () => {
       { ...run, status: 'discarded' },
       { ...run, status: 'rejected' },
       { ...run, prState: 'closed' },
-      { ...run, prState: 'reopened' },
     ];
     expect(issueWorktreeRuns([...valid, ...excluded], 'project-1', '/tmp/checkout')).toEqual(valid);
     expect(issueWorktreeRuns(valid, null, '/tmp/checkout')).toEqual([]);
+  });
+
+  it('keeps a reopened PR approvable in Issues and retains its worktree in the sidebar', () => {
+    const reopened: HarnessRunRecord = { ...run, prState: 'reopened', status: 'ready-for-approval', derivedPhase: 'ready-for-approval' };
+    expect(issueWorktreeRuns([reopened], run.projectId, '/tmp/checkout')).toEqual([reopened]);
+    const overlays = overlaysFromRuns([reopened]);
+    expect(issueLane(board.issues[0], overlays)).toBe('issues');
+    render(<BoardView board={board} hasProject runs={[reopened]} onRefresh={() => undefined} onApproveRun={() => undefined} />);
+    expect(screen.getByTestId('approve-run-feature#01')).toBeTruthy();
   });
 
   it('marks Plan-only cards and leaves missing Issue paths absent until the pack supplies them', () => {
@@ -96,7 +104,7 @@ describe('Run projections shared by the board and sidebar', () => {
     const plan: HarnessRunRecord = { ...run, kind: 'plan', ref: 'feature', worktree: null, error: { code: 'setup-invalid' } };
     const synthetic = mergeBoardWithPlanRuns(empty, [plan]).issues[0];
     expect(synthetic.synthetic).toBe(true);
-    expect(synthetic.path).toBe('');
+    expect(synthetic.path).toBeUndefined();
     expect(mergeBoardWithPlanRuns(board, [plan]).issues[0]).toBe(board.issues[0]);
   });
 });

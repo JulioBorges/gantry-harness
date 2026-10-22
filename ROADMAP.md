@@ -6,7 +6,7 @@ Acompanhamento do gantry-harness. A linha `Status:` de cada Issue é a fonte da 
 
 | | Count |
 |---|---|
-| Issues completed | **14 / 20** |
+| Issues completed | **15 / 21** |
 | Specs completed | **1 / 2** |
 | Execution waves | **11** |
 
@@ -23,6 +23,8 @@ Números são a linha `Map:` de cada `spec.md` (`(spec NN)`). A tabela abaixo é
 
 A wave é uma projeção de dependências locais, não autorização para iniciar toda Issue nela. `prd-alignment#03` está `blocked` pelos contratos upstream U1/U2/U3, descritos na [spec](.scratch/prd-alignment/spec.md#pré-requisitos-upstream). #04 e #08 foram entregues na wave 6, independentemente dessa integração; [validação e evidências](.scratch/prd-alignment/wave-6-validation.md). A wave 6 permanece parcialmente concluída enquanto #03 aguarda o upstream. A #10 concentra os textos gerais; a #11 aguarda #03/#10 para documentar o setup integrado e retirar ressalvas vencidas sobre o pin.
 
+A manutenção manual da worktree foi adicionada ao escopo por pedido de Julio em 2026-10-22 e entregue como `prd-alignment#12`, conforme a [ADR-0003](docs/adr/0003-limpeza-da-worktree-pelo-operador.md). Os [resultados consolidados da revisão](.scratch/prd-alignment/pr-17-review-validation.md) incluem os testes de concorrência com Runs.
+
 ## Progresso por spec
 
 <!-- BEGIN GENERATED: spec progress -->
@@ -30,7 +32,7 @@ A wave é uma projeção de dependências locais, não autorização para inicia
 | # | Spec | Issues done | Waves |
 |---|---|---|---|
 | 01 | `run-orchestration` | 9/9 | 0–3 |
-| 02 | `prd-alignment` | 5/11 | 4–10 |
+| 02 | `prd-alignment` | 6/12 | 4–10 |
 
 <!-- END GENERATED: spec progress -->
 
@@ -85,12 +87,14 @@ A wave é uma projeção de dependências locais, não autorização para inicia
 - [x] **`prd-alignment#08`** — 08: Reorganizar a sidebar para identificar e trocar projetos
   <br>↳ blocked by: prd-alignment#02
 
-### Wave 7 — 0/2 done
+### Wave 7 — 1/3 done
 
 - [ ] **`prd-alignment#05`** — 05: Confirmar a onda e tirar o aprovar cego
   <br>↳ blocked by: prd-alignment#04
 - [ ] **`prd-alignment#06`** — 06: Dizer a pausa em português
   <br>↳ blocked by: prd-alignment#04
+- [x] **`prd-alignment#12`** — 12: Limpar a worktree por decisão do operador
+  <br>↳ blocked by: prd-alignment#08
 
 ### Wave 8 — 0/1 done
 
