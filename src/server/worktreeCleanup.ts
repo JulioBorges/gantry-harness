@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { git, readWorktreeStatus, type WorktreeFile } from './git.js';
+import { GitError, git, readWorktreeStatus, type WorktreeFile } from './git.js';
 
 export interface WorktreeCleanupPreview {
   root: string;
@@ -13,9 +13,19 @@ export class WorktreeCleanupError extends Error {
   constructor(message: string, public statusCode = 409, public worktreeMutated = false) { super(message); }
 }
 
+function resolveCheckout(checkout: string): string {
+  try {
+    return fs.realpathSync(checkout);
+  } catch (error) {
+    const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+    if (code === 'ENOENT') throw new GitError('Não foi possível executar o Git: o diretório do projeto não está mais disponível.');
+    throw error;
+  }
+}
+
 export async function previewWorktreeCleanup(checkout: string): Promise<WorktreeCleanupPreview> {
-  const root = fs.realpathSync(checkout);
-  const gitRoot = fs.realpathSync((await git(root, 'rev-parse', '--show-toplevel')).trim());
+  const root = resolveCheckout(checkout);
+  const gitRoot = resolveCheckout((await git(root, 'rev-parse', '--show-toplevel')).trim());
   if (root !== gitRoot) throw new WorktreeCleanupError('Abra a raiz da worktree para limpar o projeto.');
   const head = (await git(root, 'rev-parse', '--verify', 'HEAD')).trim();
   const { raw: status, files } = await readWorktreeStatus(root);
@@ -45,7 +55,8 @@ export async function previewWorktreeCleanup(checkout: string): Promise<Worktree
 const cleaning = new Set<string>();
 
 export async function cleanWorktree(checkout: string, token: unknown): Promise<{ backup: string; clean: boolean }> {
-  const commonDir = fs.realpathSync(path.resolve(checkout, (await git(checkout, 'rev-parse', '--git-common-dir')).trim()));
+  const root = resolveCheckout(checkout);
+  const commonDir = resolveCheckout(path.resolve(root, (await git(root, 'rev-parse', '--git-common-dir')).trim()));
   if (cleaning.has(commonDir)) throw new WorktreeCleanupError('Já existe uma limpeza em andamento neste repositório.');
   cleaning.add(commonDir);
   try {

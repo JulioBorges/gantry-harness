@@ -340,6 +340,31 @@ print(json.dumps({'issues': [], 'specs': [], 'frontier': []}))
     } finally { git(repo, 'config', 'core.bare', 'false'); }
   });
 
+  it.each(['preview', 'clean'] as const)('reports a deleted project directory as git-unavailable on %s', async (action) => {
+    const id = await register(repo);
+    const removed = repo;
+    fs.rmSync(removed, { recursive: true, force: true });
+    const response = await request(id, action, { confirmed: true, token: 'a'.repeat(64) });
+    const body = await response.json();
+    expect(response.status).toBe(503);
+    expect(body.code).toBe('git-unavailable');
+    expect(JSON.stringify(body)).not.toMatch(/ENOENT|lstat|posix_spawn/);
+    expect(JSON.stringify(body)).not.toContain(removed);
+  });
+
+  it.each(['preview', 'clean'] as const)('reports a removed linked worktree as git-unavailable on %s', async (action) => {
+    const linked = path.join(root, 'linked');
+    git(repo, 'worktree', 'add', '-b', 'feature', linked);
+    const id = await register(linked);
+    git(repo, 'worktree', 'remove', '--force', linked);
+    const response = await request(id, action, { confirmed: true, token: 'a'.repeat(64) });
+    const body = await response.json();
+    expect(response.status).toBe(503);
+    expect(body.code).toBe('git-unavailable');
+    expect(JSON.stringify(body)).not.toMatch(/ENOENT|lstat|posix_spawn/);
+    expect(JSON.stringify(body)).not.toContain(linked);
+  });
+
   it('reports Git failure on worktree preview as git-unavailable', async () => {
     const id = await register(repo);
     fs.renameSync(path.join(repo, '.git'), path.join(repo, '.git-hidden'));
