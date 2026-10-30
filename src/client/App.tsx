@@ -94,7 +94,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   const [runs, setRuns] = useState<HarnessRunRecord[]>([]);
 
   const [cleanupPreview, setCleanupPreview] = useState<(WorktreeCleanupPreview & { projectId: string }) | null>(null);
-  const [cleanupNotice, setCleanupNotice] = useState<{ projectId: string; error: boolean; message: string; backup?: string } | null>(null);
+  const [cleanupNotice, setCleanupNotice] = useState<{ projectId: string; error: boolean; message: string; backup?: string; remaining?: string[] } | null>(null);
   const [setupDiffPreview, setSetupDiffPreview] = useState<string>('');
   const [projectSettingsId, setProjectSettingsId] = useState<string | null>(null);
   const [setupHostHarness, setSetupHostHarness] = useState<string>('opencode');
@@ -564,13 +564,19 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
       });
       const payload = await response.json();
       const backup = typeof payload.backup === 'string' ? payload.backup : undefined;
+      const remaining = Array.isArray(payload.remaining)
+        ? payload.remaining.filter((entry: unknown): entry is string => typeof entry === 'string' && entry.length > 0 && !entry.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(entry) && !entry.split(/[\\/]/).includes('..'))
+        : [];
       if (!response.ok) {
         setCleanupNotice({ projectId, error: true, backup, message: payload.error ?? 'Não foi possível limpar a worktree.' });
         return;
       }
-      setCleanupNotice({ projectId, error: !payload.clean, backup, message: payload.clean
+      const unverified = payload.verified === false;
+      setCleanupNotice({ projectId, error: !payload.clean || unverified, backup, remaining: unverified ? remaining : undefined, message: payload.clean && !unverified
         ? 'Worktree limpa. As alterações foram guardadas no Git stash.'
-        : 'Backup criado, mas ainda há alterações na worktree. Revise o estado do projeto.' });
+        : unverified
+          ? 'O backup foi criado, mas o estado da worktree não foi confirmado. Remova ou mova os arquivos que sobraram antes de aplicar o backup.'
+          : 'Backup criado, mas ainda há alterações na worktree. Revise o estado do projeto.' });
       setupProjectLoaded.current = null;
       await loadWorkspaceState();
       setBoardGeneration(value => value + 1);
@@ -1208,6 +1214,10 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
               <p>As alterações abaixo serão retiradas da worktree e guardadas em um backup no Git stash, incluindo arquivos novos. Arquivos ignorados pelo Git permanecem no projeto.</p>
               <code>{cleanupPreview.root}</code>
               <ul>{cleanupPreview.files.map(file => <li key={file.path}><code>{file.status} {file.originalPath ? `${file.originalPath} → ` : ''}{file.path}</code></li>)}</ul>
+              {cleanupPreview.backups.length > 0 && <>
+                <p>Backups já criados por Limpar worktree neste repositório:</p>
+                <ul>{cleanupPreview.backups.map(backup => <li key={backup.hash}><code>{backup.subject}</code> <code>git stash apply --index {backup.hash}</code></li>)}</ul>
+              </>}
               <div className="project-setup-actions">
                 <button type="button" disabled={cleanupBusy} onClick={() => setCleanupPreview(null)}>Cancelar limpeza</button>
                 <button type="button" disabled={cleanupBusy} onClick={() => void handleCleanWorktree()}>{cleaningWorktree ? 'Limpando…' : 'Guardar backup e limpar worktree'}</button>
@@ -1215,6 +1225,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
             </section>}
             {cleanupNotice?.projectId === projectSettingsId && <div className="setup-diagnostic" role={cleanupNotice.error ? 'alert' : 'status'}>
               <p>{cleanupNotice.message}</p>
+              {cleanupNotice.remaining && cleanupNotice.remaining.length > 0 && <ul>{cleanupNotice.remaining.map(file => <li key={file}><code>{file}</code></li>)}</ul>}
               {cleanupNotice.backup && <p>Para recuperar as alterações no terminal: <code>git stash apply --index {cleanupNotice.backup}</code></p>}
             </div>}
             <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>

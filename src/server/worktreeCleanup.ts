@@ -1,12 +1,18 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { GitError, git, readWorktreeStatus, type WorktreeFile } from './git.js';
+import { GitError, git, gitOptionalRef, readWorktreeStatus, type WorktreeFile } from './git.js';
+
+export interface WorktreeCleanupBackup {
+  hash: string;
+  subject: string;
+}
 
 export interface WorktreeCleanupPreview {
   root: string;
   token: string;
   files: WorktreeFile[];
+  backups: WorktreeCleanupBackup[];
 }
 
 export class WorktreeCleanupError extends Error {
@@ -65,6 +71,7 @@ export async function previewWorktreeCleanup(checkout: string): Promise<Worktree
     throw new WorktreeCleanupError('Há alterações em submódulos. Resolva-as no próprio submódulo antes de limpar.');
   }
   const hash = crypto.createHash('sha256').update(JSON.stringify([root, head, status]));
+  hash.update(await gitOptionalRef(root, 'refs/stash'));
   hash.update(await git(root, 'diff', '--binary', '--no-ext-diff', '--no-textconv'));
   hash.update(await git(root, 'diff', '--cached', '--binary', '--no-ext-diff', '--no-textconv'));
   for (const file of files.filter(file => file.status === '??')) {
@@ -75,13 +82,42 @@ export async function previewWorktreeCleanup(checkout: string): Promise<Worktree
     if (stat.isSymbolicLink()) hash.update(fs.readlinkSync(filename));
     else for await (const chunk of fs.createReadStream(filename)) hash.update(chunk);
   }
-  return { root, token: hash.digest('hex'), files };
+  return { root, token: hash.digest('hex'), files, backups: await listCleanupBackups(root) };
+}
+
+async function listCleanupBackups(root: string): Promise<WorktreeCleanupBackup[]> {
+  const text = await git(root, 'stash', 'list', '--format=%H%x00%gs');
+  const backups: WorktreeCleanupBackup[] = [];
+  for (const line of text.split('\n')) {
+    if (!line.includes('gantry-harness-cleanup-')) continue;
+    const [hash, subject = ''] = line.split('\0');
+    if (hash && STASH_HASH.test(hash)) backups.push({ hash, subject });
+  }
+  return backups;
 }
 
 // ADR-0003: the supervisor coordinates Runs; this writer lock also protects direct callers.
 const cleaning = new Set<string>();
 
-export async function cleanWorktree(checkout: string, token: unknown): Promise<{ backup: string; clean: boolean; verified: boolean }> {
+export interface WorktreeCleanupResult {
+  backup: string;
+  clean: boolean;
+  verified: boolean;
+  /** Paths still in the worktree after a backup was saved. Relative to the checkout, never absolute. */
+  remaining?: string[];
+}
+
+function remainingWorktreePaths(files: WorktreeFile[]): string[] {
+  const paths: string[] = [];
+  for (const file of files) {
+    if (!file.path || file.path.startsWith('/') || /^[A-Za-z]:[\\/]/.test(file.path)) continue;
+    if (file.path.split(/[\\/]/).includes('..')) continue;
+    paths.push(file.path);
+  }
+  return paths;
+}
+
+export async function cleanWorktree(checkout: string, token: unknown): Promise<WorktreeCleanupResult> {
   const root = resolveCheckout(checkout);
   const commonDir = resolveCheckout(path.resolve(root, (await git(root, 'rev-parse', '--git-common-dir')).trim()));
   if (cleaning.has(commonDir)) throw new WorktreeCleanupError('Já existe uma limpeza em andamento neste repositório.');
@@ -104,7 +140,15 @@ export async function cleanWorktree(checkout: string, token: unknown): Promise<{
       if (pushError) throw pushError;
       throw new WorktreeCleanupError('O Git criou o stash, mas não foi possível identificar o backup. Consulte git stash list antes de continuar.', 409, true);
     }
-    if (pushError) return { backup, clean: false, verified: false };
+    if (pushError) {
+      try {
+        const status = await readWorktreeStatus(preview.root);
+        const remaining = remainingWorktreePaths(status.files);
+        return { backup, clean: false, verified: false, ...(remaining.length > 0 ? { remaining } : {}) };
+      } catch {
+        return { backup, clean: false, verified: false };
+      }
+    }
     try {
       const status = await readWorktreeStatus(preview.root);
       return { backup, clean: status.files.length === 0, verified: true };

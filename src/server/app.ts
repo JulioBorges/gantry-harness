@@ -938,10 +938,11 @@ export async function createHarnessServer(
 
       sendJson(res, 404, { error: `Not found: ${pathname}` });
     } catch (err) {
-      sendJson(res, err instanceof GitError ? 503 : 500, {
-        error: err instanceof Error ? err.message : 'Internal server error',
-        ...(err instanceof GitError ? { code: 'git-unavailable' } : {}),
-      });
+      if (err instanceof GitError) {
+        sendJson(res, err.code === 'git-unavailable' ? 503 : 409, { error: err.message, code: err.code });
+        return;
+      }
+      sendJson(res, 500, { error: err instanceof Error ? err.message : 'Internal server error' });
     }
   });
 

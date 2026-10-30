@@ -115,6 +115,28 @@ describe('Worktree cleanup over HTTP', () => {
     expect(git(repo, 'stash', 'list')).toBe('');
   });
 
+  it('refuses a preview token after a new cleanup backup and lists only those backups', async () => {
+    const id = await register(repo);
+    fs.writeFileSync(path.join(repo, 'README.md'), 'Dirty\n');
+    const first = await (await request(id, 'preview')).json();
+    expect(first.backups).toEqual([]);
+    git(repo, 'stash', 'push', '--include-untracked', '--message', 'gantry-harness-cleanup-existing');
+    git(repo, 'stash', 'apply', '--index');
+    git(repo, 'stash', 'push', '--include-untracked', '--message', 'unrelated');
+    git(repo, 'stash', 'apply', '--index');
+    const second = await (await request(id, 'preview')).json();
+    const cleanupHash = git(repo, 'rev-parse', 'stash@{1}');
+    expect(second.token).not.toBe(first.token);
+    expect(second.backups).toEqual([{ hash: cleanupHash, subject: expect.stringContaining('gantry-harness-cleanup-existing') }]);
+    expect(JSON.stringify(second.backups)).not.toContain('unrelated');
+    expect(JSON.stringify(second.backups)).not.toContain(repo);
+    const refused = await request(id, 'clean', { confirmed: true, token: first.token });
+    expect(refused.status).toBe(409);
+    expect((await refused.json()).error).toMatch(/mudaram/i);
+    expect(git(repo, 'stash', 'list').split('\n').filter(Boolean)).toHaveLength(2);
+    expect(fs.readFileSync(path.join(repo, 'README.md'), 'utf8')).toBe('Dirty\n');
+  });
+
   it('requires confirmation and binds the preview to the selected checkout', async () => {
     const id = await register(repo);
     fs.writeFileSync(path.join(repo, 'README.md'), 'Keep\n');
@@ -343,13 +365,17 @@ print(json.dumps({'issues': [], 'specs': [], 'frontier': []}))
     expect(refresh.mock.calls.some(([project]) => project.id === id)).toBe(true);
   });
 
-  it('reports an unavailable Git inspection as a managed service error', async () => {
+  it('reports a bare repository inspection as a Git failure without calling it inaccessible', async () => {
     const id = await register(repo);
     git(repo, 'config', 'core.bare', 'true');
     try {
       const response = await fetch(`http://127.0.0.1:${server.port}/api/projects/${id}/inspect`);
-      expect(response.status).toBe(503);
-      expect((await response.json()).code).toBe('git-unavailable');
+      const body = await response.json();
+      expect(response.status).toBe(409);
+      expect(body.code).toBe('git-failed');
+      expect(body.error).toBe(gitModule.GIT_FAILED_MESSAGE);
+      expect(body.error).not.toMatch(/inacessível/);
+      expect(JSON.stringify(body)).not.toContain(repo);
     } finally { git(repo, 'config', 'core.bare', 'false'); }
   });
 
@@ -631,8 +657,23 @@ print(json.dumps({'issues': [], 'specs': [], 'frontier': []}))
       const body = await response.json();
       const backup = git(repo, 'rev-parse', 'refs/stash');
       expect(response.status).toBe(200);
-      expect(body).toEqual({ backup, clean: false, verified: false });
+      expect(body).toEqual({ backup, clean: false, verified: false, remaining: ['README.md', 'locked/note.txt'] });
       expect(JSON.stringify(body)).not.toContain(repo);
+      expect(body.remaining.every((file: string) => !path.isAbsolute(file))).toBe(true);
+      let blocked = '';
+      try {
+        git(repo, 'stash', 'apply', '--index', backup);
+      } catch (error) {
+        blocked = String((error as { stderr?: string }).stderr ?? error);
+      }
+      expect(blocked).toMatch(/already exists, no checkout/);
+      expect(git(repo, 'rev-parse', 'refs/stash')).toBe(backup);
+      fs.chmodSync(locked, 0o755);
+      fs.rmSync(path.join(locked, 'note.txt'));
+      git(repo, 'stash', 'apply', '--index', backup);
+      expect(fs.readFileSync(path.join(locked, 'note.txt'), 'utf8')).toBe('secret\n');
+      expect(git(repo, 'diff', '--cached')).toContain('Staged');
+      expect(git(repo, 'rev-parse', 'refs/stash')).toBe(backup);
       expect(git(repo, 'stash', 'list').split('\n').filter(Boolean)).toHaveLength(1);
       const stashed = git(repo, 'stash', 'show', '--include-untracked', '--name-only', backup);
       expect(stashed).toContain('README.md');

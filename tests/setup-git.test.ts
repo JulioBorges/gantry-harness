@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { GitError } from '../src/server/git.js';
 import { applyRepositorySetup, bootstrapProjectSkills } from '../src/server/projectInspector.js';
 
 describe('Gantry installation Git lifecycle', () => {
@@ -82,9 +83,32 @@ policy = json.loads(sys.argv[sys.argv.index('--config') + 1])
     const hook = path.join(repo, '.git/hooks/pre-commit');
     fs.writeFileSync(hook, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
     const head = git('rev-parse', 'HEAD');
-    await expect(bootstrapProjectSkills(repo, home)).rejects.toThrow(/registrar a instalação/);
+    const error = await bootstrapProjectSkills(repo, home).then(() => null, (caught: unknown) => caught);
+    expect(error).toBeInstanceOf(GitError);
+    expect((error as GitError).code).toBe('git-failed');
+    expect((error as Error).message).toMatch(/registrar a instalação/);
+    expect((error as Error).message).not.toMatch(/inacessível/);
+    expect((error as Error).message).not.toContain(repo);
     expect(git('rev-parse', 'HEAD')).toBe(head);
     expect(fs.existsSync(path.join(repo, '.agents/skills/gantry/SKILL.md'))).toBe(true);
+  });
+
+  it('reports a missing author identity without calling the repository inaccessible', async () => {
+    git('config', '--unset', 'user.name');
+    git('config', '--unset', 'user.email');
+    const logged: string[] = [];
+    const logSpy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { logged.push(args.map(String).join(' ')); });
+    try {
+      const error = await bootstrapProjectSkills(repo, home).then(() => null, (caught: unknown) => caught);
+      expect(error).toBeInstanceOf(GitError);
+      expect((error as GitError).code).toBe('git-identity-unknown');
+      expect((error as Error).message).toMatch(/user\.name e user\.email/);
+      expect((error as Error).message).toMatch(/registrar a instalação/);
+      expect((error as Error).message).not.toMatch(/inacessível|Author identity unknown/);
+      expect((error as Error).message).not.toContain(repo);
+      expect(logged.join('\n')).toMatch(/Author identity unknown/);
+      expect(fs.existsSync(path.join(repo, '.agents'))).toBe(false);
+    } finally { logSpy.mockRestore(); }
   });
 
   it('refuses ignored skills before installing files that cannot be committed', async () => {

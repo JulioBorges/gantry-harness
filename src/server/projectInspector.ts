@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { findExecutable, resolveSkillDir, runCommand, runGantryScript } from './commandRunner.js';
-import { git, readWorktreeStatus } from './git.js';
+import { GitError, git, readWorktreeStatus } from './git.js';
 import type { LiveBadgeState, RegisteredProject } from '../types.js';
 
 export interface SpecSummary {
@@ -413,7 +413,10 @@ export async function inspectProject(
 async function setupGit(repoRoot: string, args: string[]): Promise<string> {
   try { return await git(repoRoot, ...args); }
   catch (error) {
-    throw new Error(`Não foi possível registrar a instalação do Gantry: ${error instanceof Error ? error.message : String(error)}. Revise os arquivos e faça commit antes de executar o Gantry.`);
+    const detail = error instanceof Error ? error.message : String(error);
+    const message = `Não foi possível registrar a instalação do Gantry: ${detail}. Revise os arquivos e faça commit antes de executar o Gantry.`;
+    if (error instanceof GitError) throw new GitError(message, error.code);
+    throw new Error(message);
   }
 }
 
