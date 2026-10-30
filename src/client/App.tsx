@@ -563,8 +563,12 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmed: true, token }),
       });
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error ?? 'Não foi possível limpar a worktree.');
-      setCleanupNotice({ projectId, error: !payload.clean, backup: payload.backup, message: payload.clean
+      const backup = typeof payload.backup === 'string' ? payload.backup : undefined;
+      if (!response.ok) {
+        setCleanupNotice({ projectId, error: true, backup, message: payload.error ?? 'Não foi possível limpar a worktree.' });
+        return;
+      }
+      setCleanupNotice({ projectId, error: !payload.clean, backup, message: payload.clean
         ? 'Worktree limpa. As alterações foram guardadas no Git stash.'
         : 'Backup criado, mas ainda há alterações na worktree. Revise o estado do projeto.' });
       setupProjectLoaded.current = null;

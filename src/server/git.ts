@@ -1,6 +1,13 @@
 import { runCommand } from './commandRunner.js';
 
-export class GitError extends Error {}
+export const GIT_UNAVAILABLE_MESSAGE = 'Não foi possível executar o Git: o repositório não está acessível.';
+
+export class GitError extends Error {
+  readonly code = 'git-unavailable';
+  constructor(message = GIT_UNAVAILABLE_MESSAGE) {
+    super(message);
+  }
+}
 
 const UNAVAILABLE_SPAWN = new Set(['ENOTDIR', 'EACCES']);
 
@@ -9,15 +16,10 @@ function errorCode(error: unknown): string | undefined {
   return undefined;
 }
 
-/** Git's own text often repeats absolute paths; those must not reach the operator. */
-function redactFilesystemPaths(text: string, root?: string): string {
-  let redacted = text;
-  if (root) redacted = redacted.replaceAll(root, '');
-  return redacted
-    .replace(/(?:[A-Za-z]:[\\/]|\/|~\/)[^\s"'`<>|;]+/g, '')
-    .replace(/[ \t]{2,}/g, ' ')
-    .replace(/\s+([:.,])/g, '$1')
-    .trim();
+function logGitFailure(root: string, args: string[], detail: { code?: string; exitCode?: number; stderr?: string; stdout?: string }): void {
+  const output = (detail.stderr ?? '').trim() || (detail.stdout ?? '').trim();
+  const status = detail.code ?? (detail.exitCode === undefined ? 'failed' : `exit ${detail.exitCode}`);
+  console.error([`git unavailable (${status}): git ${args.join(' ')} (cwd ${root})`, output].filter(Boolean).join('\n'));
 }
 
 export async function git(root: string, ...args: string[]): Promise<string> {
@@ -25,14 +27,16 @@ export async function git(root: string, ...args: string[]): Promise<string> {
   try {
     result = await runCommand(['git', ...args], { cwd: root });
   } catch (error) {
-    if (UNAVAILABLE_SPAWN.has(errorCode(error) ?? '')) {
-      throw new GitError('Não foi possível executar o Git: o repositório não está acessível.');
+    const code = errorCode(error);
+    if (UNAVAILABLE_SPAWN.has(code ?? '')) {
+      logGitFailure(root, args, { code });
+      throw new GitError();
     }
     throw error;
   }
   if (result.exitCode !== 0) {
-    const detail = redactFilesystemPaths(result.stderr.trim() || result.stdout.trim(), root);
-    throw new GitError(`Não foi possível executar o Git: ${detail || 'verifique o repositório.'}`);
+    logGitFailure(root, args, { exitCode: result.exitCode, stderr: result.stderr, stdout: result.stdout });
+    throw new GitError();
   }
   return result.stdout;
 }
