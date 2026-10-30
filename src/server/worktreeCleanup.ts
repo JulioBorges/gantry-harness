@@ -21,6 +21,7 @@ export class WorktreeCleanupError extends Error {
     public statusCode = 409,
     public worktreeMutated = false,
     public backup?: string,
+    public conflicts?: string[],
   ) { super(message); }
 }
 
@@ -107,6 +108,17 @@ export interface WorktreeCleanupResult {
   keep?: string[];
   /** Restores untracked paths from `<backup>^3` that are no longer on disk. Never includes a tracked path. */
   restore?: string;
+  /** Tracked paths whose worktree bytes no longer match the stash commit after a partial reset. */
+  reverted?: string[];
+  /** `git restore --source <backup> --worktree -- <reverted>`. Does not touch the index. */
+  restoreTracked?: string;
+  /** Untracked paths that exist and differ from `<backup>^3`. They are omitted from `restore`. */
+  conflicts?: string[];
+}
+
+export interface WorktreeRestoreResult {
+  backup: string;
+  restored: string[];
 }
 
 function safeRelativePath(filePath: string): string | undefined {
@@ -120,40 +132,116 @@ function quoteShell(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-function pathIsOnDisk(root: string, relative: string): boolean {
+function logCleanupFailure(event: string, error: unknown): void {
+  const rawCode = error instanceof GitError
+    ? error.code
+    : error instanceof WorktreeCleanupError
+      ? 'worktree-cleanup'
+      : typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
+        ? error.code
+        : 'unknown';
+  const code = /^[A-Za-z0-9_-]{1,40}$/.test(rawCode) ? rawCode : 'unknown';
+  console.error(JSON.stringify({ event, code }));
+}
+
+function recoveryCommand(source: string, paths: string[]): string {
+  return `git restore --source ${quoteShell(source)} --worktree -- ${paths.map(quoteShell).join(' ')}`;
+}
+
+interface DiskState {
+  kind: 'missing' | 'occupied';
+  hash?: string;
+}
+
+async function diskState(root: string, relative: string): Promise<DiskState> {
+  const filename = path.join(root, relative);
+  let stat: fs.Stats;
   try {
-    fs.lstatSync(path.join(root, relative));
-    return true;
-  } catch {
-    return false;
+    stat = fs.lstatSync(filename);
+  } catch (error) {
+    const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+    if (code === 'ENOENT') return { kind: 'missing' };
+    logCleanupFailure('worktree-cleanup.stat-failed', error);
+    return { kind: 'occupied' };
+  }
+  if (!stat.isFile()) return { kind: 'occupied' };
+  try {
+    return { kind: 'occupied', hash: (await git(root, 'hash-object', '--', relative)).trim() };
+  } catch (error) {
+    logCleanupFailure('worktree-cleanup.hash-object-failed', error);
+    return { kind: 'occupied' };
   }
 }
 
-async function recoveryAfterPartialStash(root: string, backup: string, files: WorktreeFile[]): Promise<Pick<WorktreeCleanupResult, 'keep' | 'restore'>> {
-  const keep = files
+interface UntrackedRestorePlan {
+  missing: string[];
+  conflicts: string[];
+}
+
+async function untrackedRestorePlan(root: string, backup: string): Promise<UntrackedRestorePlan> {
+  // `^3` is the untracked commit. A tracked path restored from it deletes the worktree file and exits 0.
+  const records = (await git(root, 'ls-tree', '-r', '-z', `${backup}^3`)).split('\0').filter(Boolean);
+  const tracked = new Set((await git(root, 'ls-files', '-z')).split('\0').filter(Boolean));
+  const missing: string[] = [];
+  const conflicts: string[] = [];
+  for (const record of records) {
+    const tab = record.indexOf('\t');
+    if (tab < 0) continue;
+    const hash = record.slice(0, tab).split(' ')[2];
+    const relative = safeRelativePath(record.slice(tab + 1));
+    if (!relative || !hash || tracked.has(relative)) continue;
+    const state = await diskState(root, relative);
+    if (state.kind === 'missing') missing.push(relative);
+    else if (state.hash !== hash) conflicts.push(relative);
+  }
+  missing.sort();
+  conflicts.sort();
+  return { missing, conflicts };
+}
+
+async function revertedTracked(root: string, backup: string, before: WorktreeFile[]): Promise<string[]> {
+  const trackedBefore = [...new Set(before
+    .filter(file => file.status !== '??')
+    .map(file => safeRelativePath(file.path))
+    .filter((entry): entry is string => Boolean(entry)))].sort();
+  if (trackedBefore.length === 0) return [];
+  const diff = await git(root, 'diff', '--no-renames', '--name-only', '-z', backup, '--', ...trackedBefore);
+  const allowed = new Set(trackedBefore);
+  return [...new Set(diff.split('\0')
+    .map(safeRelativePath)
+    .filter((entry): entry is string => entry !== undefined && allowed.has(entry)))].sort();
+}
+
+async function recoveryAfterPartialStash(root: string, backup: string, after: WorktreeFile[], before: WorktreeFile[]): Promise<Pick<WorktreeCleanupResult, 'keep' | 'restore' | 'reverted' | 'restoreTracked' | 'conflicts'>> {
+  const keep = after
     .filter(file => file.status !== '??')
     .map(file => safeRelativePath(file.path))
     .filter((entry): entry is string => Boolean(entry))
     .sort();
-  let missing: string[] = [];
   try {
-    // `^3` is the untracked commit. Passing a tracked path to restore from it deletes the worktree file and exits 0.
-    const listed = (await git(root, 'ls-tree', '-r', '--name-only', '-z', `${backup}^3`)).split('\0');
-    const tracked = new Set((await git(root, 'ls-files', '-z')).split('\0').filter(Boolean));
-    missing = listed
-      .map(safeRelativePath)
-      .filter((entry): entry is string => Boolean(entry))
-      .filter(entry => !tracked.has(entry) && !pathIsOnDisk(root, entry))
-      .sort();
-  } catch {
-    missing = [];
+    const plan = await untrackedRestorePlan(root, backup);
+    const reverted = await revertedTracked(root, backup, before);
+    return {
+      ...(keep.length > 0 ? { keep } : {}),
+      ...(plan.missing.length > 0 ? { restore: recoveryCommand(`${backup}^3`, plan.missing) } : {}),
+      ...(plan.conflicts.length > 0 ? { conflicts: plan.conflicts } : {}),
+      ...(reverted.length > 0 ? { reverted, restoreTracked: recoveryCommand(backup, reverted) } : {}),
+    };
+  } catch (error) {
+    logCleanupFailure('worktree-cleanup.recovery-list-failed', error);
+    return keep.length > 0 ? { keep } : {};
   }
-  return {
-    ...(keep.length > 0 ? { keep } : {}),
-    ...(missing.length > 0 ? {
-      restore: `git restore --source ${quoteShell(`${backup}^3`)} --worktree -- ${missing.map(quoteShell).join(' ')}`,
-    } : {}),
-  };
+}
+
+async function withCleaningLock<T>(root: string, action: () => Promise<T>): Promise<T> {
+  const commonDir = resolveCheckout(path.resolve(root, (await git(root, 'rev-parse', '--git-common-dir')).trim()));
+  if (cleaning.has(commonDir)) throw new WorktreeCleanupError('Já existe uma limpeza em andamento neste repositório.');
+  cleaning.add(commonDir);
+  try {
+    return await action();
+  } finally {
+    cleaning.delete(commonDir);
+  }
 }
 
 export async function cleanWorktree(checkout: string, token: unknown): Promise<WorktreeCleanupResult> {
@@ -182,18 +270,59 @@ export async function cleanWorktree(checkout: string, token: unknown): Promise<W
     if (pushError) {
       try {
         const status = await readWorktreeStatus(preview.root);
-        return { backup, clean: false, verified: false, ...await recoveryAfterPartialStash(preview.root, backup, status.files) };
-      } catch {
+        return { backup, clean: false, verified: false, ...await recoveryAfterPartialStash(preview.root, backup, status.files, preview.files) };
+      } catch (error) {
+        logCleanupFailure('worktree-cleanup.partial-unverified', error);
         return { backup, clean: false, verified: false };
       }
     }
     try {
       const status = await readWorktreeStatus(preview.root);
       return { backup, clean: status.files.length === 0, verified: true };
-    } catch {
+    } catch (error) {
+      logCleanupFailure('worktree-cleanup.verify-failed', error);
       return { backup, clean: false, verified: false };
     }
   } finally {
     cleaning.delete(commonDir);
   }
+}
+
+export async function applyWorktreeRestore(checkout: string, backup: unknown, confirmed: unknown): Promise<WorktreeRestoreResult> {
+  if (typeof backup !== 'string' || !STASH_HASH.test(backup)) {
+    throw new WorktreeCleanupError('O backup informado não é um hash de stash.');
+  }
+  const root = resolveCheckout(checkout);
+  return withCleaningLock(root, async () => {
+    const known = await listCleanupBackups(root);
+    if (!known.some(item => item.hash === backup)) {
+      throw new WorktreeCleanupError('O backup informado não é uma limpeza deste repositório.', 409, false, backup);
+    }
+    const plan = await untrackedRestorePlan(root, backup);
+    if (plan.conflicts.length > 0) {
+      throw new WorktreeCleanupError(
+        `Não recuperei o backup. Estes arquivos já existem e são diferentes do conteúdo guardado: ${plan.conflicts.join(', ')}. Nenhum arquivo foi alterado.`,
+        409,
+        false,
+        backup,
+        plan.conflicts,
+      );
+    }
+    if (plan.missing.length === 0) return { backup, restored: [] };
+    if (confirmed !== true) throw new WorktreeCleanupError('Confirme a recuperação após revisar os arquivos.', 400, false, backup);
+    const again = await untrackedRestorePlan(root, backup);
+    if (again.conflicts.length > 0 || again.missing.join('\0') !== plan.missing.join('\0')) {
+      throw new WorktreeCleanupError('Os arquivos mudaram antes da recuperação. Nada foi escrito.', 409, false, backup, again.conflicts);
+    }
+    try {
+      await git(root, 'restore', '--source', `${backup}^3`, '--worktree', '--', ...again.missing);
+    } catch (error) {
+      logCleanupFailure('worktree-cleanup.restore-failed', error);
+      if (error instanceof GitError && error.code !== 'git-unavailable') {
+        throw new WorktreeCleanupError('O Git não concluiu a recuperação. O backup continua no stash. Revise a worktree antes de tentar de novo.', 409, true, backup);
+      }
+      throw error;
+    }
+    return { backup, restored: again.missing };
+  });
 }

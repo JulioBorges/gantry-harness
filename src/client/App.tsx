@@ -94,7 +94,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   const [runs, setRuns] = useState<HarnessRunRecord[]>([]);
 
   const [cleanupPreview, setCleanupPreview] = useState<(WorktreeCleanupPreview & { projectId: string }) | null>(null);
-  const [cleanupNotice, setCleanupNotice] = useState<{ projectId: string; error: boolean; message: string; backup?: string; keep?: string[]; restore?: string } | null>(null);
+  const [cleanupNotice, setCleanupNotice] = useState<{ projectId: string; error: boolean; message: string; backup?: string; keep?: string[]; restore?: string; restoreTracked?: string; conflicts?: string[] } | null>(null);
   const [setupDiffPreview, setSetupDiffPreview] = useState<string>('');
   const [projectSettingsId, setProjectSettingsId] = useState<string | null>(null);
   const [setupHostHarness, setSetupHostHarness] = useState<string>('opencode');
@@ -605,13 +605,16 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         ? value.filter((entry: unknown): entry is string => typeof entry === 'string' && entry.length > 0 && !entry.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(entry) && !entry.split(/[\\/]/).includes('..'))
         : [];
       const keep = relativePaths(payload.keep);
-      const restore = typeof payload.restore === 'string' && !payload.restore.includes(cleanupPreview.root) ? payload.restore : undefined;
+      const conflicts = relativePaths(payload.conflicts);
+      const shellCommand = (value: unknown) => typeof value === 'string' && !value.includes(cleanupPreview.root) ? value : undefined;
+      const restore = shellCommand(payload.restore);
+      const restoreTracked = shellCommand(payload.restoreTracked);
       if (!response.ok) {
-        setCleanupNotice({ projectId, error: true, backup, message: payload.error ?? 'Não foi possível limpar a worktree.' });
+        setCleanupNotice({ projectId, error: true, backup, conflicts: conflicts.length > 0 ? conflicts : undefined, message: payload.error ?? 'Não foi possível limpar a worktree.' });
         return;
       }
       const unverified = payload.verified === false;
-      setCleanupNotice({ projectId, error: !payload.clean || unverified, backup, keep: unverified ? keep : undefined, restore: unverified ? restore : undefined, message: payload.clean && !unverified
+      setCleanupNotice({ projectId, error: !payload.clean || unverified, backup, keep: unverified ? keep : undefined, restore: unverified ? restore : undefined, restoreTracked: unverified ? restoreTracked : undefined, conflicts: conflicts.length > 0 ? conflicts : undefined, message: payload.clean && !unverified
         ? 'Worktree limpa. As alterações foram guardadas no Git stash.'
         : unverified
           ? 'O backup foi criado, mas o estado da worktree não foi confirmado. Não apague os arquivos rastreados.'
@@ -1269,6 +1272,11 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
                 <ul>{cleanupNotice.keep.map(file => <li key={file}><code>{file}</code></li>)}</ul>
               </>}
               {cleanupNotice.restore && <p>Para repor os arquivos não rastreados que o Git já retirou do disco, sem alterar os rastreados: <code>{cleanupNotice.restore}</code></p>}
+              {cleanupNotice.restoreTracked && <p>Para repor os arquivos rastreados que a limpeza devolveu ao HEAD, sem alterar o índice: <code>{cleanupNotice.restoreTracked}</code></p>}
+              {cleanupNotice.conflicts && cleanupNotice.conflicts.length > 0 && <>
+                <p>Estes arquivos já existem e são diferentes do backup. A recuperação não os substituiu:</p>
+                <ul>{cleanupNotice.conflicts.map(file => <li key={file}><code>{file}</code></li>)}</ul>
+              </>}
               {cleanupNotice.backup && <p>Para reaplicar as alterações rastreadas quando elas já não estiverem na worktree: <code>git stash apply --index {cleanupNotice.backup}</code>. Enquanto esses arquivos ainda estiverem no disco, não use este comando: o Git recusa a operação, e apagá-los antes deixa o conteúdo só no índice.</p>}
             </div>}
             <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
