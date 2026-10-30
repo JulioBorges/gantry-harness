@@ -81,7 +81,7 @@ O quadro mostra onde o trabalho está: contagens, lanes vazias que não ocupam a
 ## Decisões de implementação
 
 - O PRD de integração é a fonte da verdade. README e a descrição de produto não especificam comportamento; um ticket os alinha depois que a tela existir.
-- O motor antigo é apagado, não escondido. Somem conversa, preparação de comando, plano conversacional, rodada, serviço de modelo, steering, takeover, recuperação por troca de modelo, lições, autorização de limpeza e o kanban de execução separado. Configuração de provedor do motor antigo sai junto; seleção de modelos para o pipeline do Gantry permanece no setup do projeto. Ficam registro de projeto, sidebar, quadro, terminais avulsos, visor de arquivo, preferências de terminal, pareamento e o supervisor do processo filho.
+- O motor antigo é apagado, não escondido. Somem conversa, preparação de comando, plano conversacional, rodada, serviço de modelo, steering, takeover, recuperação por troca de modelo, lições, autorização de limpeza do motor antigo e o kanban de execução separado. Configuração de provedor do motor antigo sai junto; seleção de modelos para o pipeline do Gantry permanece no setup do projeto. Ficam registro de projeto, sidebar, quadro, terminais avulsos, visor de arquivo, preferências de terminal, pareamento e o supervisor do processo filho.
 - A suíte do pipeline não depende de um diretório da máquina de um autor. A cópia do pack usada no teste viaja com a suíte. O teste sobe o harness contra um repositório git temporário com essa cópia pinada.
 - A tela configura a política completa suportada pelo setup. Papéis do pipeline vêm primeiro: plan, implement, review e critic com harness, model e effort opcional em `execution.roles` de `.gantry/config.json`. O Gantry resolve e executa o pipeline; não se introduzem comandos arbitrários por papel.
 - O checkout aberto define a raiz de leitura e gravação, inclusive quando é worktree. Configuração ausente, inválida e skills/pack incompatíveis têm diagnósticos distintos. Caminhos e origem ficam visíveis; a tela relê o disco ao reabrir. Não se importa política de outro checkout nem perfil pessoal implicitamente.
@@ -101,6 +101,8 @@ O quadro mostra onde o trabalho está: contagens, lanes vazias que não ocupam a
 - Ir para Terminal não spawna shell. Shell novo é o controle de nova aba. Fechar a aba mata o processo. Processo rodando não usa o estado visual de concluído.
 - O aviso de pack ausente fica no Quadro. Terminal e Arquivos não o repetem.
 - Textos gerais de operador (README, descrição de produto, ajuda, diretório inexistente, pareamento) em português, descrevendo o produto disponível e o processo filho, sem anunciar o setup integrado (#10). Os textos do setup integrado vêm depois do pin compatível (#11). Não prometem coordenador, chat, nem instalação do pack pelo harness.
+
+- Extensão solicitada por Julio em 2026-10-22: **Limpar worktree** é manutenção explícita do checkout aberto, com prévia, confirmação e backup no Git stash, conforme a [ADR-0003](../../docs/adr/0003-limpeza-da-worktree-pelo-operador.md) e a Issue #12. Preserva HEAD/branch e arquivos ignorados; recusa conflitos/submódulos/repositórios aninhados e coordena exclusão com operações de Run no supervisor. Não reintroduz a limpeza automática nem os cards do motor antigo.
 
 ## Pré-requisitos upstream
 

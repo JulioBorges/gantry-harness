@@ -79,14 +79,18 @@ Quando o PR é fechado sem merge, a Run termina sem done. O card continua visív
 
 O gantry-harness não implementa a ordem dos papéis, o orçamento, os checks, os micro commits, o texto do fechamento nem a regra de blocker. Não embute Claude Code nem Codex. Não chama modelo. Não instala o pack fora do repositório do consumidor. Não abre uma segunda alteração só para atualizar o roadmap depois do merge.
 
-O motor antigo em TypeScript — plano conversacional, rodada, serviço de modelo, preparação de comando, steering, takeover, grilling, cards de limpeza e o kanban separado da execução — não faz parte do produto. O único caminho de execução é o processo filho do pack.
+O motor antigo em TypeScript — plano conversacional, rodada, serviço de modelo, preparação de comando, steering, takeover, grilling, cards de limpeza do motor antigo e o kanban separado da execução — não faz parte do produto. O único caminho de execução é o processo filho do pack.
+
+## Manutenção do checkout — decisão de 2026-10-22
+
+No diagnóstico de árvore suja, o operador pode escolher **Limpar worktree**, revisar os arquivos e confirmar um backup no Git stash antes de retirar as alterações do checkout. A ação preserva HEAD/branch e arquivos ignorados e oferece recuperação pelo hash do stash. Não é automática nem recria os cards de limpeza do motor antigo. A [ADR-0003](adr/0003-limpeza-da-worktree-pelo-operador.md) define os limites, a coordenação pelo supervisor e as recusas; `prd-alignment#12` contém a aceitação.
 
 ## Decisões — 2026-10-20
 
 Julio, dono do produto, fechou as decisões abaixo. A primeira foi revista na sessão de alinhamento de setup e sidebar de 2026-10-20; o texto de Execução acima reflete a revisão:
 
 1. **Configuração do projeto = política do setup do Gantry.** Substitui a decisão anterior de comando executável por papel para manter uma única semântica de configuração no pack. A tela persiste os defaults do projeto pelo setup, com modelos por papel em destaque; o Gantry mantém execução e precedência. A [ADR-0001](adr/0001-configuracao-do-projeto-e-a-politica-do-setup.md) preserva o contexto, as alternativas e as dependências upstream ainda pendentes.
-2. **O motor TypeScript antigo pode ser apagado.** Saem o plano conversacional, a rodada, o serviço de modelo, as rotas de plano, de run e de preparação de comando, steering, takeover, grilling, cards de limpeza e o kanban antigo. Não ficam atrás de uma flag.
+2. **O motor TypeScript antigo pode ser apagado.** Saem o plano conversacional, a rodada, o serviço de modelo, as rotas de plano, de run e de preparação de comando, steering, takeover, grilling, cards de limpeza do motor antigo e o kanban antigo. Não ficam atrás de uma flag.
 
 Fonte da verdade: este PRD. README e PRODUCT.md descrevem o produto antigo e serão alinhados por um ticket, não por uma leitura paralela.
 

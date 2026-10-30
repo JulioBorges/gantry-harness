@@ -1,7 +1,7 @@
 # 08: Reorganizar a sidebar para identificar e trocar projetos
 
 Type: issue
-Status: ready-for-agent
+Status: done
 Slice: `prd-alignment#08`
 Spec: `.scratch/prd-alignment/spec.md`
 Created: 2026-10-20
@@ -21,14 +21,14 @@ Migrar o check existente `browser-validation` (`bun scripts/browser-board.mjs`) 
 
 ## Acceptance criteria
 
-- [ ] Identificação/configurações e worktrees ocupam linhas separadas; expandir a lista não comprime nem oculta nome, caminho ou controles.
-- [ ] Nome segue legível, podendo quebrar linha; caminho truncado tem acesso ao valor completo em desktop e celular.
-- [ ] Projeto ativo é identificável; seleção e troca entre múltiplos projetos funcionam com listas recolhidas e expandidas, incluindo nomes/caminhos longos.
-- [ ] Muitos projetos/worktrees podem ser percorridos sem tornar os controles inacessíveis nem provocar transbordamento horizontal na sidebar.
-- [ ] O checkout principal não entra na lista. Só worktrees de Issues com Run aparecem, identificadas pelo ref.
-- [ ] Não há controle de assumir o terminal a partir dessa lista.
-- [ ] Abrir configurações de qualquer projeto seleciona o destino daquele projeto e identifica seu nome corretamente. Persistência e carregamento completo da política são aceitos na #03; não bloqueiam a entrega visual desta issue.
-- [ ] Os comportamentos de navegação e filtragem são provados no seam da suíte portátil; o único check `browser-validation` passa a usar Playwright, mantém os cenários do quadro e inclui sidebar em 1280×800 e 390×844, troca de projetos, worktrees expandidas, nomes/caminhos longos e rolagem, com evidências antes/depois. O check continua registrado em `.gantry/config.json` e executável pelo pipeline.
+- [x] Identificação/configurações e worktrees ocupam linhas separadas; expandir a lista não comprime nem oculta nome, caminho ou controles.
+- [x] Nome segue legível, podendo quebrar linha; caminho truncado tem acesso ao valor completo em desktop e celular.
+- [x] Projeto ativo é identificável; seleção e troca entre múltiplos projetos funcionam com listas recolhidas e expandidas, incluindo nomes/caminhos longos.
+- [x] Muitos projetos/worktrees podem ser percorridos sem tornar os controles inacessíveis nem provocar transbordamento horizontal na sidebar.
+- [x] O checkout principal não entra na lista. Só worktrees de Issues com Run aparecem, identificadas pelo ref.
+- [x] Não há controle de assumir o terminal a partir dessa lista.
+- [x] Abrir configurações de qualquer projeto seleciona o destino daquele projeto e identifica seu nome corretamente. Persistência e carregamento completo da política são aceitos na #03; não bloqueiam a entrega visual desta issue.
+- [x] Os comportamentos de navegação e filtragem são provados no seam da suíte portátil; o único check `browser-validation` passa a usar Playwright, mantém os cenários do quadro e inclui sidebar em 1280×800 e 390×844, troca de projetos, worktrees expandidas, nomes/caminhos longos e rolagem, com evidências antes/depois. O check continua registrado em `.gantry/config.json` e executável pelo pipeline.
 
 ## Blocked by
 
@@ -41,3 +41,4 @@ Migrar o check existente `browser-validation` (`bun scripts/browser-board.mjs`) 
 Julio confirmou ampliar a issue para melhorar o layout e validar com Playwright. Em reprodução sobre o build atualizado, expandir Worktrees reduziu a largura do nome do projeto a zero em viewport 1280×800 e 390×844. O código coloca identificação, engrenagem e details de worktrees como irmãos dentro de `.project-row`, que usa flex horizontal. Separar as linhas elimina a disputa estrutural; a validação precisa esperar a inspeção carregar antes de expandir, pois o estado inicial sem worktrees não reproduz o defeito.
 
 Após a revisão arquitetural, a #08 deixa de depender da #03: layout e destino da navegação são independentes dos contratos upstream do setup. A integração completa de configuração continua na #03. Playwright substitui o CDP do check existente; não cria uma validação paralela.
+- 2026-10-21 — 2026-10-21 — Entregue na wave 6: nome/caminho acessíveis, configurações do projeto selecionado e worktrees filtradas por Run/ref da Issue. O único check browser-validation foi migrado para Playwright, com desktop/celular, rolagem e evidências antes/depois em ../wave-6-validation.md.

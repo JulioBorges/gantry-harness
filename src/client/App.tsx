@@ -6,6 +6,7 @@ import type { ExecutionSettings, RoleSelection } from '../types.js';
 import type { ManagedPane } from '../server/ptyManager.js';
 import type { Terminal } from '@xterm/xterm';
 import type { FitAddon } from '@xterm/addon-fit';
+import type { WorktreeCleanupPreview } from '../server/worktreeCleanup.js';
 import type { TerminalSettings, TerminalEnvironment } from '../types.js';
 import { SettingsDialog, type SettingsTab } from './SettingsDialog.js';
 import { SystemFontSelect } from './SystemFontSelect.js';
@@ -14,6 +15,7 @@ import { EXECUTION_HOSTS, ModelSelect, discoveryHarness, type CatalogModel } fro
 import {
   NO_PACK_EXPLANATION,
   PHASE_LABEL,
+  issueWorktreeRuns,
   coerceBoard,
   unavailableBoard,
   type BoardSnapshot,
@@ -91,6 +93,8 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
 
   const [runs, setRuns] = useState<HarnessRunRecord[]>([]);
 
+  const [cleanupPreview, setCleanupPreview] = useState<(WorktreeCleanupPreview & { projectId: string }) | null>(null);
+  const [cleanupNotice, setCleanupNotice] = useState<{ projectId: string; error: boolean; message: string; backup?: string } | null>(null);
   const [setupDiffPreview, setSetupDiffPreview] = useState<string>('');
   const [projectSettingsId, setProjectSettingsId] = useState<string | null>(null);
   const [setupHostHarness, setSetupHostHarness] = useState<string>('opencode');
@@ -103,7 +107,10 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   const catalogRequests = useRef(new Set<string>());
   const [roleSelections, setRoleSelections] = useState<Record<string, RoleSelection>>({});
   const setupProjectLoaded = useRef<string | null>(null);
-  const { feedback, pendingActions, withFeedback, reportError, dismissFeedback } = useActionFeedback();
+  const { feedback, pendingActions, withFeedback, withPending, reportError, dismissFeedback } = useActionFeedback();
+  const preparingCleanup = pendingActions.includes('Preparando limpeza');
+  const cleaningWorktree = pendingActions.includes('Limpando worktree');
+  const cleanupBusy = preparingCleanup || cleaningWorktree;
   const [terminalInput, setTerminalInput] = useState('');
   const [panes, setPanes] = useState<ManagedPane[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(() => typeof window !== 'undefined' && window.innerWidth >= 760);
@@ -349,7 +356,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
               setBoardGeneration((value) => value + 1);
             }
             void loadWorkspaceState();
-          } else if (payload.type === 'board.changed') {
+          } else if (payload.type === 'board.changed' || payload.type === 'project.worktree.cleaned' || payload.type === 'project.setup.applied') {
             if (!selectedPane.current.projectId || payload.projectId === selectedPane.current.projectId) {
               setBoardGeneration((value) => value + 1);
             }
@@ -509,6 +516,10 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     if (projectId !== activeProjectId) {
       setActiveSessionId(sessionId ?? null);
     }
+    setInspection(null);
+    setCleanupPreview(null);
+    setCleanupNotice(null);
+    setRuns([]);
     setActiveProjectId(projectId);
     if (sessionId) setActiveSessionId(sessionId);
     await apiFetch(`/api/workspace/state`, {
@@ -520,6 +531,48 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
       }),
     });
     await loadWorkspaceState();
+  });
+
+  const handlePreviewCleanup = withPending('Preparando limpeza', async () => {
+    if (!projectSettingsId || cleanupBusy) return;
+    const projectId = projectSettingsId;
+    setCleanupPreview(null);
+    setCleanupNotice(null);
+    try {
+      const response = await apiFetch(`/api/projects/${projectId}/worktree/preview`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? 'Não foi possível revisar a limpeza.');
+      if (!payload.files.length) {
+        setCleanupNotice({ projectId, error: false, message: 'A worktree já está limpa.' });
+        await loadWorkspaceState();
+      } else setCleanupPreview({ ...payload, projectId });
+    } catch (error) {
+      setCleanupNotice({ projectId, error: true, message: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  const handleCleanWorktree = withPending('Limpando worktree', async () => {
+    if (!cleanupPreview || cleanupPreview.projectId !== projectSettingsId || cleanupBusy) return;
+    const { projectId, token } = cleanupPreview;
+    try {
+      const response = await apiFetch(`/api/projects/${projectId}/worktree/clean`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmed: true, token }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? 'Não foi possível limpar a worktree.');
+      setCleanupNotice({ projectId, error: !payload.clean, backup: payload.backup, message: payload.clean
+        ? 'Worktree limpa. As alterações foram guardadas no Git stash.'
+        : 'Backup criado, mas ainda há alterações na worktree. Revise o estado do projeto.' });
+      setupProjectLoaded.current = null;
+      await loadWorkspaceState();
+      setBoardGeneration(value => value + 1);
+    } catch (error) {
+      setCleanupNotice({ projectId, error: true, message: error instanceof Error ? error.message : String(error) });
+    } finally { setCleanupPreview(null); }
   });
 
   const handleOpenTerminal = withFeedback("Abrir terminal", async (): Promise<void> => {
@@ -943,6 +996,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   }
 
   const activeProject = projects.find((project) => project.id === activeProjectId);
+  const worktreeRuns = issueWorktreeRuns(runs, activeProjectId, activeProject?.path);
   const activeTerminal = panes.find((pane) => pane.paneId === activePaneId);
   const inlineArtifact = activeView === 'files' && wideWorkspace && artifactDrawer?.projectId === activeProjectId ? artifactDrawer : null;
   const changeView = (view: typeof activeView) => { setActiveView(view); if (window.innerWidth < 760) setSidebarOpen(false); };
@@ -968,14 +1022,15 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
               <button className="project-row-select" title={project.path} onClick={() => void handleSelectProject(project.id)} aria-current={project.id === activeProjectId ? 'page' : undefined}>
                 <svg className="project-icon folder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6a2 2 0 0 1 2-2h5l3 3h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /></svg>
                 <svg className="project-icon terminal-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m5 5 6 6-6 6m9 2h6" /></svg>
-                <span className="project-row-text"><strong>{project.name}</strong></span>
+                <span className="project-row-text"><strong>{project.name}</strong><span className="project-path">{project.path}</span></span>
               </button>
               <button className="icon-button project-settings" aria-label={`Configurações de ${project.name}`} data-testid={`project-settings-${project.id}`} onClick={() => { setProjectSettingsId(project.id); if (project.id !== activeProjectId) void handleSelectProject(project.id); }}><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.6" /><circle cx="12" cy="12" r="1.6" /><circle cx="19" cy="12" r="1.6" /></svg></button>
               <span role="img" aria-label={STATUS_LABELS[project.badgeState]} title={STATUS_LABELS[project.badgeState]} className={`status-dot ${project.badgeState?.replace(/\s+/g, '-')}`} />
             </div>
-            {project.id === activeProjectId && inspection && inspection.worktrees.length > 0 && <details className="project-context">
+            <details className="project-path-details"><summary>Caminho completo</summary><code className="project-full-path">{project.path}</code></details>
+            {project.id === activeProjectId && worktreeRuns.length > 0 && <details className="project-context">
               <summary>Worktrees</summary>
-              {inspection.worktrees.map((wt) => <div key={wt.path} className="worktree-row"><span title={wt.path}>{wt.branch} · {STATUS_LABELS[wt.badgeState]}</span></div>)}
+              {worktreeRuns.map((run) => <div key={run.runId} className="worktree-row"><span title={run.worktree ?? undefined}>{run.ref} · {PHASE_LABEL[run.derivedPhase]}</span></div>)}
             </details>}
           </div>)}
         </div>
@@ -1134,14 +1189,30 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         </SettingsDialog>}
 
         {projectSettingsId && <div className="dialog-backdrop" onClick={(event) => { if (event.target === event.currentTarget) setProjectSettingsId(null); }}>
-          <section className="project-dialog settings-dialog" role="dialog" aria-modal="true" aria-labelledby="project-settings-title">
-            <div className="dialog-heading"><h2 id="project-settings-title">Configurações de {projects.find((project) => project.id === projectSettingsId)?.name ?? 'projeto'}</h2><button aria-label="Fechar configurações do projeto" onClick={() => setProjectSettingsId(null)}>×</button></div>
+          <section className="project-dialog settings-dialog project-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="project-settings-title">
+            <div className="settings-dialog-header"><h2 id="project-settings-title">Configurações de {projects.find((project) => project.id === projectSettingsId)?.name ?? 'projeto'}</h2><button aria-label="Fechar configurações do projeto" onClick={() => setProjectSettingsId(null)}>×</button></div>
             {activeProjectId === projectSettingsId ? (
-<div data-testid="setup-panel" style={{ padding: 16, overflowY: 'auto' }}>
+<div className="settings-dialog-content project-settings-content" data-testid="setup-panel">
             <h2>Preparar o projeto para execução</h2>
             <p className="section-intro">Cada papel usa um host e só pode receber um modelo desse host. A lista é lida do agente instalado. Esta configuração tem prioridade sobre a global.</p>
-            <p>A instalação das skills e a configuração do repositório criam commits locais na branch atual. Faça commit ou stash das alterações existentes antes de continuar.</p>
-            {inspection?.remediationCards.map((card) => <div key={card.kind} className="setup-diagnostic"><strong>{card.title}</strong><p>{card.description}</p><p>{card.remediation}</p></div>)}
+            <p>A instalação das skills e a configuração do repositório criam commits locais na branch atual. Faça commit das alterações ou use Limpar worktree no aviso abaixo para guardá-las em um backup antes de continuar.</p>
+            {inspection?.remediationCards.map((card) => <div key={card.kind} className="setup-diagnostic"><strong>{card.title}</strong><p>{card.description}</p><p>{card.remediation}</p>
+              {card.kind === 'dirty_worktree' && <button type="button" disabled={cleanupBusy} onClick={() => void handlePreviewCleanup()}>{preparingCleanup ? 'Preparando limpeza…' : cleaningWorktree ? 'Limpando worktree…' : 'Limpar worktree'}</button>}
+            </div>)}
+            {cleanupPreview?.projectId === projectSettingsId && <section className="worktree-cleanup-preview" aria-label="Revisar limpeza da worktree">
+              <h3>Limpar worktree de {projects.find(project => project.id === projectSettingsId)?.name}?</h3>
+              <p>As alterações abaixo serão retiradas da worktree e guardadas em um backup no Git stash, incluindo arquivos novos. Arquivos ignorados pelo Git permanecem no projeto.</p>
+              <code>{cleanupPreview.root}</code>
+              <ul>{cleanupPreview.files.map(file => <li key={file.path}><code>{file.status} {file.originalPath ? `${file.originalPath} → ` : ''}{file.path}</code></li>)}</ul>
+              <div className="project-setup-actions">
+                <button type="button" disabled={cleanupBusy} onClick={() => setCleanupPreview(null)}>Cancelar limpeza</button>
+                <button type="button" disabled={cleanupBusy} onClick={() => void handleCleanWorktree()}>{cleaningWorktree ? 'Limpando…' : 'Guardar backup e limpar worktree'}</button>
+              </div>
+            </section>}
+            {cleanupNotice?.projectId === projectSettingsId && <div className="setup-diagnostic" role={cleanupNotice.error ? 'alert' : 'status'}>
+              <p>{cleanupNotice.message}</p>
+              {cleanupNotice.backup && <p>Para recuperar as alterações no terminal: <code>git stash apply --index {cleanupNotice.backup}</code></p>}
+            </div>}
             <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
               <button
                 data-testid="bootstrap-skills-btn"
@@ -1194,7 +1265,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
               })}
               {Object.keys(roleSelections).length === 0 && <button disabled={!setupHostHarness} onClick={() => setRoleSelections(Object.fromEntries(['plan', 'implement', 'review', 'critic'].map((role) => [role, { harness: setupHostHarness, model: '' }])))}>Configurar papéis de execução</button>}
             </div>
-            <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+            <div className="project-setup-actions">
               <button data-testid="preview-setup-btn" onClick={() => void handlePreviewSetup()}>
                 Revisar prévia das alterações
               </button>

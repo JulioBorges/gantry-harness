@@ -6,7 +6,8 @@ export interface BoardIssue {
   number: number;
   title: string;
   status: string;
-  path: string;
+  path?: string;
+  synthetic?: boolean;
   frontierBlocked: boolean;
   openBlockers: string[];
 }
@@ -183,7 +184,7 @@ export interface HarnessRunRecord {
 
 export interface IssueRunOverlay {
   ref: string;
-  lane: ExecutionLane;
+  lane: BoardLane;
   operatorWaiting: boolean;
   runId: string;
   status?: HarnessRunStatus;
@@ -257,7 +258,7 @@ export function isSetupRefusalError(error: GantryErrorPayload | null | undefined
 }
 
 export function issuePhase(
-  issue: Pick<BoardIssue, 'status' | 'frontierBlocked'>,
+  issue: Pick<BoardIssue, 'status' | 'frontierBlocked' | 'synthetic'>,
   overlay?: Pick<IssueRunOverlay, 'phase' | 'status'> | null,
   run?: Pick<HarnessRunRecord, 'status' | 'derivedPhase' | 'error' | 'worktree' | 'prState'> | null,
 ): IssueCardPhase {
@@ -271,7 +272,7 @@ export function issuePhase(
     if (run.status === 'approved-pending-merge') return 'approved-pending-merge';
     if (run.status === 'paused') return 'paused';
     if (run.status === 'running') return run.derivedPhase;
-    if (run.status === 'failed' && (!isSetupRefusalError(run.error) || Boolean(run.worktree))) {
+    if (run.status === 'failed' && (issue.synthetic || !isSetupRefusalError(run.error) || Boolean(run.worktree))) {
       return 'failed';
     }
   }
@@ -285,21 +286,25 @@ export function issueLane(issue: Pick<BoardIssue, 'status' | 'ref'>, overlays: I
   return overlay?.lane ?? 'issues';
 }
 
+function isAbandonedRun(run: Pick<HarnessRunRecord, 'status'>): boolean {
+  return run.status === 'discarded' || run.status === 'rejected';
+}
+
+export function isRetiredRun(run: Pick<HarnessRunRecord, 'status' | 'prState'>): boolean {
+  return isAbandonedRun(run) || run.prState === 'closed';
+}
+
 export function overlaysFromRuns(runs: HarnessRunRecord[]): IssueRunOverlay[] {
   const overlays: IssueRunOverlay[] = [];
   for (const run of runs) {
-    if (run.status === 'discarded' || run.status === 'rejected') continue;
+    if (isRetiredRun(run)) continue;
     if (run.status === 'failed' && isSetupRefusalError(run.error) && !run.worktree) {
       continue;
     }
-    if (run.prState === 'closed' || run.prState === 'reopened') {
-      continue;
-    }
-    const lane =
-      run.lane ??
-      phaseToExecutionLane(run.packPhase, run.kind === 'plan' ? 'plan' : 'implement') ??
-      'implement';
+    const executionLane = run.lane ?? phaseToExecutionLane(run.packPhase, run.kind === 'plan' ? 'plan' : 'implement') ?? 'implement';
+    const lane = run.prState !== 'reopened' && (run.status === 'running' || run.status === 'paused') ? executionLane : 'issues';
     const phase: IssueCardPhase =
+      run.prState === 'reopened' ? 'ready-for-approval' :
       run.status === 'paused'
         ? 'paused'
         : run.status === 'stopped'
@@ -310,7 +315,7 @@ export function overlaysFromRuns(runs: HarnessRunRecord[]): IssueRunOverlay[] {
               ? 'approved-pending-merge'
               : run.status === 'failed'
                 ? 'failed'
-                : lane;
+                : executionLane;
     overlays.push({
       ref: run.ref,
       lane,
@@ -329,6 +334,19 @@ export function overlaysFromRuns(runs: HarnessRunRecord[]): IssueRunOverlay[] {
   return overlays;
 }
 
+// Retained Issue worktrees remain useful for recovery even after the process stops.
+// Plan Runs have their own lifecycle and do not become Issue Runs merely by acquiring a numbered ref.
+export function issueWorktreeRuns(
+  runs: HarnessRunRecord[],
+  projectId: string | null,
+  checkoutPath?: string,
+): HarnessRunRecord[] {
+  return runs.filter((run) =>
+    run.projectId === projectId && run.kind === 'issue' && run.worktree &&
+    run.worktree !== checkoutPath && !isRetiredRun(run),
+  );
+}
+
 export function mergeBoardWithPlanRuns(
   board: BoardSnapshot,
   runs: HarnessRunRecord[],
@@ -339,8 +357,7 @@ export function mergeBoardWithPlanRuns(
   for (const run of runs) {
     if (run.kind !== 'plan') continue;
     if (run.status === 'rejected' || run.status === 'discarded') continue;
-    if (run.status === 'failed' && !run.worktree) continue;
-    if (!run.worktree) continue;
+    if (!run.worktree && !run.error) continue;
 
     if (run.slug && !specs.some((item) => item.slug === run.slug)) {
       specs = [
@@ -365,7 +382,8 @@ export function mergeBoardWithPlanRuns(
           number,
           title: run.issueTitle ?? run.slug,
           status: 'ready-for-agent',
-          path: run.issuePath ?? `.scratch/${run.slug}/issues/${String(number).padStart(2, '0')}-${run.slug}.md`,
+          path: run.issuePath ?? undefined,
+          synthetic: true,
           frontierBlocked: false,
           openBlockers: [],
         },
@@ -464,4 +482,21 @@ export function coerceBoard(value: unknown): BoardSnapshot {
     specs: Array.isArray(data.specs) ? data.specs : [],
     frontier: Array.isArray(data.frontier) ? data.frontier : [],
   };
+}
+
+export function runErrorMessage(error: GantryErrorPayload): string {
+  const messages: Record<string, string> = {
+    'open-blocker': 'Esta Issue tem dependências pendentes. Conclua os bloqueadores antes de executar.',
+    'branch-exists': 'A branch desta Issue já existe. Retome a Run existente ou revise a branch antes de executar.',
+    'spec-or-issue-exists': 'A Spec ou a Issue já existe. Revise os arquivos do projeto antes de planejar novamente.',
+    'setup-invalid': 'A configuração do Gantry precisa ser corrigida nas configurações do projeto.',
+    'role-command-missing': 'Falta configurar o comando de um papel do pipeline nas configurações do projeto.',
+    'checks-invalid': 'Os checks do projeto são inválidos. Revise as configurações do projeto.',
+    'target-missing': 'A branch de destino não foi encontrada. Revise as configurações Git do projeto.',
+    'pack-unreadable': 'Não foi possível ler o pack do Gantry. Revise a instalação no projeto.',
+    'issue-missing': 'O arquivo da Issue não foi encontrado no projeto.',
+    'spec-missing': 'O arquivo da Spec não foi encontrado no projeto.',
+    'pull-request-failed': 'Não foi possível abrir o PR. Verifique o acesso ao repositório e tente aprovar novamente.',
+  };
+  return messages[error.reason ?? ''] ?? messages[error.code] ?? 'A Run encontrou um erro. Consulte os detalhes para verificar a execução.';
 }

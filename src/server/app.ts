@@ -21,6 +21,9 @@ import {
 } from './projectInspector.js';
 import { PtySupervisor, readArtifactAndDiff } from './ptyManager.js';
 import { RunSupervisor, RunSupervisorError } from './runSupervisor.js';
+import { GitError } from './git.js';
+import { evaluateIncomingStateChange } from './stateChangeGuard.js';
+import { cleanWorktree, previewWorktreeCleanup, WorktreeCleanupError } from './worktreeCleanup.js';
 import { ProjectTreeError, readProjectTree } from './projectTree.js';
 
 export interface HarnessServerOptions {
@@ -86,6 +89,7 @@ export async function createHarnessServer(
   const homeDir = path.resolve(options.homeDir ?? os.homedir());
   const host = options.host ?? '127.0.0.1';
   const requestedPort = options.port ?? 7400;
+  let listenPort = requestedPort;
   const clientDistDir = path.resolve(options.clientDistDir ?? fileURLToPath(new NodeURL('../client/', import.meta.url)));
 
   fs.mkdirSync(gantryHome, { recursive: true });
@@ -108,7 +112,7 @@ export async function createHarnessServer(
 
   const runSupervisor = new RunSupervisor({ store, broadcast, homeDir });
   for (const project of store.listProjects()) {
-    await runSupervisor.reattachProject(project);
+    await runSupervisor.refreshProject(project);
   }
 
   const resolveArtifactBasePath = (projectId: string, projectPath: string, relPath: string): string => {
@@ -131,6 +135,15 @@ export async function createHarnessServer(
       }
     }
     return projectPath;
+  };
+
+  const drainRequest = (req: http.IncomingMessage): Promise<void> => {
+    if (req.readableEnded) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      req.on('error', reject);
+      req.on('end', () => resolve());
+      req.resume();
+    });
   };
 
   const readJsonBody = async (req: http.IncomingMessage): Promise<Record<string, unknown>> => {
@@ -268,7 +281,7 @@ export async function createHarnessServer(
         }
         const activeProject = projects.find((project) => project.id === activeProjectId);
         if (activeProject) {
-          await runSupervisor.reattachProject(activeProject);
+          await runSupervisor.refreshProject(activeProject);
         }
         const runs = activeProjectId ? runSupervisor.listRuns(activeProjectId) : [];
         sendJson(res, 200, {
@@ -321,7 +334,7 @@ export async function createHarnessServer(
           name: body.name ? String(body.name) : undefined,
           unitId,
         });
-        await runSupervisor.reattachProject(result.project);
+        await runSupervisor.refreshProject(result.project);
         const inspection = await inspectProject(result.project, { stateRoot, profileRoot });
         broadcast({ type: 'project.registered', project: result.project, inspection });
         sendJson(res, 200, { ...result, inspection });
@@ -348,7 +361,7 @@ export async function createHarnessServer(
             return;
           }
           const rawBoard = await readBoard(project.path, homeDir);
-          const runs = await runSupervisor.syncProjectWithTarget(project, rawBoard);
+          const runs = await runSupervisor.refreshProject(project, rawBoard);
           const board = mergeBoardWithPlanRuns(rawBoard, runs);
           sendJson(res, 200, { ...board, runs });
           return;
@@ -368,6 +381,46 @@ export async function createHarnessServer(
           sendJson(res, 200, inspection);
           return;
         }
+      }
+
+      const cleanupRoute = pathname.match(/^\/api\/projects\/([^/]+)\/worktree\/(preview|clean)$/);
+      if (cleanupRoute && req.method === 'POST') {
+        const bound = server.address();
+        const rejection = evaluateIncomingStateChange(req, {
+          bindHost: host,
+          port: typeof bound === 'object' && bound ? bound.port : listenPort,
+        });
+        if (rejection) {
+          await drainRequest(req);
+          sendJson(res, rejection.statusCode, { error: rejection.error });
+          return;
+        }
+        const project = store.getProject(cleanupRoute[1]);
+        if (!project) {
+          await drainRequest(req);
+          sendJson(res, 404, { error: 'Projeto não encontrado.' });
+          return;
+        }
+        try {
+          if (cleanupRoute[2] === 'preview') {
+            await drainRequest(req);
+            sendJson(res, 200, await runSupervisor.withProjectQuiesced(project, () => previewWorktreeCleanup(project.path)));
+          } else {
+            const body = await readJsonBody(req);
+            if (body.confirmed !== true) throw new WorktreeCleanupError('Confirme a limpeza após revisar os arquivos.', 400);
+            const result = await runSupervisor.withProjectQuiesced(project, () => cleanWorktree(project.path, body.token));
+            broadcast({ type: 'project.worktree.cleaned', projectId: project.id });
+            sendJson(res, 200, result);
+          }
+        } catch (error) {
+          if (error instanceof WorktreeCleanupError && error.worktreeMutated) {
+            broadcast({ type: 'project.worktree.cleaned', projectId: project.id });
+          }
+          if (error instanceof RunSupervisorError) sendJson(res, error.statusCode, { error: error.message, code: error.code });
+          else if (error instanceof WorktreeCleanupError) { sendJson(res, error.statusCode, { error: error.message }); }
+          else throw error;
+        }
+        return;
       }
 
       if (pathname.startsWith('/api/projects/') && pathname.endsWith('/tree') && req.method === 'GET') {
@@ -883,8 +936,9 @@ export async function createHarnessServer(
 
       sendJson(res, 404, { error: `Not found: ${pathname}` });
     } catch (err) {
-      sendJson(res, 500, {
+      sendJson(res, err instanceof GitError ? 503 : 500, {
         error: err instanceof Error ? err.message : 'Internal server error',
+        ...(err instanceof GitError ? { code: 'git-unavailable' } : {}),
       });
     }
   });
@@ -911,12 +965,13 @@ export async function createHarnessServer(
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
     server.listen(requestedPort, host, () => {
+      const addr = server.address();
+      if (typeof addr === 'object' && addr) listenPort = addr.port;
       resolve();
     });
   });
 
-  const addr = server.address();
-  const actualPort = typeof addr === 'object' && addr ? addr.port : requestedPort;
+  const actualPort = listenPort;
 
   fs.writeFileSync(
     lockPath,

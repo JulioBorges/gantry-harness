@@ -133,10 +133,41 @@ describe('Run supervisor and Issue execution (run-orchestration#03)', () => {
     return body.project.id as string;
   }
 
+  it('keeps a real pack setup refusal on the Issue once, in Portuguese, without changing its file', async () => {
+    const repo = initGitRepo(tmpRoot, 'invalid-setup');
+    installRealPack(repo);
+    writeArtifacts(repo);
+    const issuePath = path.join(repo, '.scratch/feat/issues/01-first-slice.md');
+    const before = fs.readFileSync(issuePath, 'utf8');
+    const projectId = await registerProject(repo);
+    const otherRepo = initGitRepo(tmpRoot, 'outro-projeto');
+    const otherId = await registerProject(otherRepo);
+    render(<App apiBaseUrl={apiBaseUrl} />);
+    await screen.findByTestId('issue-card-feat#01', {}, { timeout: 5000 });
+    fireEvent.click(screen.getByTestId('run-issue-feat#01'));
+    const error = await screen.findByTestId('run-error-feat#01', {}, { timeout: 5000 });
+    expect(error.textContent).toContain('Falta configurar o comando de um papel');
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect(within(screen.getByTestId('spec-card-feat')).queryByRole('alert')).toBeNull();
+    expect(screen.getByTestId('issue-card-feat#01').getAttribute('data-lane')).toBe('issues');
+    expect(fs.readFileSync(issuePath, 'utf8')).toBe(before);
+    expect(server.store.getRun(projectId, 'feat#01')?.error?.code).toBe('role-command-missing');
+    // Settings must navigate to the clicked project, even when it is inactive.
+    fireEvent.click(screen.getByTestId(`project-settings-${otherId}`));
+    await screen.findByRole('heading', { name: 'Configurações de outro-projeto' });
+    await waitFor(() => expect(screen.getByTestId('setup-panel')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Fechar configurações do projeto' }));
+    fireEvent.click(screen.getByTestId(`project-settings-${projectId}`));
+    await screen.findByRole('heading', { name: 'Configurações de invalid-setup' });
+    await waitFor(() => expect(screen.getByTestId('issue-card-feat#01')).toBeTruthy());
+  });
+
   it('runs real cli.py execute through worktree, pause (corrections-exhausted), answer validation, continue, and ready-for-approval over HTTP, WS, and UI', async () => {
     const repo = initGitRepo(tmpRoot, 'real-cli-continue');
     installRealPack(repo);
     writeArtifacts(repo);
+    const issueFile = path.join(repo, '.scratch/feat/issues/01-first-slice.md');
+    const issueBefore = fs.readFileSync(issueFile, 'utf8');
 
     const stateDir = path.join(tmpRoot, 'role-state');
     fs.mkdirSync(stateDir, { recursive: true });
@@ -344,6 +375,8 @@ if role == "critic":
       const card = screen.getByTestId('issue-card-feat#01');
       expect(card.getAttribute('data-phase')).toBe('ready-for-approval');
       expect(within(card).getByTestId('issue-phase-feat#01').textContent).toBe('ready for approval');
+      expect(card.getAttribute('data-lane')).toBe('issues');
+      expect(within(card).getByRole('button', { name: 'Aprovar' })).toBeTruthy();
     });
 
     // Answering after pause has cleared is rejected with 409
@@ -363,6 +396,14 @@ if role == "critic":
     expect(persisted?.terminalEvent).toBe('ready-for-approval');
     expect(persisted?.derivedPhase).toBe('ready-for-approval');
 
+    expect(fs.readFileSync(issueFile, 'utf8')).toBe(issueBefore);
+    const sidebar = screen.getByTestId('sidebar');
+    const worktreeList = within(sidebar).getByText('Worktrees').parentElement!;
+    fireEvent.click(within(sidebar).getByText('Worktrees'));
+    expect(worktreeList.querySelectorAll('.worktree-row')).toHaveLength(1);
+    expect(worktreeList.textContent).toContain('feat#01');
+    expect(worktreeList.textContent).not.toContain('main');
+    expect(within(worktreeList).queryByRole('button', { name: /assumir/i })).toBeNull();
     ws.close();
   });
 
@@ -421,6 +462,7 @@ sys.exit(1)
     await waitFor(() => {
       const card = screen.getByTestId('issue-card-feat#01');
       expect(card.getAttribute('data-phase')).toBe('stopped');
+      expect(card.getAttribute('data-lane')).toBe('issues');
       expect(within(card).getByTestId('issue-phase-feat#01').textContent).toBe('stopped');
       expect(within(card).queryByText('ready to agent')).toBeNull();
     });
@@ -608,8 +650,8 @@ elif ref == "feat#03":
     });
 
     await waitFor(() => {
-      const criticLane = screen.getByTestId('lane-critic');
-      const card03 = within(criticLane).getByTestId('issue-card-feat#03');
+      const issuesLane = screen.getByTestId('lane-issues');
+      const card03 = within(issuesLane).getByTestId('issue-card-feat#03');
       expect(card03.getAttribute('data-phase')).toBe('failed');
       expect(within(card03).getByTestId('issue-phase-feat#03').textContent).toBe('failed');
     });
@@ -702,7 +744,7 @@ if role in ("review", "critic"):
     expect(existsRun.worktree).toBeNull();
     expect(existsRun.error?.code).toBe('spec-or-issue-exists');
     await waitFor(() => {
-      expect(screen.getByTestId('run-error-feat').textContent).toContain('spec-or-issue-exists');
+      expect(screen.getByTestId('run-error-feat#01').textContent).toContain('spec-or-issue-exists');
     });
 
     // 2. Start a new Plan Run via the board Plan input + button for 'new-auth'
@@ -756,7 +798,7 @@ if role in ("review", "critic"):
     await waitFor(() => {
       const card = screen.getByTestId('issue-card-new-auth#01');
       expect(card.getAttribute('data-phase')).toBe('ready-for-approval');
-      expect(card.getAttribute('data-lane')).toBe('critic');
+      expect(card.getAttribute('data-lane')).toBe('issues');
     });
 
     // 3. Start another Plan Run 'dirty-plan' to exercise plan-dirty (try-again) and reject cleanup
@@ -1250,6 +1292,7 @@ sys.exit(0)
       expect(headAfterSecondApprove).toBe(headAfterFirstApprove);
 
       await waitFor(() => {
+        expect(screen.getByTestId('issue-card-feat#01').getAttribute('data-lane')).toBe('issues');
         expect(screen.getByTestId('run-pr-url-feat#01').textContent).toBe(
           'https://example.test/pr/42',
         );

@@ -1,0 +1,27 @@
+{
+  "ok": true,
+  "results": [
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "dimensions": {
+        "width": 143,
+        "height": 84
+      },
+      "pageErrors": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "dimensions": {
+        "width": 129,
+        "height": 84
+      },
+      "pageErrors": []
+    }
+  ]
+}

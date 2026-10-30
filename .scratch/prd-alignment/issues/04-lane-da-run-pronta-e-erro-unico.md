@@ -1,7 +1,7 @@
 # 04: Mostrar a Run pronta e o erro uma vez só
 
 Type: issue
-Status: ready-for-agent
+Status: done
 Slice: `prd-alignment#04`
 Spec: `.scratch/prd-alignment/spec.md`
 Created: 2026-10-20
@@ -18,13 +18,13 @@ Quando o card mudaria para fora da área visível, o quadro o traz para a vista.
 
 ## Acceptance criteria
 
-- [ ] Uma Run pronta para aprovação aparece na coluna de Issues, não numa coluna de execução, e oferece aprovar naquele card.
-- [ ] Uma Run com PR aberto e Issue ainda não done permanece em Issues, mostra a URL e não entra em Done.
-- [ ] Uma Run viva em implement permanece na coluna Implement. Uma Issue done no target fica em Done.
-- [ ] Depois que uma Run muda para um estado cujo card nasceria fora da vista, esse card fica visível sem o operador arrastar.
-- [ ] Um erro de setup do pack aparece uma vez, no card da Issue, em português, e não aparece no card da Spec.
-- [ ] O arquivo da Issue no repositório temporário conserva o status de antes da Run.
-- [ ] Os casos são provados no seam da suíte portátil.
+- [x] Uma Run pronta para aprovação aparece na coluna de Issues, não numa coluna de execução, e oferece aprovar naquele card.
+- [x] Uma Run com PR aberto e Issue ainda não done permanece em Issues, mostra a URL e não entra em Done.
+- [x] Uma Run viva em implement permanece na coluna Implement. Uma Issue done no target fica em Done.
+- [x] Depois que uma Run muda para um estado cujo card nasceria fora da vista, esse card fica visível sem o operador arrastar.
+- [x] Um erro de setup do pack aparece uma vez, no card da Issue, em português, e não aparece no card da Spec.
+- [x] O arquivo da Issue no repositório temporário conserva o status de antes da Run.
+- [x] Os casos são provados no seam da suíte portátil.
 
 ## Blocked by
 
@@ -35,3 +35,4 @@ Quando o card mudaria para fora da área visível, o quadro o traz para a vista.
 ### 2026-10-20 — Independência do setup
 
 A exibição de fases, pausas e erros usa o protocolo de Run já exercitado pela suíte portátil. Não depende da nova tela de setup nem da resolução de modelos upstream da #03. A dependência passa a ser #02 para que o bloqueio do setup não serialize mudanças independentes do quadro; a fixture atual é preservada até seu futuro bump de pin.
+- 2026-10-21 — 2026-10-21 — Entregue na wave 6: Runs prontas/com PR em Issues, reposicionamento do card e diagnóstico único em português. Suíte portátil executa o pack real sem alterar a Issue. Evidências e limites em ../wave-6-validation.md.
