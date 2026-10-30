@@ -105,9 +105,7 @@ export interface WorktreeCleanupResult {
   verified: boolean;
   /** Tracked paths still in the worktree. Deleting them leaves the blob only in the index. */
   keep?: string[];
-  /** Untracked paths that must be moved aside before they can be restored from the stash. */
-  remove?: string[];
-  /** Restores `remove` from the stash's untracked parent without checking out tracked files. */
+  /** Restores untracked paths from `<backup>^3` that are no longer on disk. Never includes a tracked path. */
   restore?: string;
 }
 
@@ -122,22 +120,38 @@ function quoteShell(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-function recoveryFromStatus(backup: string, files: WorktreeFile[]): Pick<WorktreeCleanupResult, 'keep' | 'remove' | 'restore'> {
-  const keep: string[] = [];
-  const remove: string[] = [];
-  for (const file of files) {
-    const relative = safeRelativePath(file.path);
-    if (!relative) continue;
-    if (file.status === '??') remove.push(relative);
-    else keep.push(relative);
+function pathIsOnDisk(root: string, relative: string): boolean {
+  try {
+    fs.lstatSync(path.join(root, relative));
+    return true;
+  } catch {
+    return false;
   }
-  keep.sort();
-  remove.sort();
+}
+
+async function recoveryAfterPartialStash(root: string, backup: string, files: WorktreeFile[]): Promise<Pick<WorktreeCleanupResult, 'keep' | 'restore'>> {
+  const keep = files
+    .filter(file => file.status !== '??')
+    .map(file => safeRelativePath(file.path))
+    .filter((entry): entry is string => Boolean(entry))
+    .sort();
+  let missing: string[] = [];
+  try {
+    // `^3` is the untracked commit. Passing a tracked path to restore from it deletes the worktree file and exits 0.
+    const listed = (await git(root, 'ls-tree', '-r', '--name-only', '-z', `${backup}^3`)).split('\0');
+    const tracked = new Set((await git(root, 'ls-files', '-z')).split('\0').filter(Boolean));
+    missing = listed
+      .map(safeRelativePath)
+      .filter((entry): entry is string => Boolean(entry))
+      .filter(entry => !tracked.has(entry) && !pathIsOnDisk(root, entry))
+      .sort();
+  } catch {
+    missing = [];
+  }
   return {
     ...(keep.length > 0 ? { keep } : {}),
-    ...(remove.length > 0 ? {
-      remove,
-      restore: `git restore --source ${quoteShell(`${backup}^3`)} --worktree -- ${remove.map(quoteShell).join(' ')}`,
+    ...(missing.length > 0 ? {
+      restore: `git restore --source ${quoteShell(`${backup}^3`)} --worktree -- ${missing.map(quoteShell).join(' ')}`,
     } : {}),
   };
 }
@@ -168,7 +182,7 @@ export async function cleanWorktree(checkout: string, token: unknown): Promise<W
     if (pushError) {
       try {
         const status = await readWorktreeStatus(preview.root);
-        return { backup, clean: false, verified: false, ...recoveryFromStatus(backup, status.files) };
+        return { backup, clean: false, verified: false, ...await recoveryAfterPartialStash(preview.root, backup, status.files) };
       } catch {
         return { backup, clean: false, verified: false };
       }
