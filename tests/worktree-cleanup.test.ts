@@ -2,10 +2,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { WebSocket } from 'ws';
 import { createHarnessServer, type HarnessServerInstance } from '../src/server/app.js';
 import * as gitModule from '../src/server/git.js';
+
+const runningAsRoot = typeof process.getuid === 'function' && process.getuid() === 0;
+if (runningAsRoot) {
+  console.warn('Skipping EACCES worktree cleanup coverage: this suite is running as root, so directory mode does not deny access.');
+}
+
+function gitSpawnCode(cwd: string): Promise<string | undefined> {
+  return new Promise(resolve => {
+    const child = spawn('git', ['status'], { cwd, stdio: 'ignore' });
+    child.once('error', error => resolve(typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : 'error'));
+    child.once('close', () => resolve(undefined));
+  });
+}
 
 let root: string;
 let repo: string;
@@ -100,6 +113,28 @@ describe('Worktree cleanup over HTTP', () => {
     expect((await response.json()).error).toContain('mudaram');
     expect(fs.readFileSync(path.join(repo, file), 'utf8')).toBe('After!\n');
     expect(git(repo, 'stash', 'list')).toBe('');
+  });
+
+  it('refuses a preview token after a new cleanup backup and lists only those backups', async () => {
+    const id = await register(repo);
+    fs.writeFileSync(path.join(repo, 'README.md'), 'Dirty\n');
+    const first = await (await request(id, 'preview')).json();
+    expect(first.backups).toEqual([]);
+    git(repo, 'stash', 'push', '--include-untracked', '--message', 'gantry-harness-cleanup-existing');
+    git(repo, 'stash', 'apply', '--index');
+    git(repo, 'stash', 'push', '--include-untracked', '--message', 'unrelated');
+    git(repo, 'stash', 'apply', '--index');
+    const second = await (await request(id, 'preview')).json();
+    const cleanupHash = git(repo, 'rev-parse', 'stash@{1}');
+    expect(second.token).not.toBe(first.token);
+    expect(second.backups).toEqual([{ hash: cleanupHash, subject: expect.stringContaining('gantry-harness-cleanup-existing') }]);
+    expect(JSON.stringify(second.backups)).not.toContain('unrelated');
+    expect(JSON.stringify(second.backups)).not.toContain(repo);
+    const refused = await request(id, 'clean', { confirmed: true, token: first.token });
+    expect(refused.status).toBe(409);
+    expect((await refused.json()).error).toMatch(/mudaram/i);
+    expect(git(repo, 'stash', 'list').split('\n').filter(Boolean)).toHaveLength(2);
+    expect(fs.readFileSync(path.join(repo, 'README.md'), 'utf8')).toBe('Dirty\n');
   });
 
   it('requires confirmation and binds the preview to the selected checkout', async () => {
@@ -330,13 +365,17 @@ print(json.dumps({'issues': [], 'specs': [], 'frontier': []}))
     expect(refresh.mock.calls.some(([project]) => project.id === id)).toBe(true);
   });
 
-  it('reports an unavailable Git inspection as a managed service error', async () => {
+  it('reports a bare repository inspection as a Git failure without calling it inaccessible', async () => {
     const id = await register(repo);
     git(repo, 'config', 'core.bare', 'true');
     try {
       const response = await fetch(`http://127.0.0.1:${server.port}/api/projects/${id}/inspect`);
-      expect(response.status).toBe(503);
-      expect((await response.json()).code).toBe('git-unavailable');
+      const body = await response.json();
+      expect(response.status).toBe(409);
+      expect(body.code).toBe('git-failed');
+      expect(body.error).toBe(gitModule.GIT_FAILED_MESSAGE);
+      expect(body.error).not.toMatch(/inacessível/);
+      expect(JSON.stringify(body)).not.toContain(repo);
     } finally { git(repo, 'config', 'core.bare', 'false'); }
   });
 
@@ -363,6 +402,66 @@ print(json.dumps({'issues': [], 'specs': [], 'frontier': []}))
     expect(body.code).toBe('git-unavailable');
     expect(JSON.stringify(body)).not.toMatch(/ENOENT|lstat|posix_spawn/);
     expect(JSON.stringify(body)).not.toContain(linked);
+  });
+
+  it.each(['preview', 'clean'] as const)('reports an orphan linked worktree with the same unavailable message on %s', async (action) => {
+    const linked = path.join(root, 'linked');
+    git(repo, 'worktree', 'add', '-b', 'feature', linked);
+    const id = await register(linked);
+    const gitdir = path.resolve(linked, fs.readFileSync(path.join(linked, '.git'), 'utf8').trim().replace(/^gitdir:\s*/, ''));
+    fs.rmSync(gitdir, { recursive: true, force: true });
+    expect(fs.existsSync(linked)).toBe(true);
+    const logged: string[] = [];
+    const logSpy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { logged.push(args.map(String).join(' ')); });
+    try {
+      const response = await request(id, action, { confirmed: true, token: 'a'.repeat(64) });
+      const body = await response.json();
+      const encoded = JSON.stringify(body);
+      expect(response.status).toBe(503);
+      expect(body.code).toBe('git-unavailable');
+      expect(body.error).toBe(gitModule.GIT_UNAVAILABLE_MESSAGE);
+      expect(encoded).not.toContain(linked);
+      expect(encoded).not.toContain(repo);
+      expect(encoded).not.toContain(gitdir);
+      expect(encoded).not.toMatch(/\.git\/worktrees|origin\/|https?:/);
+      expect(logged.join('\n')).toContain(gitdir);
+    } finally { logSpy.mockRestore(); }
+  });
+
+  it.each(['preview', 'clean'] as const)('reports spawn ENOTDIR as git-unavailable without a path on %s', async (action) => {
+    const id = await register(repo);
+    const target = repo;
+    fs.rmSync(target, { recursive: true, force: true });
+    fs.writeFileSync(target, 'not a directory\n');
+    const response = await request(id, action, { confirmed: true, token: 'a'.repeat(64) });
+    const body = await response.json();
+    const encoded = JSON.stringify(body);
+    expect(response.status).toBe(503);
+    expect(body.code).toBe('git-unavailable');
+    expect(body.error).toBe(gitModule.GIT_UNAVAILABLE_MESSAGE);
+    expect(encoded).not.toContain(target);
+    expect(encoded).not.toContain(root);
+    expect(encoded).not.toMatch(/ENOTDIR|EACCES|spawn/);
+  });
+
+  it.skipIf(runningAsRoot).each(['preview', 'clean'] as const)('reports spawn EACCES as git-unavailable without a path on %s', async (action) => {
+    const id = await register(repo);
+    const target = repo;
+    fs.chmodSync(target, 0);
+    try {
+      expect(await gitSpawnCode(target)).toBe('EACCES');
+      const response = await request(id, action, { confirmed: true, token: 'a'.repeat(64) });
+      const body = await response.json();
+      const encoded = JSON.stringify(body);
+      expect(response.status).toBe(503);
+      expect(body.code).toBe('git-unavailable');
+      expect(body.error).toBe(gitModule.GIT_UNAVAILABLE_MESSAGE);
+      expect(encoded).not.toContain(target);
+      expect(encoded).not.toContain(root);
+      expect(encoded).not.toMatch(/ENOTDIR|EACCES|spawn/);
+    } finally {
+      fs.chmodSync(target, 0o755);
+    }
   });
 
   it('reports Git failure on worktree preview as git-unavailable', async () => {
@@ -466,19 +565,190 @@ print(json.dumps({'issues': [], 'specs': [], 'frontier': []}))
     ws.on('message', (data) => events.push(JSON.parse(String(data))));
     await new Promise<void>((resolve, reject) => { ws.once('open', () => resolve()); ws.once('error', reject); });
     const originalGit = gitModule.git;
-    const gitSpy = vi.spyOn(gitModule, 'git').mockImplementation((root: string, ...args: string[]) => {
-      if (args[0] === 'reflog') return Promise.resolve('not-a-hash\0unrelated');
-      return originalGit(root, ...args);
+    const gitSpy = vi.spyOn(gitModule, 'git').mockImplementation((cwd: string, ...args: string[]) => {
+      if (args[0] === 'reflog' || (args[0] === 'stash' && args[1] === 'list')) return Promise.resolve('not-a-hash\0unrelated');
+      return originalGit(cwd, ...args);
     });
     try {
       const response = await request(id, 'clean', { confirmed: true, token: preview.token });
       expect(gitSpy).toHaveBeenCalled();
       expect(response.status).toBe(409);
-      expect((await response.json()).error).toMatch(/stash/i);
+      const body = await response.json();
+      expect(body.error).toMatch(/stash/i);
+      expect(body.backup).toBeUndefined();
+      expect(body.error).not.toMatch(/[0-9a-f]{40}/);
       await vi.waitFor(() => expect(events).toContainEqual({ type: 'project.worktree.cleaned', projectId: id }));
       expect(git(repo, 'stash', 'list')).toContain('gantry-harness-cleanup-');
       expect(git(repo, 'status', '--porcelain')).toBe('');
     } finally { gitSpy.mockRestore(); ws.close(); }
+  });
+
+  it('returns the backup when confirmation fails after stashing staged and untracked files', async () => {
+    const id = await register(repo);
+    const head = git(repo, 'rev-parse', 'HEAD');
+    const branch = git(repo, 'branch', '--show-current');
+    fs.writeFileSync(path.join(repo, 'README.md'), 'Staged\n');
+    git(repo, 'add', 'README.md');
+    fs.writeFileSync(path.join(repo, 'extra.txt'), 'Untracked\n');
+    fs.writeFileSync(path.join(repo, 'ignored.log'), 'Keep ignored\n');
+    const preview = await (await request(id, 'preview')).json();
+    expect(preview.files.map((file: { path: string }) => file.path).sort()).toEqual(['README.md', 'extra.txt']);
+    const ws = new WebSocket(`ws://127.0.0.1:${server.port}`);
+    const events: Array<Record<string, unknown>> = [];
+    ws.on('message', (data) => events.push(JSON.parse(String(data))));
+    await new Promise<void>((resolve, reject) => { ws.once('open', () => resolve()); ws.once('error', reject); });
+    const originalGit = gitModule.git;
+    const originalStatus = gitModule.readWorktreeStatus;
+    let pushed = false;
+    const gitSpy = vi.spyOn(gitModule, 'git').mockImplementation((cwd: string, ...args: string[]) => {
+      if (args[0] === 'stash' && args[1] === 'push') {
+        return originalGit(cwd, ...args).then(output => { pushed = true; return output; });
+      }
+      if (pushed && args[0] === 'reflog') return Promise.reject(new gitModule.GitError('Não foi possível executar o Git: verifique o repositório.'));
+      return originalGit(cwd, ...args);
+    });
+    const statusSpy = vi.spyOn(gitModule, 'readWorktreeStatus').mockImplementation(cwd => {
+      if (pushed) return Promise.reject(new gitModule.GitError('Não foi possível executar o Git: verifique o repositório.'));
+      return originalStatus(cwd);
+    });
+    try {
+      const response = await request(id, 'clean', { confirmed: true, token: preview.token });
+      const body = await response.json();
+      const backup = git(repo, 'rev-parse', 'refs/stash');
+      expect(gitSpy).toHaveBeenCalled();
+      expect(statusSpy).toHaveBeenCalled();
+      expect(response.status).toBe(200);
+      expect(body).toEqual({ backup, clean: false, verified: false });
+      expect(JSON.stringify(body)).not.toContain(repo);
+      const stashed = git(repo, 'stash', 'show', '--include-untracked', '--name-only', backup);
+      expect(stashed).toContain('README.md');
+      expect(stashed).toContain('extra.txt');
+      await vi.waitFor(() => expect(events).toContainEqual({ type: 'project.worktree.cleaned', projectId: id }));
+      expect(git(repo, 'rev-parse', 'HEAD')).toBe(head);
+      expect(git(repo, 'branch', '--show-current')).toBe(branch);
+      expect(git(repo, 'status', '--porcelain')).toBe('');
+      expect(git(repo, 'diff', '--cached')).toBe('');
+      expect(git(repo, 'stash', 'list').split('\n').filter(Boolean)).toHaveLength(1);
+      expect(fs.readFileSync(path.join(repo, 'ignored.log'), 'utf8')).toBe('Keep ignored\n');
+      git(repo, 'stash', 'apply', '--index', backup);
+      expect(fs.readFileSync(path.join(repo, 'README.md'), 'utf8')).toBe('Staged\n');
+      expect(fs.readFileSync(path.join(repo, 'extra.txt'), 'utf8')).toBe('Untracked\n');
+      expect(git(repo, 'diff', '--cached')).toContain('Staged');
+    } finally { gitSpy.mockRestore(); statusSpy.mockRestore(); ws.close(); }
+  });
+
+  it('returns the backup when stash push exits after saving staged and untracked files', async () => {
+    const id = await register(repo);
+    const head = git(repo, 'rev-parse', 'HEAD');
+    fs.writeFileSync(path.join(repo, 'README.md'), 'Staged\n');
+    git(repo, 'add', 'README.md');
+    const locked = path.join(repo, 'locked');
+    fs.mkdirSync(locked);
+    fs.writeFileSync(path.join(locked, 'note.txt'), 'secret\n');
+    fs.chmodSync(locked, 0o555);
+    const ws = new WebSocket(`ws://127.0.0.1:${server.port}`);
+    const events: Array<Record<string, unknown>> = [];
+    ws.on('message', (data) => events.push(JSON.parse(String(data))));
+    await new Promise<void>((resolve, reject) => { ws.once('open', () => resolve()); ws.once('error', reject); });
+    try {
+      const preview = await (await request(id, 'preview')).json();
+      expect(preview.files.map((file: { path: string }) => file.path).sort()).toEqual(['README.md', 'locked/note.txt']);
+      const response = await request(id, 'clean', { confirmed: true, token: preview.token });
+      const body = await response.json();
+      const backup = git(repo, 'rev-parse', 'refs/stash');
+      expect(response.status).toBe(200);
+      expect(body).toEqual({
+        backup,
+        clean: false,
+        verified: false,
+        keep: ['README.md'],
+      });
+      expect(body.restore).toBeUndefined();
+      expect(body.remove).toBeUndefined();
+      expect(JSON.stringify(body)).not.toContain(repo);
+      expect(body.keep.every((file: string) => !path.isAbsolute(file))).toBe(true);
+      let blocked = '';
+      try {
+        git(repo, 'stash', 'apply', '--index', backup);
+      } catch (error) {
+        blocked = String((error as { stderr?: string }).stderr ?? error);
+      }
+      expect(blocked).toMatch(/already exists, no checkout/);
+      expect(git(repo, 'rev-parse', 'refs/stash')).toBe(backup);
+      expect(fs.readFileSync(path.join(repo, 'README.md'), 'utf8')).toBe('Staged\n');
+      expect(git(repo, 'show', ':README.md')).toBe('Staged');
+      expect(fs.readFileSync(path.join(locked, 'note.txt'), 'utf8')).toBe('secret\n');
+      expect(git(repo, 'diff', '--cached')).toContain('Staged');
+      expect(git(repo, 'rev-parse', 'refs/stash')).toBe(backup);
+      expect(git(repo, 'stash', 'list').split('\n').filter(Boolean)).toHaveLength(1);
+      const stashed = git(repo, 'stash', 'show', '--include-untracked', '--name-only', backup);
+      expect(stashed).toContain('README.md');
+      expect(stashed).toContain('locked/note.txt');
+      expect(git(repo, 'rev-parse', 'HEAD')).toBe(head);
+      expect(git(repo, 'status', '--porcelain')).toContain('README.md');
+      expect(git(repo, 'status', '--porcelain')).toContain('locked/');
+      await vi.waitFor(() => expect(events).toContainEqual({ type: 'project.worktree.cleaned', projectId: id }));
+    } finally {
+      fs.chmodSync(locked, 0o755);
+      ws.close();
+    }
+  });
+
+  it('follows the displayed recovery and restores staged, unstaged, and untracked content', async () => {
+    const id = await register(repo);
+    fs.writeFileSync(path.join(repo, 'tracked.txt'), 'Tracked base\n');
+    git(repo, 'add', 'tracked.txt');
+    git(repo, 'commit', '-m', 'Track a second file');
+    fs.writeFileSync(path.join(repo, 'README.md'), 'Staged line\n');
+    git(repo, 'add', 'README.md');
+    fs.writeFileSync(path.join(repo, 'README.md'), 'Staged line\nUnstaged line\n');
+    fs.writeFileSync(path.join(repo, 'tracked.txt'), 'Unstaged only\n');
+    const locked = path.join(repo, 'locked');
+    fs.mkdirSync(locked);
+    fs.writeFileSync(path.join(locked, 'extra.txt'), 'extra\n');
+    fs.writeFileSync(path.join(locked, 'note.txt'), 'note\n');
+    fs.writeFileSync(path.join(locked, 'f'), 'f\n');
+    fs.writeFileSync(path.join(repo, 'u1'), 'u1-bytes\n');
+    fs.writeFileSync(path.join(repo, '-lead'), 'lead-bytes\n');
+    fs.mkdirSync(path.join(repo, 'dir sp'));
+    const quoted = path.join(repo, 'dir sp', "it's -x.txt");
+    fs.writeFileSync(quoted, 'quote-bytes\n');
+    fs.chmodSync(locked, 0o555);
+    const read = (file: string) => fs.readFileSync(path.join(repo, file));
+    const gitBytes = (...args: string[]) => execFileSync('git', ['-c', 'commit.gpgsign=false', '-c', 'core.fsmonitor=false', ...args], { cwd: repo });
+    const files = ['README.md', 'tracked.txt', 'locked/extra.txt', 'locked/note.txt', 'locked/f', 'u1', '-lead', "dir sp/it's -x.txt"];
+    const original = {
+      files: Object.fromEntries(files.map(file => [file, read(file)])),
+      indexReadme: gitBytes('show', ':README.md'),
+      indexTracked: gitBytes('show', ':tracked.txt'),
+      staged: gitBytes('diff', '--cached'),
+      unstaged: gitBytes('diff'),
+    };
+    try {
+      const preview = await (await request(id, 'preview')).json();
+      const response = await request(id, 'clean', { confirmed: true, token: preview.token });
+      const body = await response.json();
+      const backup = git(repo, 'rev-parse', 'refs/stash');
+      expect(response.status).toBe(200);
+      expect(body.verified).toBe(false);
+      expect(body.keep).toEqual(['README.md', 'tracked.txt']);
+      expect(body.remove).toBeUndefined();
+      expect(body.restore).toBe(`git restore --source '${backup}^3' --worktree -- '-lead' 'dir sp/it'\\''s -x.txt' 'u1'`);
+      expect(body.restore).not.toMatch(/README\.md|tracked\.txt|locked\//);
+      expect(JSON.stringify(body)).not.toContain(repo);
+      for (const file of ['u1', '-lead', "dir sp/it's -x.txt"]) expect(fs.existsSync(path.join(repo, file))).toBe(false);
+      for (const file of body.keep as string[]) expect(fs.existsSync(path.join(repo, file))).toBe(true);
+      expect(fs.readFileSync(path.join(locked, 'f'), 'utf8')).toBe('f\n');
+      execFileSync('sh', ['-c', body.restore], { cwd: repo, stdio: 'pipe' });
+      for (const file of files) expect(read(file)).toEqual(original.files[file]);
+      expect(gitBytes('show', ':README.md')).toEqual(original.indexReadme);
+      expect(gitBytes('show', ':tracked.txt')).toEqual(original.indexTracked);
+      expect(gitBytes('diff', '--cached')).toEqual(original.staged);
+      expect(gitBytes('diff')).toEqual(original.unstaged);
+      expect(git(repo, 'rev-parse', 'refs/stash')).toBe(backup);
+    } finally {
+      fs.chmodSync(locked, 0o755);
+    }
   });
 
 });
