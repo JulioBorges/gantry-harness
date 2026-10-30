@@ -10,8 +10,15 @@ export interface WorktreeCleanupPreview {
 }
 
 export class WorktreeCleanupError extends Error {
-  constructor(message: string, public statusCode = 409, public worktreeMutated = false) { super(message); }
+  constructor(
+    message: string,
+    public statusCode = 409,
+    public worktreeMutated = false,
+    public backup?: string,
+  ) { super(message); }
 }
+
+const STASH_HASH = /^[0-9a-f]{40,64}$/;
 
 function resolveCheckout(checkout: string): string {
   try {
@@ -19,8 +26,40 @@ function resolveCheckout(checkout: string): string {
   } catch (error) {
     const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
     if (code === 'ENOENT') throw new GitError('Não foi possível executar o Git: o diretório do projeto não está mais disponível.');
+    if (code === 'ENOTDIR' || code === 'EACCES') throw new GitError('Não foi possível executar o Git: o repositório não está acessível.');
     throw error;
   }
+}
+
+function hashFromReflog(reflog: string, marker: string): string | undefined {
+  const hash = reflog.split('\n').find(entry => entry.includes(marker))?.split('\0')[0];
+  return hash && STASH_HASH.test(hash) ? hash : undefined;
+}
+
+function hashFromStashLog(commonDir: string, marker: string): string | undefined {
+  let text: string;
+  try {
+    text = fs.readFileSync(path.join(commonDir, 'logs', 'refs', 'stash'), 'utf8');
+  } catch {
+    return undefined;
+  }
+  let found: string | undefined;
+  for (const line of text.split('\n')) {
+    if (!line.includes(marker)) continue;
+    const hash = line.split(' ')[1];
+    if (hash && STASH_HASH.test(hash)) found = hash;
+  }
+  return found;
+}
+
+async function identifyStashBackup(root: string, commonDir: string, marker: string): Promise<string | undefined> {
+  try {
+    const fromReflog = hashFromReflog(await git(root, 'reflog', 'show', '--format=%H%x00%gs', 'refs/stash'), marker);
+    if (fromReflog) return fromReflog;
+  } catch {
+    // The stash is already written. A failed reflog must not hide the backup hash.
+  }
+  return hashFromStashLog(commonDir, marker);
 }
 
 export async function previewWorktreeCleanup(checkout: string): Promise<WorktreeCleanupPreview> {
@@ -65,14 +104,23 @@ export async function cleanWorktree(checkout: string, token: unknown): Promise<{
     if (!preview.files.length) throw new WorktreeCleanupError('A worktree já está limpa.');
     const marker = `gantry-harness-cleanup-${crypto.randomUUID()}`;
     await git(preview.root, 'stash', 'push', '--include-untracked', '--message', marker);
-    // Match our own reflog entry rather than assuming another process has not pushed a stash.
-    const entries = (await git(preview.root, 'reflog', 'show', '--format=%H%x00%gs', 'refs/stash')).split('\n');
-    const backup = entries.find(entry => entry.includes(marker))?.split('\0')[0];
-    if (!backup || !/^[0-9a-f]{40,64}$/.test(backup)) {
-      throw new WorktreeCleanupError('O Git criou o stash, mas não foi possível identificar o backup. Consulte git stash list antes de continuar.', 409, true);
+    // Leave the stash in place. Rolling it back can fail halfway and is harder to recover than a known hash.
+    const backup = await identifyStashBackup(preview.root, commonDir, marker);
+    try {
+      if (!backup) {
+        throw new WorktreeCleanupError('O Git criou o stash, mas não foi possível identificar o backup. Consulte git stash list antes de continuar.', 409, true);
+      }
+      const status = await readWorktreeStatus(preview.root);
+      return { backup, clean: status.files.length === 0 };
+    } catch (error) {
+      if (!backup) throw error;
+      throw new WorktreeCleanupError(
+        `O backup ${backup} foi criado, mas a limpeza não pôde ser confirmada. Recupere com: git stash apply --index ${backup}`,
+        409,
+        true,
+        backup,
+      );
     }
-    const status = await readWorktreeStatus(preview.root);
-    return { backup, clean: status.files.length === 0 };
   } finally {
     cleaning.delete(commonDir);
   }

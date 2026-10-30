@@ -417,7 +417,9 @@ export async function createHarnessServer(
             broadcast({ type: 'project.worktree.cleaned', projectId: project.id });
           }
           if (error instanceof RunSupervisorError) sendJson(res, error.statusCode, { error: error.message, code: error.code });
-          else if (error instanceof WorktreeCleanupError) { sendJson(res, error.statusCode, { error: error.message }); }
+          else if (error instanceof WorktreeCleanupError) {
+            sendJson(res, error.statusCode, { error: error.message, ...(error.backup ? { backup: error.backup } : {}) });
+          }
           else throw error;
         }
         return;

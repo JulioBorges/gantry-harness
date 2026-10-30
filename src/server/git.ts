@@ -2,9 +2,38 @@ import { runCommand } from './commandRunner.js';
 
 export class GitError extends Error {}
 
+const UNAVAILABLE_SPAWN = new Set(['ENOTDIR', 'EACCES']);
+
+function errorCode(error: unknown): string | undefined {
+  if (typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string') return error.code;
+  return undefined;
+}
+
+/** Git's own text often repeats absolute paths; those must not reach the operator. */
+function redactFilesystemPaths(text: string, root?: string): string {
+  let redacted = text;
+  if (root) redacted = redacted.replaceAll(root, '');
+  return redacted
+    .replace(/(?:[A-Za-z]:[\\/]|\/|~\/)[^\s"'`<>|;]+/g, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\s+([:.,])/g, '$1')
+    .trim();
+}
+
 export async function git(root: string, ...args: string[]): Promise<string> {
-  const result = await runCommand(['git', ...args], { cwd: root });
-  if (result.exitCode !== 0) throw new GitError(`Não foi possível executar o Git: ${result.stderr.trim() || result.stdout.trim() || 'verifique o repositório.'}`);
+  let result;
+  try {
+    result = await runCommand(['git', ...args], { cwd: root });
+  } catch (error) {
+    if (UNAVAILABLE_SPAWN.has(errorCode(error) ?? '')) {
+      throw new GitError('Não foi possível executar o Git: o repositório não está acessível.');
+    }
+    throw error;
+  }
+  if (result.exitCode !== 0) {
+    const detail = redactFilesystemPaths(result.stderr.trim() || result.stdout.trim(), root);
+    throw new GitError(`Não foi possível executar o Git: ${detail || 'verifique o repositório.'}`);
+  }
   return result.stdout;
 }
 
