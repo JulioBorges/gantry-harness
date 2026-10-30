@@ -22,7 +22,8 @@ import {
 import { PtySupervisor, readArtifactAndDiff } from './ptyManager.js';
 import { RunSupervisor, RunSupervisorError } from './runSupervisor.js';
 import { GitError } from './git.js';
-import { evaluateIncomingStateChange } from './stateChangeGuard.js';
+import { evaluateIncomingStateChange, HOST_REJECTION, isAppHost, isAppOrigin, isLoopbackRemote, isStateChangingMethod, singleHeader } from './stateChangeGuard.js';
+import { matchesRoute } from './stateChangingRoutes.js';
 import { cleanWorktree, previewWorktreeCleanup, WorktreeCleanupError } from './worktreeCleanup.js';
 import { ProjectTreeError, readProjectTree } from './projectTree.js';
 
@@ -172,12 +173,11 @@ export async function createHarnessServer(
     res.writeHead(statusCode, {
       'Content-Type': 'application/json; charset=utf-8',
       'Cache-Control': 'no-store',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Forwarded-For',
     });
     res.end(JSON.stringify(data));
   };
+
+  const guardContext = (): { bindHost: string; port: number } => ({ bindHost: host, port: listenPort });
 
   const isRemoteRequest = (req: http.IncomingMessage): boolean => {
     const forwarded = req.headers['x-forwarded-for'];
@@ -188,8 +188,27 @@ export async function createHarnessServer(
     return remoteAddr !== '127.0.0.1' && remoteAddr !== '::1' && remoteAddr !== '::ffff:127.0.0.1';
   };
 
+  const bearerToken = (req: http.IncomingMessage): string => {
+    const authHeader = req.headers.authorization ?? '';
+    return authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+  };
+
+  const remoteUnpaired = (req: http.IncomingMessage): boolean => {
+    if (!options.requirePairingForRemote || !isRemoteRequest(req)) return false;
+    const token = bearerToken(req);
+    return token === '' || !store.isValidAuthToken(token);
+  };
+
   const server = http.createServer(async (req, res) => {
     try {
+      // 421, not 403: the authority is wrong (RFC 9110 Misdirected Request).
+      // 403 stays reserved for a cross-site Origin aimed at this host.
+      if (!isAppHost(singleHeader(req.headers.host), guardContext())) {
+        await drainRequest(req);
+        sendJson(res, HOST_REJECTION.statusCode, { error: HOST_REJECTION.error });
+        return;
+      }
+
       if (req.method === 'OPTIONS') {
         sendJson(res, 204, {});
         return;
@@ -199,7 +218,22 @@ export async function createHarnessServer(
       const url = new URL(rawUrl, `http://${req.headers.host ?? '127.0.0.1'}`);
       const pathname = url.pathname;
 
+      if (isStateChangingMethod(req.method)) {
+        const rejection = evaluateIncomingStateChange(req, guardContext());
+        if (rejection) {
+          await drainRequest(req);
+          sendJson(res, rejection.statusCode, { error: rejection.error });
+          return;
+        }
+      }
+
       if (pathname === '/api/health' && req.method === 'GET') {
+        // The pairing screen loads before a token exists. A remote unpaired
+        // caller may see that the process is up, not the disk path or pid.
+        if (remoteUnpaired(req)) {
+          sendJson(res, 200, { status: 'ok' });
+          return;
+        }
         sendJson(res, 200, { status: 'ok', pid: process.pid, gantryHome });
         return;
       }
@@ -238,7 +272,7 @@ export async function createHarnessServer(
         }
       }
 
-      if (pathname === '/api/auth/pair/verify' && req.method === 'POST') {
+      if (matchesRoute('pair-verify', pathname, req.method)) {
         const body = await readJsonBody(req);
         const code = String(body.code ?? '');
         const token = store.verifyPairingCode(code);
@@ -251,15 +285,14 @@ export async function createHarnessServer(
       }
 
       if (options.requirePairingForRemote && isRemoteRequest(req)) {
-        const authHeader = req.headers.authorization ?? '';
-        const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+        const token = bearerToken(req);
         if (!token || !store.isValidAuthToken(token)) {
           sendJson(res, 401, { error: 'Remote access requires a valid paired bearer token' });
           return;
         }
       }
 
-      if (pathname === '/api/auth/pair/generate' && req.method === 'POST') {
+      if (matchesRoute('pair-generate', pathname, req.method)) {
         const code = store.generatePairingCode();
         sendJson(res, 200, { code });
         return;
@@ -296,7 +329,7 @@ export async function createHarnessServer(
         return;
       }
 
-      if (pathname === '/api/workspace/state' && req.method === 'PUT') {
+      if (matchesRoute('workspace-state', pathname, req.method)) {
         const body = await readJsonBody(req);
         const current = store.getWorkspaceLayout();
         const requestedProjectId = body.activeProjectId !== undefined ? body.activeProjectId : current.activeProjectId;
@@ -317,7 +350,7 @@ export async function createHarnessServer(
         return;
       }
 
-      if (pathname === '/api/projects' && req.method === 'POST') {
+      if (matchesRoute('project-create', pathname, req.method)) {
         const body = await readJsonBody(req);
         const inputPath = String(body.path ?? '');
         const expandedPath = inputPath === '~' || inputPath.startsWith('~/')
@@ -341,7 +374,7 @@ export async function createHarnessServer(
         return;
       }
 
-      if (pathname.startsWith('/api/projects/') && req.method === 'DELETE') {
+      if (matchesRoute('project-delete', pathname, req.method)) {
         const parts = pathname.split('/').filter(Boolean);
         if (parts.length === 3) {
           const projectId = parts[2];
@@ -384,17 +417,7 @@ export async function createHarnessServer(
       }
 
       const cleanupRoute = pathname.match(/^\/api\/projects\/([^/]+)\/worktree\/(preview|clean)$/);
-      if (cleanupRoute && req.method === 'POST') {
-        const bound = server.address();
-        const rejection = evaluateIncomingStateChange(req, {
-          bindHost: host,
-          port: typeof bound === 'object' && bound ? bound.port : listenPort,
-        });
-        if (rejection) {
-          await drainRequest(req);
-          sendJson(res, rejection.statusCode, { error: rejection.error });
-          return;
-        }
+      if (cleanupRoute && (matchesRoute('worktree-preview', pathname, req.method) || matchesRoute('worktree-clean', pathname, req.method))) {
         const project = store.getProject(cleanupRoute[1]);
         if (!project) {
           await drainRequest(req);
@@ -449,7 +472,7 @@ export async function createHarnessServer(
         }
       }
 
-      if (pathname.startsWith('/api/projects/') && pathname.endsWith('/bootstrap') && req.method === 'POST') {
+      if (matchesRoute('bootstrap', pathname, req.method)) {
         const parts = pathname.split('/').filter(Boolean);
         if (parts.length === 4) {
           const projectId = parts[2];
@@ -496,7 +519,7 @@ export async function createHarnessServer(
         }
       }
 
-      if (pathname.startsWith('/api/projects/') && pathname.endsWith('/setup/preview') && req.method === 'POST') {
+      if (matchesRoute('setup-preview', pathname, req.method)) {
         const parts = pathname.split('/').filter(Boolean);
         if (parts.length === 5) {
           const projectId = parts[2];
@@ -517,7 +540,7 @@ export async function createHarnessServer(
         }
       }
 
-      if (pathname.startsWith('/api/projects/') && pathname.endsWith('/setup/apply') && req.method === 'POST') {
+      if (matchesRoute('setup-apply', pathname, req.method)) {
         const parts = pathname.split('/').filter(Boolean);
         if (parts.length === 5) {
           const projectId = parts[2];
@@ -558,7 +581,7 @@ export async function createHarnessServer(
             sendJson(res, 200, { panes: ptySupervisor.listPanes(projectId) });
             return;
           }
-          if (req.method === 'POST') {
+          if (matchesRoute('pane-create', pathname, req.method)) {
             const body = await readJsonBody(req);
             const pane = await ptySupervisor.spawnPane({
               projectId,
@@ -583,14 +606,14 @@ export async function createHarnessServer(
         const paneId = parts[4];
         const subAction = parts[5];
 
-        if (!subAction && req.method === 'DELETE') {
+        if (matchesRoute('pane-delete', pathname, req.method)) {
           ptySupervisor.closePane(projectId, paneId);
           broadcast({ type: 'pane.closed', projectId, paneId });
           sendJson(res, 200, { ok: true });
           return;
         }
 
-        if (subAction === 'resize' && req.method === 'POST') {
+        if (matchesRoute('pane-resize', pathname, req.method)) {
           const body = await readJsonBody(req);
           sendJson(res, 200, { pane: ptySupervisor.resizePane(projectId, paneId, Number(body.cols), Number(body.rows)) });
           return;
@@ -606,7 +629,7 @@ export async function createHarnessServer(
           return;
         }
 
-        if (subAction === 'input' && req.method === 'POST') {
+        if (matchesRoute('pane-input', pathname, req.method)) {
           const body = await readJsonBody(req);
           const pane = await ptySupervisor.writeInput(
             projectId,
@@ -618,7 +641,7 @@ export async function createHarnessServer(
           return;
         }
 
-        if (subAction === 'toggle' && req.method === 'POST') {
+        if (matchesRoute('pane-toggle', pathname, req.method)) {
           const pane = ptySupervisor.toggleMode(projectId, paneId, broadcast);
           sendJson(res, 200, { pane });
           return;
@@ -659,7 +682,7 @@ export async function createHarnessServer(
             sendJson(res, 200, art);
             return;
           }
-          if (req.method === 'PUT') {
+          if (matchesRoute('artifact-write', pathname, req.method)) {
             const body = await readJsonBody(req);
             const relPath = String(body.path ?? '');
             const baseRoot = resolveArtifactBasePath(projectId, project.path, relPath);
@@ -677,7 +700,7 @@ export async function createHarnessServer(
       }
 
 
-      if (pathname.startsWith('/api/projects/') && pathname.endsWith('/waves/execute') && req.method === 'POST') {
+      if (matchesRoute('wave-execute', pathname, req.method)) {
         const parts = pathname.split('/').filter(Boolean);
         if (parts.length === 5) {
           const projectId = parts[2];
@@ -713,7 +736,7 @@ export async function createHarnessServer(
             sendJson(res, 200, { runs: runSupervisor.listRuns(projectId) });
             return;
           }
-          if (req.method === 'POST') {
+          if (matchesRoute('run-create', pathname, req.method)) {
             const body = await readJsonBody(req);
             const slug = typeof body.slug === 'string' ? body.slug.trim() : undefined;
             const ref = String(body.ref ?? body.issueRef ?? slug ?? '').trim();
@@ -767,7 +790,7 @@ export async function createHarnessServer(
           return;
         }
 
-        if (action === 'answer' && req.method === 'POST') {
+        if (matchesRoute('run-answer', pathname, req.method)) {
           const body = await readJsonBody(req);
           const choice = String(body.choice ?? body.answer ?? '');
           try {
@@ -787,7 +810,7 @@ export async function createHarnessServer(
           return;
         }
 
-        if (action === 'resume' && req.method === 'POST') {
+        if (matchesRoute('run-resume', pathname, req.method)) {
           try {
             const run = await runSupervisor.resumeRun({ project, ref: runId });
             sendJson(res, 200, { ...run, run });
@@ -805,7 +828,7 @@ export async function createHarnessServer(
           return;
         }
 
-        if (action === 'discard' && req.method === 'POST') {
+        if (matchesRoute('run-discard', pathname, req.method)) {
           try {
             const out = await runSupervisor.discardRun({ project, ref: runId });
             sendJson(res, 200, out);
@@ -823,7 +846,7 @@ export async function createHarnessServer(
           return;
         }
 
-        if (action === 'approve' && req.method === 'POST') {
+        if (matchesRoute('run-approve', pathname, req.method)) {
           try {
             const run = await runSupervisor.approveRun({ project, ref: runId });
             sendJson(res, 200, { ...run, run });
@@ -843,7 +866,7 @@ export async function createHarnessServer(
           return;
         }
 
-        if ((action === 'pr-closed' || action === 'close-pr') && req.method === 'POST') {
+        if (matchesRoute('run-pr-closed', pathname, req.method) || matchesRoute('run-close-pr', pathname, req.method)) {
           try {
             const run = await runSupervisor.markPullRequestClosed({ project, ref: runId });
             sendJson(res, 200, { ...run, run });
@@ -857,7 +880,7 @@ export async function createHarnessServer(
           return;
         }
 
-        if ((action === 'reopen' || action === 'pr-reopen') && req.method === 'POST') {
+        if (matchesRoute('run-reopen', pathname, req.method) || matchesRoute('run-pr-reopen', pathname, req.method)) {
           try {
             const run = await runSupervisor.reopenPullRequest({ project, ref: runId });
             sendJson(res, 200, { ...run, run });
@@ -873,7 +896,7 @@ export async function createHarnessServer(
 
       }
 
-      if (pathname === '/api/settings/execution' && req.method === 'PUT') {
+      if (matchesRoute('settings-execution', pathname, req.method)) {
         const body = await readJsonBody(req);
         const execution = store.updateGlobalExecution({
           hostHarness: typeof body.hostHarness === 'string' ? body.hostHarness : undefined,
@@ -883,7 +906,7 @@ export async function createHarnessServer(
         return;
       }
 
-      if (pathname === '/api/settings/terminal' && req.method === 'PUT') {
+      if (matchesRoute('settings-terminal', pathname, req.method)) {
         const body = await readJsonBody(req);
         try {
           const settings = store.updateTerminalSettings(body);
@@ -895,7 +918,7 @@ export async function createHarnessServer(
       }
 
 
-      if (pathname === '/api/cli/dispatch' && req.method === 'POST') {
+      if (matchesRoute('cli-dispatch', pathname, req.method)) {
         const body = await readJsonBody(req);
         const cwd = path.resolve(String(body.cwd ?? process.cwd()));
         const subcommand = body.subcommand ? String(body.subcommand) : undefined;
@@ -946,7 +969,46 @@ export async function createHarnessServer(
     }
   });
 
-  const wss = new WebSocketServer({ server });
+  const websocketToken = (upgrade: http.IncomingMessage): string => {
+    const wsUrl = new URL(upgrade.url ?? '/', 'http://127.0.0.1');
+    const queryToken = wsUrl.searchParams.get('token') ?? '';
+    const authHeader = singleHeader(upgrade.headers.authorization) ?? '';
+    const bearer = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+    return queryToken || bearer;
+  };
+
+  const wss = new WebSocketServer({
+    server,
+    verifyClient: (info: { req: http.IncomingMessage }, callback) => {
+      const context = guardContext();
+      const host = singleHeader(info.req.headers.host);
+      if (!isAppHost(host, context)) {
+        callback(false, 421, 'Misdirected Request');
+        return;
+      }
+      const token = websocketToken(info.req);
+      const loopback = isLoopbackRemote(info.req.socket.remoteAddress);
+      // A stale gantry_auth_token must not close the UI socket when pairing is
+      // off. HTTP keeps answering 401 or a minimal health body for a bad bearer;
+      // only a pairing-required upgrade rejects the token itself.
+      if (options.requirePairingForRemote && token !== '' && !store.isValidAuthToken(token) && !loopback) {
+        callback(false, 403, 'Forbidden');
+        return;
+      }
+      const origin = singleHeader(info.req.headers.origin);
+      if (origin !== undefined) {
+        callback(isAppOrigin(origin, host, context), 403, 'Forbidden');
+        return;
+      }
+      // Browsers always send Origin. A missing header is not a page, but on a
+      // public bind it would still stream pane output. Allow it only from the
+      // loopback socket, or when the caller presents a valid pairing token.
+      // A present Origin of http://<ip>:<port> is the app origin and is not
+      // stopped here; requirePairingForRemote closes that socket after upgrade.
+      const allowed = loopback || (token !== '' && store.isValidAuthToken(token));
+      callback(allowed, 403, 'Forbidden');
+    },
+  });
   wss.on('connection', (ws, req) => {
     if (options.requirePairingForRemote && isRemoteRequest(req)) {
       const wsUrl = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`);

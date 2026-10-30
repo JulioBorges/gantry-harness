@@ -226,7 +226,7 @@ describe('Slice 1: Command Runner stdin Contract, 4-Home State Persistence & Sin
     const baseUrl = `http://127.0.0.1:${server.port}`;
 
     try {
-      const pairGen = await fetch(`${baseUrl}/api/auth/pair/generate`, { method: 'POST' }).then((r) => r.json());
+      const pairGen = await fetch(`${baseUrl}/api/auth/pair/generate`, { method: 'POST', headers: { 'Content-Type': 'application/json' } }).then((r) => r.json());
       expect(pairGen.code).toMatch(/^\d{6}$/);
 
       // Simulated remote request without token is rejected
@@ -253,7 +253,7 @@ describe('Slice 1: Command Runner stdin Contract, 4-Home State Persistence & Sin
       // Remote caller cannot generate its own pairing code without auth
       const remoteGenRes = await fetch(`${baseUrl}/api/auth/pair/generate`, {
         method: 'POST',
-        headers: { 'X-Forwarded-For': '100.64.0.12' },
+        headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': '100.64.0.12' },
       });
       expect(remoteGenRes.status).toBe(401);
 

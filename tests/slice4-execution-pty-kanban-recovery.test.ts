@@ -206,7 +206,7 @@ describe('Slice 4: Deterministic Round Execution (/run), PTY Supervisor, Chat â‡
       // Toggle Chat â‡„ Terminal mode and verify both terminal scrollback and structured turnBlocks with clickable paths
       const toggleRes = await fetch(
         `${baseUrl}/api/projects/${reg.project.id}/panes/pane-shell-1/toggle`,
-        { method: 'POST' },
+        { method: 'POST', headers: { 'Content-Type': 'application/json' } },
       ).then((r) => r.json());
       expect(toggleRes.pane.mode).toBe('chat');
       expect(toggleRes.pane.terminalBuffer).toContain('src/feature.ts');

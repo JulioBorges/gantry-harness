@@ -1,7 +1,7 @@
 import type { IncomingMessage } from 'node:http';
 
 /**
- * Browser CSRF guard for state-changing routes.
+ * Browser CSRF guard for every state-changing HTTP method.
  *
  * An app origin is an `http` origin (this server does not terminate TLS) whose
  * port is the listening port and whose host is loopback, the concrete bind
@@ -14,7 +14,14 @@ import type { IncomingMessage } from 'node:http';
  * same-origin `fetch` from the page served by this process does too. Absence is
  * not an app origin; `Origin: null` (sandboxed or opaque documents) is refused
  * for the same reason. Non-browser callers opt in by sending the app origin.
+ * The browser sets Origin itself; page script cannot.
  */
+export const STATE_CHANGING_METHODS = ['POST', 'PUT', 'PATCH', 'DELETE'] as const;
+
+export function isStateChangingMethod(method: string | undefined): boolean {
+  return method !== undefined && (STATE_CHANGING_METHODS as readonly string[]).includes(method);
+}
+
 export interface StateChangeGuardContext {
   bindHost: string;
   port: number;
@@ -44,27 +51,102 @@ function normalizeHost(value: string): string {
 }
 
 function isIpLiteral(hostname: string): boolean {
-  if (hostname.includes(':')) return true;
+  if (hostname.includes(':')) return isIpv6Literal(hostname);
   const parts = hostname.split('.');
   return parts.length === 4 && parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255);
 }
 
-function parseHostHeader(host: string | undefined): { hostname: string; port: number } | null {
-  if (!host) return null;
-  if (host.startsWith('[')) {
-    const end = host.indexOf(']');
-    if (end <= 1) return null;
-    const rest = host.slice(end + 1);
-    if (!rest.startsWith(':')) return null;
-    const port = Number(rest.slice(1));
-    if (!Number.isInteger(port)) return null;
-    return { hostname: host.slice(1, end).toLowerCase(), port };
+function isIpv6Literal(hostname: string): boolean {
+  if (!hostname.includes(':')) return false;
+  try {
+    const parsed = new URL(`http://[${hostname}]/`);
+    const name = parsed.hostname.startsWith('[') ? parsed.hostname.slice(1, -1) : parsed.hostname;
+    return name.toLowerCase() === hostname.toLowerCase();
+  } catch {
+    return false;
   }
-  const colon = host.lastIndexOf(':');
-  if (colon <= 0) return null;
-  const port = Number(host.slice(colon + 1));
-  if (!Number.isInteger(port)) return null;
-  return { hostname: host.slice(0, colon).toLowerCase(), port };
+}
+
+function parsePort(value: string): number | null {
+  if (!/^\d{1,5}$/.test(value)) return null;
+  const port = Number(value);
+  if (!Number.isInteger(port) || port > 65535) return null;
+  return port;
+}
+
+/** Browsers omit the default port. This server speaks HTTP; 443 covers a TLS terminator that forwards the original Host. */
+function impliedPort(listenPort: number): number | undefined {
+  return listenPort === 80 || listenPort === 443 ? listenPort : undefined;
+}
+
+function parseHostHeader(host: string | undefined, listenPort: number): { hostname: string; port: number } | null {
+  if (!host) return null;
+  const trimmed = host.trim();
+  if (!trimmed || /\s/.test(trimmed) || trimmed.includes('/')) return null;
+  const fallback = impliedPort(listenPort);
+  if (trimmed.startsWith('[')) {
+    const end = trimmed.indexOf(']');
+    if (end <= 1 || trimmed.indexOf('[', 1) !== -1) return null;
+    const hostname = trimmed.slice(1, end);
+    if (!isIpv6Literal(hostname)) return null;
+    const rest = trimmed.slice(end + 1);
+    if (rest === '') {
+      if (fallback === undefined) return null;
+      return { hostname: hostname.toLowerCase(), port: fallback };
+    }
+    if (!rest.startsWith(':')) return null;
+    const port = parsePort(rest.slice(1));
+    if (port === null) return null;
+    return { hostname: hostname.toLowerCase(), port };
+  }
+  const colon = trimmed.lastIndexOf(':');
+  if (colon === -1) {
+    if (fallback === undefined || trimmed.includes(':')) return null;
+    return { hostname: trimmed.toLowerCase(), port: fallback };
+  }
+  if (colon === 0) return null;
+  const hostname = trimmed.slice(0, colon);
+  if (!hostname || hostname.includes(':')) return null;
+  const port = parsePort(trimmed.slice(colon + 1));
+  if (port === null) return null;
+  return { hostname: hostname.toLowerCase(), port };
+}
+
+/**
+ * True when `hostname` is an authority this process serves: loopback, the
+ * concrete bind host, or — only for a wildcard bind — an IP literal that is
+ * also the host of `hostHeader`.
+ */
+function hostIsAppAuthority(hostname: string, hostHeader: string | undefined, context: StateChangeGuardContext): boolean {
+  const normalized = normalizeHost(hostname);
+  if (LOOPBACK_HOSTS.has(normalized)) return true;
+  const bind = normalizeHost(context.bindHost);
+  if (bind && bind !== '0.0.0.0' && bind !== '::' && normalized === bind) return true;
+  if (bind !== '0.0.0.0' && bind !== '::') return false;
+  const requestHost = parseHostHeader(hostHeader, context.port);
+  return requestHost !== null
+    && requestHost.port === context.port
+    && requestHost.hostname === normalized
+    && isIpLiteral(normalized);
+}
+
+/**
+ * The Host header (or :authority) must name this process. A DNS name that is
+ * not the bind host is not an app host, including one that merely resolves here.
+ * An omitted port is the scheme default, so it matches only a process
+ * listening on 80 (http) or 443 (https). Any other port must be explicit.
+ * A malformed Host is not an app host.
+ */
+export function isAppHost(hostHeader: string | undefined, context: StateChangeGuardContext): boolean {
+  const parsed = parseHostHeader(hostHeader, context.port);
+  if (!parsed || parsed.port !== context.port) return false;
+  return hostIsAppAuthority(parsed.hostname, hostHeader, context);
+}
+
+export const HOST_REJECTION = { statusCode: 421 as const, error: 'Host recusado.' };
+
+export function isLoopbackRemote(address: string | undefined): boolean {
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
 }
 
 export function isAppOrigin(
@@ -86,18 +168,7 @@ export function isAppOrigin(
   const originPort = origin.port === '' ? 80 : Number(origin.port);
   if (!Number.isInteger(originPort) || originPort !== context.port) return false;
 
-  const hostname = normalizeHost(origin.hostname);
-  if (LOOPBACK_HOSTS.has(hostname)) return true;
-
-  const bind = normalizeHost(context.bindHost);
-  if (bind && bind !== '0.0.0.0' && bind !== '::' && hostname === bind) return true;
-  if (bind !== '0.0.0.0' && bind !== '::') return false;
-
-  const requestHost = parseHostHeader(requestHostHeader);
-  return requestHost !== null
-    && requestHost.port === context.port
-    && requestHost.hostname === hostname
-    && isIpLiteral(hostname);
+  return hostIsAppAuthority(origin.hostname, requestHostHeader, context);
 }
 
 export function hasJsonContentType(contentType: string | undefined): boolean {

@@ -57,7 +57,7 @@ it('serves installed assets independently of cwd and manages native PTY sizing a
         expect(pane.pane.terminalBuffer).toMatch(/41\s+123/);
       });
     }
-    expect((await fetch(base + panes + '/native', { method: 'DELETE' })).ok).toBe(true);
+    expect((await fetch(base + panes + '/native', { method: 'DELETE', headers: { 'Content-Type': 'application/json' } })).ok).toBe(true);
     expect((await (await fetch(base + panes)).json()).panes).toHaveLength(0);
   } finally { await server.close(); fs.rmSync(root, { recursive: true, force: true }); }
 });

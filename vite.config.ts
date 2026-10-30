@@ -11,6 +11,7 @@ export default defineConfig({
     external: ['node:sqlite'],
   },
   test: {
+    setupFiles: ['./tests/setup-app-origin.ts'],
     globals: true,
     environment: 'node',
     testTimeout: 60000,

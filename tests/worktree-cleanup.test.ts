@@ -5,6 +5,7 @@ import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { WebSocket } from 'ws';
 import { createHarnessServer, type HarnessServerInstance } from '../src/server/app.js';
+import { nativeFetch } from './setup-app-origin.js';
 import * as gitModule from '../src/server/git.js';
 
 const runningAsRoot = typeof process.getuid === 'function' && process.getuid() === 0;
@@ -55,7 +56,7 @@ function rawRequest(id: string, action: 'preview' | 'clean', init: { origin?: st
   const headers = new Headers();
   if (init.contentType !== null) headers.set('Content-Type', init.contentType ?? 'application/json');
   if (init.origin !== null) headers.set('Origin', init.origin ?? `http://127.0.0.1:${server.port}`);
-  return fetch(`http://127.0.0.1:${server.port}/api/projects/${id}/worktree/${action}`, { method: 'POST', headers, body: init.body ?? '{}' });
+  return nativeFetch(`http://127.0.0.1:${server.port}/api/projects/${id}/worktree/${action}`, { method: 'POST', headers, body: init.body ?? '{}' });
 }
 function seedReady(projectId: string) {
   server.store.saveRun({ runId: `ready-${projectId}`, projectId, ref: 'watch#01', slug: 'watch', kind: 'issue', status: 'ready-for-approval', childPid: null, pid: null, childHandle: null, lane: 'critic', packPhase: 'ready', branch: null, worktree: null, pushed: false, pause: null, pausedReason: null, pausedChoices: null, terminalEvent: 'ready-for-approval', error: null, prUrl: null, derivedPhase: 'ready-for-approval', createdAt: '', updatedAt: '' });

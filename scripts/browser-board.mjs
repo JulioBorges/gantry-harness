@@ -62,7 +62,7 @@ try {
   const url = `http://127.0.0.1:${server.port}/`;
   const projects = [];
   for (const repo of [packed, ...Array.from({ length: 9 }, (_, i) => initRepo(`empty-repo-${i}-nome-longo-para-rolagem`))]) {
-    const res = await fetch(`${url}api/projects`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: repo }) });
+    const res = await fetch(`${url}api/projects`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: `http://127.0.0.1:${server.port}` }, body: JSON.stringify({ path: repo }) });
     if (!res.ok) throw new Error(`project registration failed: ${res.status}`);
     projects.push((await res.json()).project);
   }

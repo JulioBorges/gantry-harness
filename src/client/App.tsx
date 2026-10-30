@@ -140,6 +140,10 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
 
   const apiFetch = useCallback(async (urlPath: string, init: RequestInit = {}): Promise<Response> => {
     const headers = new Headers(init.headers ?? {});
+    const method = (init.method ?? 'GET').toUpperCase();
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && !headers.has('Content-Type')) {
+      headers.set('Content-Type', 'application/json');
+    }
     if (authToken) {
       headers.set('Authorization', `Bearer ${authToken}`);
     }
@@ -150,6 +154,12 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
       throw new Error('Não foi possível acessar o servidor. Verifique se bun start está em execução e tente novamente.');
     }
     if (response.status === 401 && urlPath !== '/api/auth/pair/verify') {
+      try {
+        localStorage.removeItem('gantry_auth_token');
+      } catch {
+        // ignore
+      }
+      setAuthToken('');
       setRequiresRemotePairing(true);
     }
     if (!response.ok) {
@@ -328,8 +338,34 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     if (!wsBase) return;
     const wsUrl = authToken ? `${wsBase}/?token=${encodeURIComponent(authToken)}` : wsBase;
     let ws: WebSocket | null = null;
+    let opened = false;
+    let active = true;
+    const rejectStaleToken = () => {
+      try {
+        localStorage.removeItem('gantry_auth_token');
+      } catch {
+        // ignore
+      }
+      setAuthToken('');
+      setRequiresRemotePairing(true);
+    };
     try {
       ws = new WebSocket(wsUrl);
+      ws.onopen = () => {
+        opened = true;
+      };
+      ws.onerror = () => {
+        if (!active || opened || !authToken) return;
+        void fetch(`${base}/api/projects`, {
+          headers: { Authorization: `Bearer ${authToken}` },
+          cache: 'no-store',
+        }).then((response) => {
+          if (active && response.status === 401) rejectStaleToken();
+        }).catch(() => undefined);
+      };
+      ws.onclose = (event) => {
+        if (active && event.code === 1008) rejectStaleToken();
+      };
       ws.onmessage = (evt) => {
         try {
           const payload = JSON.parse(String(evt.data));
@@ -372,6 +408,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
       // ignore if WebSocket unavailable
     }
     return () => {
+      active = false;
       if (ws) ws.close();
     };
   }, [apiBaseUrl, authToken]);
