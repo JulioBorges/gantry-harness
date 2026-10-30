@@ -140,6 +140,10 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
 
   const apiFetch = useCallback(async (urlPath: string, init: RequestInit = {}): Promise<Response> => {
     const headers = new Headers(init.headers ?? {});
+    const method = (init.method ?? 'GET').toUpperCase();
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && !headers.has('Content-Type')) {
+      headers.set('Content-Type', 'application/json');
+    }
     if (authToken) {
       headers.set('Authorization', `Bearer ${authToken}`);
     }

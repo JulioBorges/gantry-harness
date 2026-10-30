@@ -29,6 +29,36 @@ export interface RunCliResult {
   server?: HarnessServerInstance;
 }
 
+function dispatchHeaders(port: number): Record<string, string> {
+  return {
+    'Content-Type': 'application/json',
+    Origin: `http://127.0.0.1:${port}`,
+  };
+}
+
+async function postDispatch(port: number, body: unknown): Promise<{
+  focusedProjectPath: string;
+  triggeredCommand: { subcommand: string; argument?: string } | null;
+}> {
+  const response = await fetch(`http://127.0.0.1:${port}/api/cli/dispatch`, {
+    method: 'POST',
+    headers: dispatchHeaders(port),
+    body: JSON.stringify(body),
+  });
+  const payload = await response.json().catch(() => ({})) as {
+    error?: string;
+    focusedProjectPath?: string;
+    triggeredCommand?: { subcommand: string; argument?: string } | null;
+  };
+  if (!response.ok) {
+    throw new Error(payload.error ?? `CLI dispatch failed (${response.status})`);
+  }
+  return {
+    focusedProjectPath: String(payload.focusedProjectPath ?? ''),
+    triggeredCommand: payload.triggeredCommand ?? null,
+  };
+}
+
 function detectTailscaleIp(): string | null {
   try {
     const out = execFileSync('tailscale', ['ip', '-4'], { encoding: 'utf-8' }).trim();
@@ -72,33 +102,31 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
 
   const lockPath = path.join(gantryHome, 'harness', 'server.lock');
 
-  // Check if an existing single-instance server is alive
+  // Check if an existing single-instance server is alive.
+  // A refused dispatch is not a stale lock: starting a second server would hide it.
   if (fs.existsSync(lockPath) && !isRemoteMode) {
+    let running: { host: string; port: number } | undefined;
     try {
       const lock = JSON.parse(fs.readFileSync(lockPath, 'utf-8')) as {
         host: string;
         port: number;
       };
       const healthRes = await fetch(`http://127.0.0.1:${lock.port}/api/health`);
-      if (healthRes.ok) {
-        const dispatchRes = await fetch(`http://127.0.0.1:${lock.port}/api/cli/dispatch`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ cwd, subcommand, argument, headless: isHeadless }),
-        }).then((r) => r.json());
-
-        return {
-          reusedExistingServer: true,
-          headless: isHeadless,
-          host: lock.host,
-          port: lock.port,
-          url: `http://127.0.0.1:${lock.port}`,
-          focusedProjectPath: dispatchRes.focusedProjectPath,
-          triggeredCommand: dispatchRes.triggeredCommand,
-        };
-      }
+      if (healthRes.ok) running = lock;
     } catch {
-      // Stale lockfile; start a new server
+      running = undefined;
+    }
+    if (running) {
+      const dispatchRes = await postDispatch(running.port, { cwd, subcommand, argument, headless: isHeadless });
+      return {
+        reusedExistingServer: true,
+        headless: isHeadless,
+        host: running.host,
+        port: running.port,
+        url: `http://127.0.0.1:${running.port}`,
+        focusedProjectPath: dispatchRes.focusedProjectPath,
+        triggeredCommand: dispatchRes.triggeredCommand,
+      };
     }
   }
 
@@ -114,11 +142,7 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
     requirePairingForRemote: requirePairing,
   });
 
-  const dispatchRes = await fetch(`http://127.0.0.1:${server.port}/api/cli/dispatch`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ cwd, subcommand, argument, headless: isHeadless }),
-  }).then((r) => r.json());
+  const dispatchRes = await postDispatch(server.port, { cwd, subcommand, argument, headless: isHeadless });
 
   let pairingCode: string | undefined;
   let tailscaleUrl: string | undefined;

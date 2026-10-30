@@ -22,7 +22,7 @@ import {
 import { PtySupervisor, readArtifactAndDiff } from './ptyManager.js';
 import { RunSupervisor, RunSupervisorError } from './runSupervisor.js';
 import { GitError } from './git.js';
-import { evaluateIncomingStateChange } from './stateChangeGuard.js';
+import { evaluateIncomingStateChange, isAppOrigin, isStateChangingMethod, singleHeader } from './stateChangeGuard.js';
 import { cleanWorktree, previewWorktreeCleanup, WorktreeCleanupError } from './worktreeCleanup.js';
 import { ProjectTreeError, readProjectTree } from './projectTree.js';
 
@@ -172,12 +172,11 @@ export async function createHarnessServer(
     res.writeHead(statusCode, {
       'Content-Type': 'application/json; charset=utf-8',
       'Cache-Control': 'no-store',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Forwarded-For',
     });
     res.end(JSON.stringify(data));
   };
+
+  const guardContext = (): { bindHost: string; port: number } => ({ bindHost: host, port: listenPort });
 
   const isRemoteRequest = (req: http.IncomingMessage): boolean => {
     const forwarded = req.headers['x-forwarded-for'];
@@ -198,6 +197,15 @@ export async function createHarnessServer(
       const rawUrl = (req.url ?? '/').replace(/#/g, '%23');
       const url = new URL(rawUrl, `http://${req.headers.host ?? '127.0.0.1'}`);
       const pathname = url.pathname;
+
+      if (isStateChangingMethod(req.method)) {
+        const rejection = evaluateIncomingStateChange(req, guardContext());
+        if (rejection) {
+          await drainRequest(req);
+          sendJson(res, rejection.statusCode, { error: rejection.error });
+          return;
+        }
+      }
 
       if (pathname === '/api/health' && req.method === 'GET') {
         sendJson(res, 200, { status: 'ok', pid: process.pid, gantryHome });
@@ -385,16 +393,6 @@ export async function createHarnessServer(
 
       const cleanupRoute = pathname.match(/^\/api\/projects\/([^/]+)\/worktree\/(preview|clean)$/);
       if (cleanupRoute && req.method === 'POST') {
-        const bound = server.address();
-        const rejection = evaluateIncomingStateChange(req, {
-          bindHost: host,
-          port: typeof bound === 'object' && bound ? bound.port : listenPort,
-        });
-        if (rejection) {
-          await drainRequest(req);
-          sendJson(res, rejection.statusCode, { error: rejection.error });
-          return;
-        }
         const project = store.getProject(cleanupRoute[1]);
         if (!project) {
           await drainRequest(req);
@@ -943,7 +941,17 @@ export async function createHarnessServer(
     }
   });
 
-  const wss = new WebSocketServer({ server });
+  const wss = new WebSocketServer({
+    server,
+    verifyClient: (info: { req: http.IncomingMessage }) => {
+      const origin = singleHeader(info.req.headers.origin);
+      // Browsers always send Origin on a WebSocket handshake. A missing header is a
+      // non-browser client. A present header must be this app's origin, so another
+      // page cannot subscribe to project and run broadcasts.
+      if (origin === undefined) return true;
+      return isAppOrigin(origin, singleHeader(info.req.headers.host), guardContext());
+    },
+  });
   wss.on('connection', (ws, req) => {
     if (options.requirePairingForRemote && isRemoteRequest(req)) {
       const wsUrl = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`);

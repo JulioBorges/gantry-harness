@@ -1,7 +1,7 @@
 import type { IncomingMessage } from 'node:http';
 
 /**
- * Browser CSRF guard for state-changing routes.
+ * Browser CSRF guard for every state-changing HTTP method.
  *
  * An app origin is an `http` origin (this server does not terminate TLS) whose
  * port is the listening port and whose host is loopback, the concrete bind
@@ -14,7 +14,14 @@ import type { IncomingMessage } from 'node:http';
  * same-origin `fetch` from the page served by this process does too. Absence is
  * not an app origin; `Origin: null` (sandboxed or opaque documents) is refused
  * for the same reason. Non-browser callers opt in by sending the app origin.
+ * The browser sets Origin itself; page script cannot.
  */
+export const STATE_CHANGING_METHODS = ['POST', 'PUT', 'PATCH', 'DELETE'] as const;
+
+export function isStateChangingMethod(method: string | undefined): boolean {
+  return method !== undefined && (STATE_CHANGING_METHODS as readonly string[]).includes(method);
+}
+
 export interface StateChangeGuardContext {
   bindHost: string;
   port: number;
