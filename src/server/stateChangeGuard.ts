@@ -51,29 +51,65 @@ function normalizeHost(value: string): string {
 }
 
 function isIpLiteral(hostname: string): boolean {
-  if (hostname.includes(':')) return true;
+  if (hostname.includes(':')) return isIpv6Literal(hostname);
   const parts = hostname.split('.');
   return parts.length === 4 && parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255);
 }
 
-function parseHostHeader(host: string | undefined): { hostname: string; port: number } | null {
+function isIpv6Literal(hostname: string): boolean {
+  if (!hostname.includes(':')) return false;
+  try {
+    const parsed = new URL(`http://[${hostname}]/`);
+    const name = parsed.hostname.startsWith('[') ? parsed.hostname.slice(1, -1) : parsed.hostname;
+    return name.toLowerCase() === hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
+function parsePort(value: string): number | null {
+  if (!/^\d{1,5}$/.test(value)) return null;
+  const port = Number(value);
+  if (!Number.isInteger(port) || port > 65535) return null;
+  return port;
+}
+
+/** Browsers omit the default port. This server speaks HTTP; 443 covers a TLS terminator that forwards the original Host. */
+function impliedPort(listenPort: number): number | undefined {
+  return listenPort === 80 || listenPort === 443 ? listenPort : undefined;
+}
+
+function parseHostHeader(host: string | undefined, listenPort: number): { hostname: string; port: number } | null {
   if (!host) return null;
   const trimmed = host.trim();
-  if (!trimmed || /\s/.test(trimmed)) return null;
+  if (!trimmed || /\s/.test(trimmed) || trimmed.includes('/')) return null;
+  const fallback = impliedPort(listenPort);
   if (trimmed.startsWith('[')) {
     const end = trimmed.indexOf(']');
-    if (end <= 1) return null;
+    if (end <= 1 || trimmed.indexOf('[', 1) !== -1) return null;
+    const hostname = trimmed.slice(1, end);
+    if (!isIpv6Literal(hostname)) return null;
     const rest = trimmed.slice(end + 1);
+    if (rest === '') {
+      if (fallback === undefined) return null;
+      return { hostname: hostname.toLowerCase(), port: fallback };
+    }
     if (!rest.startsWith(':')) return null;
-    const port = Number(rest.slice(1));
-    if (!Number.isInteger(port)) return null;
-    return { hostname: trimmed.slice(1, end).toLowerCase(), port };
+    const port = parsePort(rest.slice(1));
+    if (port === null) return null;
+    return { hostname: hostname.toLowerCase(), port };
   }
   const colon = trimmed.lastIndexOf(':');
-  if (colon <= 0) return null;
-  const port = Number(trimmed.slice(colon + 1));
-  if (!Number.isInteger(port)) return null;
-  return { hostname: trimmed.slice(0, colon).toLowerCase(), port };
+  if (colon === -1) {
+    if (fallback === undefined || trimmed.includes(':')) return null;
+    return { hostname: trimmed.toLowerCase(), port: fallback };
+  }
+  if (colon === 0) return null;
+  const hostname = trimmed.slice(0, colon);
+  if (!hostname || hostname.includes(':')) return null;
+  const port = parsePort(trimmed.slice(colon + 1));
+  if (port === null) return null;
+  return { hostname: hostname.toLowerCase(), port };
 }
 
 /**
@@ -87,7 +123,7 @@ function hostIsAppAuthority(hostname: string, hostHeader: string | undefined, co
   const bind = normalizeHost(context.bindHost);
   if (bind && bind !== '0.0.0.0' && bind !== '::' && normalized === bind) return true;
   if (bind !== '0.0.0.0' && bind !== '::') return false;
-  const requestHost = parseHostHeader(hostHeader);
+  const requestHost = parseHostHeader(hostHeader, context.port);
   return requestHost !== null
     && requestHost.port === context.port
     && requestHost.hostname === normalized
@@ -97,10 +133,12 @@ function hostIsAppAuthority(hostname: string, hostHeader: string | undefined, co
 /**
  * The Host header (or :authority) must name this process. A DNS name that is
  * not the bind host is not an app host, including one that merely resolves here.
- * A missing port is not the listening port.
+ * An omitted port is the scheme default, so it matches only a process
+ * listening on 80 (http) or 443 (https). Any other port must be explicit.
+ * A malformed Host is not an app host.
  */
 export function isAppHost(hostHeader: string | undefined, context: StateChangeGuardContext): boolean {
-  const parsed = parseHostHeader(hostHeader);
+  const parsed = parseHostHeader(hostHeader, context.port);
   if (!parsed || parsed.port !== context.port) return false;
   return hostIsAppAuthority(parsed.hostname, hostHeader, context);
 }

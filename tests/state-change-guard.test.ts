@@ -38,6 +38,19 @@ describe('state-change guard', () => {
     expect(isAppHost('192.168.1.20:7400', { bindHost: '192.168.1.20', port: 7400 })).toBe(true);
     expect(isAppHost('10.0.0.8:7400', { bindHost: '0.0.0.0', port: 7400 })).toBe(true);
     expect(isAppHost('evil.example:7400', { bindHost: '0.0.0.0', port: 7400 })).toBe(false);
+    expect(isAppHost('127.0.0.1', { bindHost: '127.0.0.1', port: 80 })).toBe(true);
+    expect(isAppHost('localhost', { bindHost: '127.0.0.1', port: 80 })).toBe(true);
+    expect(isAppHost('[::1]', { bindHost: '::', port: 443 })).toBe(true);
+    expect(isAppHost('127.0.0.1', { bindHost: '127.0.0.1', port: 7400 })).toBe(false);
+    expect(isAppHost('127.0.0.1:80', { bindHost: '127.0.0.1', port: 7400 })).toBe(false);
+  });
+
+  it('rejects a Host whose port is not a decimal integer in range', () => {
+    const port = 7400;
+    for (const host of [`127.0.0.1:${port}.0`, '127.0.0.1:abc', '127.0.0.1:65536', '127.0.0.1:', '[::1', `[::1]:${port}x`, '::1', '', '   ']) {
+      expect(isAppHost(host, local), host).toBe(false);
+    }
+    expect(isAppHost(`[::1]:${port}`, local)).toBe(true);
   });
 
   it('accepts a concrete bind host and a wildcard bind reached by an IP literal', () => {

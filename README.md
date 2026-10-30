@@ -55,7 +55,7 @@ Open the printed loopback URL. Build emits the `gantry-harness` CLI entry as wel
 
 The server does not terminate TLS and does not send `Access-Control-Allow-Origin`. The browser UI and the Electron window are same-origin with the process that serves them (`http://127.0.0.1:<port>` by default), so they do not need a cross-origin header. A page on another origin cannot read JSON responses, including project, workspace, run and artifact payloads.
 
-Every request, including `GET`, static files and the WebSocket upgrade, must send a `Host` for this process: the listening port, and a host that is loopback (`localhost`, `127.0.0.1`, `::1`), the concrete `--host` value, or — only when the bind is `0.0.0.0` or `::` — an IP literal. A missing `Host`, another port, and a DNS name that is not the bind host are **421**. That includes a name that merely resolves to the machine. `Host: evil.example` does not receive project or workspace data. **421** is the misdirected-request status: the authority is not this server. **403** stays for a cross-site `Origin` aimed at a `Host` this server does serve.
+Every request, including `GET`, static files and the WebSocket upgrade, must send a `Host` for this process: the listening port, and a host that is loopback (`localhost`, `127.0.0.1`, `::1`), the concrete `--host` value, or — only when the bind is `0.0.0.0` or `::` — an IP literal. A missing `Host`, another port, and a DNS name that is not the bind host are **421**. That includes a name that merely resolves to the machine, such as a rebinding name pointed at `127.0.0.1`. `Host: evil.example` does not receive project or workspace data. **421** is the misdirected-request status: the authority is not this server. **403** stays for a cross-site `Origin` aimed at a `Host` this server does serve. A malformed `Host` (empty, a port that is not a decimal integer from 0 to 65535, a suffix such as `7400.0`, or an IPv6 literal that is not `[addr]:port`) is also **421** and is never parsed as a URL. A browser omits the default port, so a `Host` without a port matches only when this process listens on **80** or **443**. Any other listen port must appear in the header.
 
 Every `POST`, `PUT`, `PATCH` and `DELETE` also requires both of the following, before the route runs:
 
@@ -66,7 +66,11 @@ The browser sets `Origin` and `Host` itself. The CLI sends `Origin: http://127.0
 
 Open the printed loopback URL. For another machine on the LAN or Tailscale, bind the address you will type: `node dist/cli.js --host 192.168.1.20 --port 7400` and open `http://192.168.1.20:7400`, or bind every interface with `--host 0.0.0.0` (or `--lan` / `--tailscale`) and open `http://<that-ip>:<port>`. Access by a DNS name that is not the host you bound is refused. To use a name, start the server with `--host` set to that name and open `http://<that-name>:<port>`.
 
-A WebSocket upgrade uses the same `Host` rule. An `Origin` that is present must be the app origin. Browsers always send `Origin`. A handshake that omits it is accepted only from a loopback socket, or when the URL or `Authorization` header carries a valid pairing token. That keeps a LAN client from reading live pane output on `--host 0.0.0.0` without pairing. The CLI does not open a WebSocket.
+A WebSocket upgrade uses the same `Host` rule. An `Origin` that is present must be the app origin. Browsers always send `Origin`. A handshake that omits it is accepted only from a loopback socket, or when the URL or `Authorization` header carries a valid pairing token. An invalid token from outside loopback is **403**, including when `Origin` is `http://<ip>:<port>`. That origin is the app origin, so a non-browser client on the LAN that sends it is not stopped by the origin check. With `--host 0.0.0.0` and pairing left off, that client receives broadcasts. The check that closes an unpaired remote socket is pairing (`requirePairingForRemote`). Use the LAN with pairing (`--lan`, `--tailscale`, or an equivalent server start). The CLI does not open a WebSocket.
+
+With pairing required, an unpaired remote `GET /api/health` returns only `{ "status": "ok" }`. It does not include `gantryHome` or `pid`. Loopback, and a remote client with a valid bearer token, still receive both. `/` and `/assets/` stay available without a token so the pairing screen can load. Other API routes still answer **401** until the client is paired.
+
+The rules, the WebSocket and CLI exceptions, and why reads with a side effect stay on `GET` are recorded in [ADR-0005](docs/adr/0005-politica-de-origem.md).
 
 `GET /api/workspace/state` and `GET /api/projects/:id/board` still refresh project data as they are read. A browser on another site can trigger that refresh by targeting the real loopback host; it still cannot read the body. See [ADR-0004](docs/adr/0004-leituras-http-com-efeito.md).
 
@@ -78,6 +82,8 @@ bun run test --maxWorkers=2
 bun run build
 bun audit --production
 ```
+
+Three tests need a real `node-pty` that runs a shell and emits output. A stub that only implements the module surface fails them: `tests/desktop-experience.test.ts` (resize, then `stty size` in the buffer), `tests/terminal-settings.test.ts` (the case that runs a command in the new shell), and `tests/slice4-execution-pty-kanban-recovery.test.ts` (echo into the pane). `tests/chat-routing.test.ts` and `tests/slice5-frontend-ui.test.tsx` also call `spawn`; they fail if spawn throws, and they do not wait on shell output.
 
 The `browser-validation` check uses Playwright against a served UI and temporary Git repositories. Install Chromium once (and its Linux system libraries if needed), then run the same entry point used by the pipeline:
 

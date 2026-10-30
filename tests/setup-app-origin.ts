@@ -80,7 +80,8 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   } catch {
     return native(input, init);
   }
-  if (url.hostname !== '127.0.0.1' && url.hostname !== 'localhost' && url.hostname !== '::1') {
+  const hostname = url.hostname.replace(/^\[|\]$/g, '');
+  if (hostname !== '127.0.0.1' && hostname !== 'localhost' && hostname !== '::1') {
     return native(input, init);
   }
   const headers = new Headers(init?.headers ?? (typeof Request !== 'undefined' && input instanceof Request ? input.headers : undefined));

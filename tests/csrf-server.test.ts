@@ -1,5 +1,7 @@
 import { execFileSync } from 'node:child_process';
+import dgram from 'node:dgram';
 import crypto from 'node:crypto';
+import dns from 'node:dns/promises';
 import fs from 'node:fs';
 import http from 'node:http';
 import { createRequire } from 'node:module';
@@ -11,7 +13,7 @@ import { WebSocket } from 'ws';
 import { runCli } from '../src/cli.js';
 import { createHarnessServer, type HarnessServerInstance } from '../src/server/app.js';
 import { isLoopbackRemote } from '../src/server/stateChangeGuard.js';
-import { STATE_CHANGING_METHOD_CHECKS, STATE_CHANGING_ROUTES } from '../src/server/stateChangingRoutes.js';
+import { matchesRoute, STATE_CHANGING_ROUTES } from '../src/server/stateChangingRoutes.js';
 import { nativeFetch } from './setup-app-origin.js';
 
 interface RawResponse {
@@ -99,31 +101,24 @@ describe('server-wide state-change protection', () => {
     root = undefined;
   });
 
-  it('keeps every registered state-changing route behind the central guard', () => {
+  it('dispatches state-changing routes from the registry, after the guard and before remote pairing', () => {
     const guardAt = appSource.indexOf('if (isStateChangingMethod(req.method))');
-    expect(guardAt).toBeGreaterThan(0);
-    expect(appSource.slice(0, guardAt)).not.toMatch(/req\.method === '(?:POST|PUT|PATCH|DELETE)'/);
-    expect(appSource).not.toContain('Access-Control-Allow-Origin');
-
-    const lines = appSource.split('\n');
-    const checks = lines
-      .map((line, index) => ({ line, index }))
-      .filter(({ line }) => /req\.method === '(?:POST|PUT|PATCH|DELETE)'/.test(line));
-    expect(checks).toHaveLength(STATE_CHANGING_METHOD_CHECKS);
-
-    const covered = new Set<string>();
-    for (const check of checks) {
-      const window = lines.slice(Math.max(0, check.index - 20), check.index + 1).join('\n');
-      const hits = STATE_CHANGING_ROUTES.filter((route) => window.includes(route.marker));
-      expect(hits, window).not.toHaveLength(0);
-      for (const hit of hits) covered.add(hit.path);
-    }
-    expect([...covered].sort()).toEqual(STATE_CHANGING_ROUTES.map((route) => route.path).sort());
-
-    const verifyAt = appSource.indexOf("pathname === '/api/auth/pair/verify'");
+    const verifyAt = appSource.indexOf("matchesRoute('pair-verify'");
     const remoteAt = appSource.indexOf('options.requirePairingForRemote && isRemoteRequest');
+    expect(guardAt).toBeGreaterThan(0);
     expect(guardAt).toBeLessThan(verifyAt);
     expect(verifyAt).toBeLessThan(remoteAt);
+    expect(appSource).not.toMatch(/req\.method === '(?:POST|PUT|PATCH|DELETE)'/);
+    expect(appSource).not.toContain('Access-Control-Allow-Origin');
+
+    const ids = STATE_CHANGING_ROUTES.map((route) => route.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const route of STATE_CHANGING_ROUTES) {
+      expect(matchesRoute(route.id, route.path, route.method), route.id).toBe(true);
+      expect(matchesRoute(route.id, route.path, 'GET'), route.id).toBe(false);
+      expect(route.match('/api/not-a-registered-path'), route.id).toBe(false);
+      expect(appSource, route.id).toContain(`matchesRoute('${route.id}'`);
+    }
   });
 
   it('refuses a cross-site text/plain POST on every state-changing route, including CLI dispatch', async () => {
@@ -415,9 +410,21 @@ describe('server-wide state-change protection', () => {
     expect(JSON.parse(literal.body).status).toBe('ok');
     const named = await rawHttp(port, 'GET', '/api/health', { Host: `evil.example:${port}` });
     expect(named.status).toBe(421);
+  });
 
-    const ip = lanAddress();
-    if (!ip) return;
+  const lanIp = lanAddress();
+
+  it.skipIf(!lanIp)('serves the wildcard bind on the machine address', async () => {
+    const ip = lanIp!;
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'gantry-csrf-ip-'));
+    server = await createHarnessServer({
+      gantryHome: path.join(root, 'home'),
+      stateRoot: path.join(root, 'state'),
+      profileRoot: path.join(root, 'profiles'),
+      host: '0.0.0.0',
+      port: 0,
+    });
+    const port = server.port;
     const viaInterface = await rawHttp(port, 'GET', '/api/projects', { Host: `${ip}:${port}` }, ip);
     expect(viaInterface.status).toBe(200);
     expect(JSON.parse(viaInterface.body)).toEqual({ projects: [] });
@@ -495,12 +502,14 @@ describe('server-wide state-change protection', () => {
     })).resolves.toBeUndefined();
   });
 
-  it('refuses a WebSocket without Origin from outside loopback unless it has a pairing token', async () => {
+  it('treats only loopback sockets as local for a missing WebSocket origin', () => {
     expect(isLoopbackRemote('127.0.0.1')).toBe(true);
     expect(isLoopbackRemote('::ffff:127.0.0.1')).toBe(true);
     expect(isLoopbackRemote('192.168.1.20')).toBe(false);
-    const ip = lanAddress();
-    if (!ip) return;
+  });
+
+  it.skipIf(!lanIp)('refuses a WebSocket without Origin from outside loopback unless it has a pairing token', async () => {
+    const ip = lanIp!;
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'gantry-csrf-lan-'));
     server = await createHarnessServer({
       gantryHome: path.join(root, 'home'),
@@ -536,5 +545,130 @@ describe('server-wide state-change protection', () => {
         reject(error);
       });
     });
+  });
+
+  it('refuses a malformed Host with 421 instead of parsing it as a URL', async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'gantry-csrf-bad-host-'));
+    server = await createHarnessServer({
+      gantryHome: path.join(root, 'home'),
+      port: 0,
+    });
+    const port = server.port;
+    const hosts = [
+      '   ',
+      `127.0.0.1:${port}.0`,
+      '127.0.0.1:abc',
+      '127.0.0.1:65536',
+      '[::1',
+      `[::1]:${port}x`,
+      '::1',
+    ];
+    for (const host of hosts) {
+      const response = await rawHttp(port, 'GET', '/api/projects', { Host: host });
+      expect(response.status, JSON.stringify(host)).toBe(421);
+      expect(JSON.parse(response.body), JSON.stringify(host)).toEqual({ error: 'Host recusado.' });
+    }
+  });
+
+  it.skipIf(!lanIp)('hides the home path and pid from an unpaired LAN health check', async () => {
+    const ip = lanIp!;
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'gantry-csrf-health-'));
+    const gantryHome = path.join(root, 'home');
+    server = await createHarnessServer({
+      gantryHome,
+      stateRoot: path.join(root, 'state'),
+      profileRoot: path.join(root, 'profiles'),
+      host: '0.0.0.0',
+      port: 0,
+      requirePairingForRemote: true,
+    });
+    const port = server.port;
+    const host = `${ip}:${port}`;
+    const health = await rawHttp(port, 'GET', '/api/health', { Host: host }, ip);
+    expect(health.status).toBe(200);
+    expect(JSON.parse(health.body)).toEqual({ status: 'ok' });
+    const projects = await rawHttp(port, 'GET', '/api/projects', { Host: host }, ip);
+    expect(projects.status).toBe(401);
+    const page = await rawHttp(port, 'GET', '/', { Host: host }, ip);
+    expect(page.status).toBe(200);
+    expect(String(page.headers['content-type'])).toContain('text/html');
+
+    const local = await rawHttp(port, 'GET', '/api/health', { Host: `127.0.0.1:${port}` });
+    expect(JSON.parse(local.body)).toEqual({ status: 'ok', pid: process.pid, gantryHome });
+
+    const code = server.store.generatePairingCode();
+    const token = server.store.verifyPairingCode(code);
+    const paired = await rawHttp(port, 'GET', '/api/health', { Host: host, Authorization: `Bearer ${token}` }, ip);
+    expect(JSON.parse(paired.body)).toEqual({ status: 'ok', pid: process.pid, gantryHome });
+  });
+
+  it.skipIf(!lanIp)('refuses a WebSocket that presents an invalid pairing token', async () => {
+    const ip = lanIp!;
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'gantry-csrf-bad-token-'));
+    server = await createHarnessServer({
+      gantryHome: path.join(root, 'home'),
+      host: '0.0.0.0',
+      port: 0,
+      requirePairingForRemote: true,
+    });
+    const port = server.port;
+    const origin = `http://${ip}:${port}`;
+    const refused = await new Promise<number>((resolve, reject) => {
+      const ws = new WebSocket(`ws://${ip}:${port}/?token=not-a-pairing-token`, { headers: { Origin: origin } });
+      ws.on('open', () => {
+        ws.close();
+        reject(new Error('invalid token websocket opened'));
+      });
+      ws.on('unexpected-response', (_req, res) => resolve(res.statusCode ?? 0));
+      ws.on('error', () => undefined);
+    });
+    expect(refused).toBe(403);
+  });
+
+  it('refuses a DNS name that resolves to loopback', async () => {
+    const name = 'rebinding.example';
+    const dnsServer = dgram.createSocket('udp4');
+    await new Promise<void>((resolve) => dnsServer.bind(0, '127.0.0.1', () => resolve()));
+    const dnsPort = dnsServer.address().port;
+    dnsServer.on('message', (query, rinfo) => {
+      const qtype = query.readUInt16BE(query.length - 4);
+      const header = Buffer.alloc(12);
+      query.copy(header, 0, 0, 2);
+      header.writeUInt16BE(0x8180, 2);
+      header.writeUInt16BE(1, 4);
+      const question = query.subarray(12);
+      if (qtype !== 1) {
+        header.writeUInt16BE(0, 6);
+        dnsServer.send(Buffer.concat([header, question]), rinfo.port, rinfo.address);
+        return;
+      }
+      header.writeUInt16BE(1, 6);
+      const answer = Buffer.alloc(16);
+      answer.writeUInt16BE(0xc00c, 0);
+      answer.writeUInt16BE(1, 2);
+      answer.writeUInt16BE(1, 4);
+      answer.writeUInt32BE(30, 6);
+      answer.writeUInt16BE(4, 10);
+      answer[12] = 127;
+      answer[15] = 1;
+      dnsServer.send(Buffer.concat([header, question, answer]), rinfo.port, rinfo.address);
+    });
+    const resolver = new dns.Resolver();
+    resolver.setServers([`127.0.0.1:${dnsPort}`]);
+    try {
+      await expect(resolver.resolve4(name)).resolves.toEqual(['127.0.0.1']);
+      root = fs.mkdtempSync(path.join(os.tmpdir(), 'gantry-csrf-rebind-'));
+      server = await createHarnessServer({
+        gantryHome: path.join(root, 'home'),
+        port: 0,
+      });
+      const response = await rawHttp(server.port, 'GET', '/api/projects', { Host: `${name}:${server.port}` });
+      expect(response.status).toBe(421);
+      expect(JSON.parse(response.body)).toEqual({ error: 'Host recusado.' });
+      const workspace = await rawHttp(server.port, 'GET', '/api/workspace/state', { Host: `${name}:${server.port}` });
+      expect(workspace.status).toBe(421);
+    } finally {
+      dnsServer.close();
+    }
   });
 });
