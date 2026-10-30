@@ -1,17 +1,30 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { GitError, git, readWorktreeStatus, type WorktreeFile } from './git.js';
+import { GitError, git, gitOptionalRef, readWorktreeStatus, type WorktreeFile } from './git.js';
+
+export interface WorktreeCleanupBackup {
+  hash: string;
+  subject: string;
+}
 
 export interface WorktreeCleanupPreview {
   root: string;
   token: string;
   files: WorktreeFile[];
+  backups: WorktreeCleanupBackup[];
 }
 
 export class WorktreeCleanupError extends Error {
-  constructor(message: string, public statusCode = 409, public worktreeMutated = false) { super(message); }
+  constructor(
+    message: string,
+    public statusCode = 409,
+    public worktreeMutated = false,
+    public backup?: string,
+  ) { super(message); }
 }
+
+const STASH_HASH = /^[0-9a-f]{40,64}$/;
 
 function resolveCheckout(checkout: string): string {
   try {
@@ -19,8 +32,28 @@ function resolveCheckout(checkout: string): string {
   } catch (error) {
     const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
     if (code === 'ENOENT') throw new GitError('Não foi possível executar o Git: o diretório do projeto não está mais disponível.');
+    if (code === 'ENOTDIR' || code === 'EACCES') throw new GitError('Não foi possível executar o Git: o repositório não está acessível.');
     throw error;
   }
+}
+
+function hashFromReflog(reflog: string, marker: string): string | undefined {
+  const hash = reflog.split('\n').find(entry => entry.includes(marker))?.split('\0')[0];
+  return hash && STASH_HASH.test(hash) ? hash : undefined;
+}
+
+async function stashMarkerHash(root: string, args: string[], marker: string): Promise<string | undefined> {
+  try {
+    return hashFromReflog(await git(root, ...args), marker);
+  } catch {
+    return undefined;
+  }
+}
+
+async function identifyStashBackup(root: string, marker: string): Promise<string | undefined> {
+  // Git commands only. refs/stash may live in reftable, where logs/refs/stash is absent.
+  return await stashMarkerHash(root, ['reflog', 'show', '--format=%H%x00%gs', 'refs/stash'], marker)
+    ?? await stashMarkerHash(root, ['stash', 'list', '--format=%H%x00%gs'], marker);
 }
 
 export async function previewWorktreeCleanup(checkout: string): Promise<WorktreeCleanupPreview> {
@@ -38,6 +71,7 @@ export async function previewWorktreeCleanup(checkout: string): Promise<Worktree
     throw new WorktreeCleanupError('Há alterações em submódulos. Resolva-as no próprio submódulo antes de limpar.');
   }
   const hash = crypto.createHash('sha256').update(JSON.stringify([root, head, status]));
+  hash.update(await gitOptionalRef(root, 'refs/stash'));
   hash.update(await git(root, 'diff', '--binary', '--no-ext-diff', '--no-textconv'));
   hash.update(await git(root, 'diff', '--cached', '--binary', '--no-ext-diff', '--no-textconv'));
   for (const file of files.filter(file => file.status === '??')) {
@@ -48,13 +82,81 @@ export async function previewWorktreeCleanup(checkout: string): Promise<Worktree
     if (stat.isSymbolicLink()) hash.update(fs.readlinkSync(filename));
     else for await (const chunk of fs.createReadStream(filename)) hash.update(chunk);
   }
-  return { root, token: hash.digest('hex'), files };
+  return { root, token: hash.digest('hex'), files, backups: await listCleanupBackups(root) };
+}
+
+async function listCleanupBackups(root: string): Promise<WorktreeCleanupBackup[]> {
+  const text = await git(root, 'stash', 'list', '--format=%H%x00%gs');
+  const backups: WorktreeCleanupBackup[] = [];
+  for (const line of text.split('\n')) {
+    if (!line.includes('gantry-harness-cleanup-')) continue;
+    const [hash, subject = ''] = line.split('\0');
+    if (hash && STASH_HASH.test(hash)) backups.push({ hash, subject });
+  }
+  return backups;
 }
 
 // ADR-0003: the supervisor coordinates Runs; this writer lock also protects direct callers.
 const cleaning = new Set<string>();
 
-export async function cleanWorktree(checkout: string, token: unknown): Promise<{ backup: string; clean: boolean }> {
+export interface WorktreeCleanupResult {
+  backup: string;
+  clean: boolean;
+  verified: boolean;
+  /** Tracked paths still in the worktree. Deleting them leaves the blob only in the index. */
+  keep?: string[];
+  /** Restores untracked paths from `<backup>^3` that are no longer on disk. Never includes a tracked path. */
+  restore?: string;
+}
+
+function safeRelativePath(filePath: string): string | undefined {
+  if (!filePath || filePath.startsWith('/') || /^[A-Za-z]:[\\/]/.test(filePath)) return undefined;
+  if (filePath.includes('\0') || filePath.includes('\n')) return undefined;
+  if (filePath.split(/[\\/]/).includes('..')) return undefined;
+  return filePath;
+}
+
+function quoteShell(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function pathIsOnDisk(root: string, relative: string): boolean {
+  try {
+    fs.lstatSync(path.join(root, relative));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function recoveryAfterPartialStash(root: string, backup: string, files: WorktreeFile[]): Promise<Pick<WorktreeCleanupResult, 'keep' | 'restore'>> {
+  const keep = files
+    .filter(file => file.status !== '??')
+    .map(file => safeRelativePath(file.path))
+    .filter((entry): entry is string => Boolean(entry))
+    .sort();
+  let missing: string[] = [];
+  try {
+    // `^3` is the untracked commit. Passing a tracked path to restore from it deletes the worktree file and exits 0.
+    const listed = (await git(root, 'ls-tree', '-r', '--name-only', '-z', `${backup}^3`)).split('\0');
+    const tracked = new Set((await git(root, 'ls-files', '-z')).split('\0').filter(Boolean));
+    missing = listed
+      .map(safeRelativePath)
+      .filter((entry): entry is string => Boolean(entry))
+      .filter(entry => !tracked.has(entry) && !pathIsOnDisk(root, entry))
+      .sort();
+  } catch {
+    missing = [];
+  }
+  return {
+    ...(keep.length > 0 ? { keep } : {}),
+    ...(missing.length > 0 ? {
+      restore: `git restore --source ${quoteShell(`${backup}^3`)} --worktree -- ${missing.map(quoteShell).join(' ')}`,
+    } : {}),
+  };
+}
+
+export async function cleanWorktree(checkout: string, token: unknown): Promise<WorktreeCleanupResult> {
   const root = resolveCheckout(checkout);
   const commonDir = resolveCheckout(path.resolve(root, (await git(root, 'rev-parse', '--git-common-dir')).trim()));
   if (cleaning.has(commonDir)) throw new WorktreeCleanupError('Já existe uma limpeza em andamento neste repositório.');
@@ -64,15 +166,33 @@ export async function cleanWorktree(checkout: string, token: unknown): Promise<{
     if (typeof token !== 'string' || preview.token !== token) throw new WorktreeCleanupError('Os arquivos mudaram desde a prévia. Revise a limpeza novamente.');
     if (!preview.files.length) throw new WorktreeCleanupError('A worktree já está limpa.');
     const marker = `gantry-harness-cleanup-${crypto.randomUUID()}`;
-    await git(preview.root, 'stash', 'push', '--include-untracked', '--message', marker);
-    // Match our own reflog entry rather than assuming another process has not pushed a stash.
-    const entries = (await git(preview.root, 'reflog', 'show', '--format=%H%x00%gs', 'refs/stash')).split('\n');
-    const backup = entries.find(entry => entry.includes(marker))?.split('\0')[0];
-    if (!backup || !/^[0-9a-f]{40,64}$/.test(backup)) {
+    let pushError: unknown;
+    try {
+      await git(preview.root, 'stash', 'push', '--include-untracked', '--message', marker);
+    } catch (error) {
+      // stash push can write the stash and still exit 1, for example when an untracked path cannot be removed.
+      pushError = error;
+    }
+    // Leave the stash in place. Rolling it back can fail halfway and is harder to recover than a known hash.
+    const backup = await identifyStashBackup(preview.root, marker);
+    if (!backup) {
+      if (pushError) throw pushError;
       throw new WorktreeCleanupError('O Git criou o stash, mas não foi possível identificar o backup. Consulte git stash list antes de continuar.', 409, true);
     }
-    const status = await readWorktreeStatus(preview.root);
-    return { backup, clean: status.files.length === 0 };
+    if (pushError) {
+      try {
+        const status = await readWorktreeStatus(preview.root);
+        return { backup, clean: false, verified: false, ...await recoveryAfterPartialStash(preview.root, backup, status.files) };
+      } catch {
+        return { backup, clean: false, verified: false };
+      }
+    }
+    try {
+      const status = await readWorktreeStatus(preview.root);
+      return { backup, clean: status.files.length === 0, verified: true };
+    } catch {
+      return { backup, clean: false, verified: false };
+    }
   } finally {
     cleaning.delete(commonDir);
   }
