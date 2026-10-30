@@ -1,7 +1,22 @@
-import { runCommand } from './commandRunner.js';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { findExecutable, runCommand } from './commandRunner.js';
+
+const gitEnvironment = new AsyncLocalStorage<NodeJS.ProcessEnv>();
+
+/** Runs Git commands inside `task` with this environment instead of `process.env`. */
+export function withGitEnvironment<T>(env: NodeJS.ProcessEnv, task: () => Promise<T>): Promise<T> {
+  return gitEnvironment.run(env, task);
+}
+
+function gitCommandOptions(root: string): { cwd: string; env?: NodeJS.ProcessEnv; inheritEnv?: boolean } {
+  const stored = gitEnvironment.getStore();
+  if (!stored) return { cwd: root };
+  return { cwd: root, env: stored, inheritEnv: false };
+}
 
 export const GIT_UNAVAILABLE_MESSAGE = 'Não foi possível executar o Git: o repositório não está acessível.';
-export const GIT_FAILED_MESSAGE = 'Não foi possível executar o Git.';
+export const GIT_NOT_FOUND_MESSAGE = 'Não foi possível executar o Git: o Git não está instalado ou não foi encontrado.';
+export const GIT_FAILED_MESSAGE = 'Não foi possível executar o Git. Outro processo Git, um hook ou as permissões do repositório podem ter impedido a operação. Consulte o log do servidor.';
 export const GIT_IDENTITY_MESSAGE = 'Defina user.name e user.email do repositório antes de continuar. O Git recusou a operação porque a identidade do autor está ausente.';
 
 export class GitError extends Error {
@@ -25,22 +40,30 @@ function logGitFailure(root: string, args: string[], detail: { code?: string; ex
 
 function gitFailure(exitCode: number, stderr: string, stdout: string): GitError {
   const text = `${stderr}\n${stdout}`;
-  if (/author identity unknown|empty ident name/i.test(text)) return new GitError(GIT_IDENTITY_MESSAGE, 'git-identity-unknown');
+  if (/author identity unknown|committer identity unknown|empty ident name/i.test(text)) return new GitError(GIT_IDENTITY_MESSAGE, 'git-identity-unknown');
   if (exitCode === 128 && /not a git repository/i.test(text)) return new GitError(GIT_UNAVAILABLE_MESSAGE, 'git-unavailable');
   return new GitError(GIT_FAILED_MESSAGE, 'git-failed');
+}
+
+function throwSpawnFailure(root: string, args: string[], error: unknown): never {
+  const code = errorCode(error);
+  if (code === 'ENOENT' && findExecutable('git') === null) {
+    logGitFailure(root, args, { code });
+    throw new GitError(GIT_NOT_FOUND_MESSAGE, 'git-not-found');
+  }
+  if (UNAVAILABLE_SPAWN.has(code ?? '')) {
+    logGitFailure(root, args, { code });
+    throw new GitError();
+  }
+  throw error;
 }
 
 export async function git(root: string, ...args: string[]): Promise<string> {
   let result;
   try {
-    result = await runCommand(['git', ...args], { cwd: root });
+    result = await runCommand(['git', ...args], gitCommandOptions(root));
   } catch (error) {
-    const code = errorCode(error);
-    if (UNAVAILABLE_SPAWN.has(code ?? '')) {
-      logGitFailure(root, args, { code });
-      throw new GitError();
-    }
-    throw error;
+    throwSpawnFailure(root, args, error);
   }
   if (result.exitCode !== 0) {
     logGitFailure(root, args, { exitCode: result.exitCode, stderr: result.stderr, stdout: result.stdout });
@@ -54,14 +77,9 @@ export async function gitOptionalRef(root: string, ref: string): Promise<string>
   const args = ['rev-parse', '-q', '--verify', ref];
   let result;
   try {
-    result = await runCommand(['git', ...args], { cwd: root });
+    result = await runCommand(['git', ...args], gitCommandOptions(root));
   } catch (error) {
-    const code = errorCode(error);
-    if (UNAVAILABLE_SPAWN.has(code ?? '')) {
-      logGitFailure(root, args, { code });
-      throw new GitError();
-    }
-    throw error;
+    throwSpawnFailure(root, args, error);
   }
   if (result.exitCode === 0) return result.stdout.trim();
   if (result.exitCode === 1 && !result.stderr.trim()) return '';

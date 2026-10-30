@@ -21,6 +21,8 @@ export interface RunCommandOptions {
   cwd?: string;
   input?: string;
   env?: NodeJS.ProcessEnv;
+  /** When false, `env` replaces the process environment instead of overlaying it. */
+  inheritEnv?: boolean;
   timeoutMs?: number;
 }
 
@@ -49,7 +51,7 @@ export async function runCommand(
   return new Promise<RunCommandResult>((resolve, reject) => {
     const child = spawn(executable, args, {
       cwd,
-      env: { ...process.env, ...options.env },
+      env: options.inheritEnv === false ? { ...options.env } : { ...process.env, ...options.env },
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: false,
     });

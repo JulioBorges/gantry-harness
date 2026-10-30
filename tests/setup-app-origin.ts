@@ -12,6 +12,9 @@
  */
 import { beforeAll } from 'vitest';
 import { WebSocket as NodeWebSocket } from 'ws';
+import { installIsolatedGitEnv } from './gitTestEnv.js';
+
+installIsolatedGitEnv();
 
 beforeAll(() => {
   if (typeof window === 'undefined') return;
