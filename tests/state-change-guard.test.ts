@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { evaluateStateChangeGuard, isAppOrigin } from '../src/server/stateChangeGuard.js';
+import { evaluateStateChangeGuard, isAppHost, isAppOrigin } from '../src/server/stateChangeGuard.js';
 
 const local = { bindHost: '127.0.0.1', port: 7400 };
 
@@ -25,6 +25,19 @@ describe('state-change guard', () => {
     for (const contentType of [undefined, '', 'text/plain', 'text/plain;charset=utf-8', 'application/json, text/plain', 'application/json; charset']) {
       expect(evaluateStateChangeGuard({ origin, contentType }, local)).toEqual({ statusCode: 415, error: 'Content-Type deve ser application/json.' });
     }
+  });
+
+  it('accepts only an app Host, including the listening port', () => {
+    expect(isAppHost('127.0.0.1:7400', local)).toBe(true);
+    expect(isAppHost('localhost:7400', local)).toBe(true);
+    expect(isAppHost('[::1]:7400', local)).toBe(true);
+    expect(isAppHost('evil.example', local)).toBe(false);
+    expect(isAppHost('evil.example:7400', local)).toBe(false);
+    expect(isAppHost('127.0.0.1:7399', local)).toBe(false);
+    expect(isAppHost(undefined, local)).toBe(false);
+    expect(isAppHost('192.168.1.20:7400', { bindHost: '192.168.1.20', port: 7400 })).toBe(true);
+    expect(isAppHost('10.0.0.8:7400', { bindHost: '0.0.0.0', port: 7400 })).toBe(true);
+    expect(isAppHost('evil.example:7400', { bindHost: '0.0.0.0', port: 7400 })).toBe(false);
   });
 
   it('accepts a concrete bind host and a wildcard bind reached by an IP literal', () => {

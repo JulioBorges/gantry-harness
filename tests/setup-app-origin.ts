@@ -1,13 +1,14 @@
 /**
- * Node's fetch does not send Origin. State-changing routes now require the app
- * origin, which is what the browser sets and what the CLI sends. This wrapper
- * opts the existing suite in the same way. Security tests import `nativeFetch`
- * so they can omit or forge Origin.
+ * Node's fetch does not send Origin. State-changing routes require the app
+ * origin, which the browser sets and the CLI sends. This wrapper adds only
+ * that Origin for loopback calls that forgot it. It does not add
+ * Content-Type: a client that omits JSON must fail the suite. Security tests
+ * import `nativeFetch` so they can omit or forge headers.
  *
  * jsdom's WebSocket advertises the document origin (typically localhost:3000),
  * which is not the harness server under test. The real window is served by
  * that server, so the browser's Origin matches. The Node client omits Origin;
- * the server allows a missing WebSocket Origin because browsers cannot omit it.
+ * the server allows a missing WebSocket Origin only from a loopback socket.
  */
 import { beforeAll } from 'vitest';
 import { WebSocket as NodeWebSocket } from 'ws';
@@ -84,6 +85,5 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   }
   const headers = new Headers(init?.headers ?? (typeof Request !== 'undefined' && input instanceof Request ? input.headers : undefined));
   if (!headers.has('Origin')) headers.set('Origin', url.origin);
-  if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
   return native(input, { ...init, headers });
 }) as typeof fetch;

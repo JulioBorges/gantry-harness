@@ -53,18 +53,22 @@ Open the printed loopback URL. Build emits the `gantry-harness` CLI entry as wel
 
 ## Origin policy
 
-The server does not terminate TLS and does not send `Access-Control-Allow-Origin`. The browser UI and the Electron window are same-origin with the process that serves them (`http://127.0.0.1:<port>` by default), so they do not need a cross-origin header. A page on another origin cannot read JSON responses, including project, workspace, run and artifact payloads. A simple GET may still reach the process; the browser hides the body from that other page.
+The server does not terminate TLS and does not send `Access-Control-Allow-Origin`. The browser UI and the Electron window are same-origin with the process that serves them (`http://127.0.0.1:<port>` by default), so they do not need a cross-origin header. A page on another origin cannot read JSON responses, including project, workspace, run and artifact payloads.
 
-Every `POST`, `PUT`, `PATCH` and `DELETE` requires both of the following, before the route runs:
+Every request, including `GET`, static files and the WebSocket upgrade, must send a `Host` for this process: the listening port, and a host that is loopback (`localhost`, `127.0.0.1`, `::1`), the concrete `--host` value, or — only when the bind is `0.0.0.0` or `::` — an IP literal. A missing `Host`, another port, and a DNS name that is not the bind host are **421**. That includes a name that merely resolves to the machine. `Host: evil.example` does not receive project or workspace data. **421** is the misdirected-request status: the authority is not this server. **403** stays for a cross-site `Origin` aimed at a `Host` this server does serve.
 
-- `Origin` equal to this app: `http` on the listening port, and a host that is loopback (`localhost`, `127.0.0.1`, `::1`), the concrete `--host` value, or — only when the bind is `0.0.0.0` or `::` — the IP literal in that request's `Host` header. `https`, another port, a path, `Origin: null`, a missing `Origin`, and a DNS name that is not the bind host are **403**. A name that merely resolves to the machine, including a rebinding name, is not accepted.
-- `Content-Type: application/json` (parameters such as `charset` are fine). Anything else is **415**. Origin is checked first, so a cross-site `text/plain` POST is **403** and does not run the route.
+Every `POST`, `PUT`, `PATCH` and `DELETE` also requires both of the following, before the route runs:
 
-The browser sets `Origin` itself. The CLI sends `Origin: http://127.0.0.1:<port>` with JSON when it dispatches to a server already running on loopback. There is no state-changing exception for a missing `Origin`.
+- `Origin` under the same host rule, as `http` with no user, path, query or `null`. `https`, another port, a path, `Origin: null` and a missing `Origin` are **403**.
+- `Content-Type: application/json` (parameters such as `charset` are fine). Anything else is **415**. The `Host` is checked first, then `Origin`, so a cross-site `text/plain` POST to this host is **403** and does not run the route.
+
+The browser sets `Origin` and `Host` itself. The CLI sends `Origin: http://127.0.0.1:<port>` with JSON when it dispatches to a server already running on loopback. There is no state-changing exception for a missing `Origin`.
 
 Open the printed loopback URL. For another machine on the LAN or Tailscale, bind the address you will type: `node dist/cli.js --host 192.168.1.20 --port 7400` and open `http://192.168.1.20:7400`, or bind every interface with `--host 0.0.0.0` (or `--lan` / `--tailscale`) and open `http://<that-ip>:<port>`. Access by a DNS name that is not the host you bound is refused. To use a name, start the server with `--host` set to that name and open `http://<that-name>:<port>`.
 
-WebSocket upgrades that present an `Origin` must use the same app origin, so another site cannot subscribe to live project and run events. Browsers always send `Origin` on that handshake. A client that omits it is not a browser; the CLI does not open a WebSocket.
+A WebSocket upgrade uses the same `Host` rule. An `Origin` that is present must be the app origin. Browsers always send `Origin`. A handshake that omits it is accepted only from a loopback socket, or when the URL or `Authorization` header carries a valid pairing token. That keeps a LAN client from reading live pane output on `--host 0.0.0.0` without pairing. The CLI does not open a WebSocket.
+
+`GET /api/workspace/state` and `GET /api/projects/:id/board` still refresh project data as they are read. A browser on another site can trigger that refresh by targeting the real loopback host; it still cannot read the body. See [ADR-0004](docs/adr/0004-leituras-http-com-efeito.md).
 
 ## Checks
 

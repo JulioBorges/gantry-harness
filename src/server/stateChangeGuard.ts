@@ -58,20 +58,57 @@ function isIpLiteral(hostname: string): boolean {
 
 function parseHostHeader(host: string | undefined): { hostname: string; port: number } | null {
   if (!host) return null;
-  if (host.startsWith('[')) {
-    const end = host.indexOf(']');
+  const trimmed = host.trim();
+  if (!trimmed || /\s/.test(trimmed)) return null;
+  if (trimmed.startsWith('[')) {
+    const end = trimmed.indexOf(']');
     if (end <= 1) return null;
-    const rest = host.slice(end + 1);
+    const rest = trimmed.slice(end + 1);
     if (!rest.startsWith(':')) return null;
     const port = Number(rest.slice(1));
     if (!Number.isInteger(port)) return null;
-    return { hostname: host.slice(1, end).toLowerCase(), port };
+    return { hostname: trimmed.slice(1, end).toLowerCase(), port };
   }
-  const colon = host.lastIndexOf(':');
+  const colon = trimmed.lastIndexOf(':');
   if (colon <= 0) return null;
-  const port = Number(host.slice(colon + 1));
+  const port = Number(trimmed.slice(colon + 1));
   if (!Number.isInteger(port)) return null;
-  return { hostname: host.slice(0, colon).toLowerCase(), port };
+  return { hostname: trimmed.slice(0, colon).toLowerCase(), port };
+}
+
+/**
+ * True when `hostname` is an authority this process serves: loopback, the
+ * concrete bind host, or — only for a wildcard bind — an IP literal that is
+ * also the host of `hostHeader`.
+ */
+function hostIsAppAuthority(hostname: string, hostHeader: string | undefined, context: StateChangeGuardContext): boolean {
+  const normalized = normalizeHost(hostname);
+  if (LOOPBACK_HOSTS.has(normalized)) return true;
+  const bind = normalizeHost(context.bindHost);
+  if (bind && bind !== '0.0.0.0' && bind !== '::' && normalized === bind) return true;
+  if (bind !== '0.0.0.0' && bind !== '::') return false;
+  const requestHost = parseHostHeader(hostHeader);
+  return requestHost !== null
+    && requestHost.port === context.port
+    && requestHost.hostname === normalized
+    && isIpLiteral(normalized);
+}
+
+/**
+ * The Host header (or :authority) must name this process. A DNS name that is
+ * not the bind host is not an app host, including one that merely resolves here.
+ * A missing port is not the listening port.
+ */
+export function isAppHost(hostHeader: string | undefined, context: StateChangeGuardContext): boolean {
+  const parsed = parseHostHeader(hostHeader);
+  if (!parsed || parsed.port !== context.port) return false;
+  return hostIsAppAuthority(parsed.hostname, hostHeader, context);
+}
+
+export const HOST_REJECTION = { statusCode: 421 as const, error: 'Host recusado.' };
+
+export function isLoopbackRemote(address: string | undefined): boolean {
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
 }
 
 export function isAppOrigin(
@@ -93,18 +130,7 @@ export function isAppOrigin(
   const originPort = origin.port === '' ? 80 : Number(origin.port);
   if (!Number.isInteger(originPort) || originPort !== context.port) return false;
 
-  const hostname = normalizeHost(origin.hostname);
-  if (LOOPBACK_HOSTS.has(hostname)) return true;
-
-  const bind = normalizeHost(context.bindHost);
-  if (bind && bind !== '0.0.0.0' && bind !== '::' && hostname === bind) return true;
-  if (bind !== '0.0.0.0' && bind !== '::') return false;
-
-  const requestHost = parseHostHeader(requestHostHeader);
-  return requestHost !== null
-    && requestHost.port === context.port
-    && requestHost.hostname === hostname
-    && isIpLiteral(hostname);
+  return hostIsAppAuthority(origin.hostname, requestHostHeader, context);
 }
 
 export function hasJsonContentType(contentType: string | undefined): boolean {

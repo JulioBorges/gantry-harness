@@ -22,7 +22,7 @@ import {
 import { PtySupervisor, readArtifactAndDiff } from './ptyManager.js';
 import { RunSupervisor, RunSupervisorError } from './runSupervisor.js';
 import { GitError } from './git.js';
-import { evaluateIncomingStateChange, isAppOrigin, isStateChangingMethod, singleHeader } from './stateChangeGuard.js';
+import { evaluateIncomingStateChange, HOST_REJECTION, isAppHost, isAppOrigin, isLoopbackRemote, isStateChangingMethod, singleHeader } from './stateChangeGuard.js';
 import { cleanWorktree, previewWorktreeCleanup, WorktreeCleanupError } from './worktreeCleanup.js';
 import { ProjectTreeError, readProjectTree } from './projectTree.js';
 
@@ -189,6 +189,14 @@ export async function createHarnessServer(
 
   const server = http.createServer(async (req, res) => {
     try {
+      // 421, not 403: the authority is wrong (RFC 9110 Misdirected Request).
+      // 403 stays reserved for a cross-site Origin aimed at this host.
+      if (!isAppHost(singleHeader(req.headers.host), guardContext())) {
+        await drainRequest(req);
+        sendJson(res, HOST_REJECTION.statusCode, { error: HOST_REJECTION.error });
+        return;
+      }
+
       if (req.method === 'OPTIONS') {
         sendJson(res, 204, {});
         return;
@@ -941,15 +949,34 @@ export async function createHarnessServer(
     }
   });
 
+  const websocketToken = (upgrade: http.IncomingMessage): string => {
+    const wsUrl = new URL(upgrade.url ?? '/', 'http://127.0.0.1');
+    const queryToken = wsUrl.searchParams.get('token') ?? '';
+    const authHeader = singleHeader(upgrade.headers.authorization) ?? '';
+    const bearer = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+    return queryToken || bearer;
+  };
+
   const wss = new WebSocketServer({
     server,
-    verifyClient: (info: { req: http.IncomingMessage }) => {
+    verifyClient: (info: { req: http.IncomingMessage }, callback) => {
+      const context = guardContext();
+      const host = singleHeader(info.req.headers.host);
+      if (!isAppHost(host, context)) {
+        callback(false, 421, 'Misdirected Request');
+        return;
+      }
       const origin = singleHeader(info.req.headers.origin);
-      // Browsers always send Origin on a WebSocket handshake. A missing header is a
-      // non-browser client. A present header must be this app's origin, so another
-      // page cannot subscribe to project and run broadcasts.
-      if (origin === undefined) return true;
-      return isAppOrigin(origin, singleHeader(info.req.headers.host), guardContext());
+      if (origin !== undefined) {
+        callback(isAppOrigin(origin, host, context), 403, 'Forbidden');
+        return;
+      }
+      // Browsers always send Origin. A missing header is not a page, but on a
+      // public bind it would still stream pane output. Allow it only from the
+      // loopback socket, or when the caller presents a valid pairing token.
+      const token = websocketToken(info.req);
+      const allowed = isLoopbackRemote(info.req.socket.remoteAddress) || (token !== '' && store.isValidAuthToken(token));
+      callback(allowed, 403, 'Forbidden');
     },
   });
   wss.on('connection', (ws, req) => {
