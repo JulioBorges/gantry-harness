@@ -14,6 +14,13 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     testTimeout: 60000,
+    env: {
+      GIT_CONFIG_COUNT: '2',
+      GIT_CONFIG_KEY_0: 'commit.gpgsign',
+      GIT_CONFIG_VALUE_0: 'false',
+      GIT_CONFIG_KEY_1: 'core.fsmonitor',
+      GIT_CONFIG_VALUE_1: 'false',
+    },
     server: {
       deps: {
         external: [/^node:sqlite$/],
