@@ -3,18 +3,23 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { WebSocket } from 'ws';
 import { createHarnessServer, type HarnessServerInstance } from '../src/server/app.js';
+import * as gitModule from '../src/server/git.js';
 
 let root: string;
 let repo: string;
 let server: HarnessServerInstance;
-const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' }).trim();
+const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'commit.gpgsign=false', '-c', 'core.fsmonitor=false', ...args], { cwd, encoding: 'utf8', stdio: 'pipe' }).trim();
 function initRepo(name: string) {
   const dir = path.join(root, name);
   fs.mkdirSync(dir);
   git(dir, 'init', '-b', 'main');
   git(dir, 'config', 'user.name', 'Cleanup test');
   git(dir, 'config', 'user.email', 'cleanup@example.test');
+  // Ignore inherited commit signing and fsmonitor; both can stall git while tests create repos.
+  git(dir, 'config', 'commit.gpgsign', 'false');
+  git(dir, 'config', 'core.fsmonitor', 'false');
   fs.writeFileSync(path.join(dir, 'README.md'), 'Original\n');
   fs.writeFileSync(path.join(dir, '.gitignore'), 'ignored.log\n');
   git(dir, 'add', '.');
@@ -27,7 +32,17 @@ async function register(dir: string) {
   return (await response.json()).project.id as string;
 }
 function request(id: string, action: 'preview' | 'clean', body: object = {}) {
-  return fetch(`http://127.0.0.1:${server.port}/api/projects/${id}/worktree/${action}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  return fetch(`http://127.0.0.1:${server.port}/api/projects/${id}/worktree/${action}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: `http://127.0.0.1:${server.port}` },
+    body: JSON.stringify(body),
+  });
+}
+function rawRequest(id: string, action: 'preview' | 'clean', init: { origin?: string | null; contentType?: string | null; body?: string } = {}) {
+  const headers = new Headers();
+  if (init.contentType !== null) headers.set('Content-Type', init.contentType ?? 'application/json');
+  if (init.origin !== null) headers.set('Origin', init.origin ?? `http://127.0.0.1:${server.port}`);
+  return fetch(`http://127.0.0.1:${server.port}/api/projects/${id}/worktree/${action}`, { method: 'POST', headers, body: init.body ?? '{}' });
 }
 function seedReady(projectId: string) {
   server.store.saveRun({ runId: `ready-${projectId}`, projectId, ref: 'watch#01', slug: 'watch', kind: 'issue', status: 'ready-for-approval', childPid: null, pid: null, childHandle: null, lane: 'critic', packPhase: 'ready', branch: null, worktree: null, pushed: false, pause: null, pausedReason: null, pausedChoices: null, terminalEvent: 'ready-for-approval', error: null, prUrl: null, derivedPhase: 'ready-for-approval', createdAt: '', updatedAt: '' });
@@ -323,6 +338,122 @@ print(json.dumps({'issues': [], 'specs': [], 'frontier': []}))
       expect(response.status).toBe(503);
       expect((await response.json()).code).toBe('git-unavailable');
     } finally { git(repo, 'config', 'core.bare', 'false'); }
+  });
+
+  it('reports Git failure on worktree preview as git-unavailable', async () => {
+    const id = await register(repo);
+    fs.renameSync(path.join(repo, '.git'), path.join(repo, '.git-hidden'));
+    try {
+      const response = await request(id, 'preview');
+      expect(response.status).toBe(503);
+      expect((await response.json()).code).toBe('git-unavailable');
+    } finally {
+      fs.renameSync(path.join(repo, '.git-hidden'), path.join(repo, '.git'));
+    }
+  });
+
+  it.each([
+    ['UU', () => {
+      git(repo, 'checkout', '-b', 'topic');
+      fs.writeFileSync(path.join(repo, 'README.md'), 'Topic\n');
+      git(repo, 'commit', '-am', 'Topic');
+      git(repo, 'checkout', 'main');
+      fs.writeFileSync(path.join(repo, 'README.md'), 'Main\n');
+      git(repo, 'commit', '-am', 'Main');
+      expect(() => git(repo, 'merge', 'topic')).toThrow();
+    }],
+    ['AA', () => {
+      git(repo, 'checkout', '-b', 'add-a');
+      fs.writeFileSync(path.join(repo, 'added.txt'), 'From topic\n');
+      git(repo, 'add', 'added.txt');
+      git(repo, 'commit', '-m', 'Add on topic');
+      git(repo, 'checkout', 'main');
+      fs.writeFileSync(path.join(repo, 'added.txt'), 'From main\n');
+      git(repo, 'add', 'added.txt');
+      git(repo, 'commit', '-m', 'Add on main');
+      expect(() => git(repo, 'merge', 'add-a')).toThrow();
+    }],
+  ])('refuses a real %s conflict and does not create a stash', async (status, setup) => {
+    const id = await register(repo);
+    setup();
+    expect(git(repo, 'status', '--porcelain')).toContain(status);
+    const preview = await request(id, 'preview');
+    expect(preview.status).toBe(409);
+    expect((await preview.json()).error).toMatch(/conflito/i);
+    const cleaned = await request(id, 'clean', { confirmed: true, token: 'a'.repeat(64) });
+    expect(cleaned.status).toBe(409);
+    expect(git(repo, 'stash', 'list')).toBe('');
+    expect(git(repo, 'status', '--porcelain')).toContain(status);
+  });
+
+  it('rejects a cross-site text/plain POST on preview and clean before it can stash', async () => {
+    const id = await register(repo);
+    fs.writeFileSync(path.join(repo, 'README.md'), 'Dirty\n');
+    const preview = await (await request(id, 'preview')).json();
+    for (const action of ['preview', 'clean'] as const) {
+      const response = await rawRequest(id, action, {
+        origin: 'https://evil.example',
+        contentType: 'text/plain',
+        body: JSON.stringify({ confirmed: true, token: preview.token }),
+      });
+      const payload = await response.json();
+      expect(response.status).toBe(403);
+      expect(payload.error).toMatch(/origem/i);
+      expect(payload.token).toBeUndefined();
+      expect(payload.files).toBeUndefined();
+    }
+    expect(git(repo, 'stash', 'list')).toBe('');
+    expect(fs.readFileSync(path.join(repo, 'README.md'), 'utf8')).toBe('Dirty\n');
+    const open = await fetch(`http://127.0.0.1:${server.port}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: repo }),
+    });
+    expect(open.status).toBe(200);
+  });
+
+  it('rejects JSON from an external origin and text/plain from the app origin', async () => {
+    const id = await register(repo);
+    fs.writeFileSync(path.join(repo, 'README.md'), 'Dirty\n');
+    for (const action of ['preview', 'clean'] as const) {
+      const foreign = await rawRequest(id, action, { origin: 'https://evil.example', contentType: 'application/json', body: JSON.stringify({ confirmed: true, token: 'abc' }) });
+      expect(foreign.status).toBe(403);
+      await foreign.arrayBuffer();
+      const plain = await rawRequest(id, action, { origin: `http://127.0.0.1:${server.port}`, contentType: 'text/plain', body: JSON.stringify({ confirmed: true, token: 'abc' }) });
+      expect(plain.status).toBe(415);
+      await plain.arrayBuffer();
+      const missing = await rawRequest(id, action, { origin: null, contentType: 'application/json' });
+      expect(missing.status).toBe(403);
+      await missing.arrayBuffer();
+    }
+    expect(git(repo, 'stash', 'list')).toBe('');
+    const allowed = await rawRequest(id, 'preview', { origin: `http://localhost:${server.port}`, contentType: 'application/json; charset=utf-8' });
+    expect(allowed.status).toBe(200);
+    expect((await allowed.json()).files.length).toBeGreaterThan(0);
+  });
+
+  it('emits project.worktree.cleaned when the stash exists but the backup hash cannot be read', async () => {
+    const id = await register(repo);
+    fs.writeFileSync(path.join(repo, 'README.md'), 'Dirty\n');
+    const preview = await (await request(id, 'preview')).json();
+    const ws = new WebSocket(`ws://127.0.0.1:${server.port}`);
+    const events: Array<Record<string, unknown>> = [];
+    ws.on('message', (data) => events.push(JSON.parse(String(data))));
+    await new Promise<void>((resolve, reject) => { ws.once('open', () => resolve()); ws.once('error', reject); });
+    const originalGit = gitModule.git;
+    const gitSpy = vi.spyOn(gitModule, 'git').mockImplementation((root: string, ...args: string[]) => {
+      if (args[0] === 'reflog') return Promise.resolve('not-a-hash\0unrelated');
+      return originalGit(root, ...args);
+    });
+    try {
+      const response = await request(id, 'clean', { confirmed: true, token: preview.token });
+      expect(gitSpy).toHaveBeenCalled();
+      expect(response.status).toBe(409);
+      expect((await response.json()).error).toMatch(/stash/i);
+      await vi.waitFor(() => expect(events).toContainEqual({ type: 'project.worktree.cleaned', projectId: id }));
+      expect(git(repo, 'stash', 'list')).toContain('gantry-harness-cleanup-');
+      expect(git(repo, 'status', '--porcelain')).toBe('');
+    } finally { gitSpy.mockRestore(); ws.close(); }
   });
 
 });

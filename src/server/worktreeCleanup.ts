@@ -10,7 +10,7 @@ export interface WorktreeCleanupPreview {
 }
 
 export class WorktreeCleanupError extends Error {
-  constructor(message: string, public statusCode = 409) { super(message); }
+  constructor(message: string, public statusCode = 409, public worktreeMutated = false) { super(message); }
 }
 
 export async function previewWorktreeCleanup(checkout: string): Promise<WorktreeCleanupPreview> {
@@ -57,7 +57,9 @@ export async function cleanWorktree(checkout: string, token: unknown): Promise<{
     // Match our own reflog entry rather than assuming another process has not pushed a stash.
     const entries = (await git(preview.root, 'reflog', 'show', '--format=%H%x00%gs', 'refs/stash')).split('\n');
     const backup = entries.find(entry => entry.includes(marker))?.split('\0')[0];
-    if (!backup || !/^[0-9a-f]{40,64}$/.test(backup)) throw new WorktreeCleanupError('O Git criou o stash, mas não foi possível identificar o backup. Consulte git stash list antes de continuar.');
+    if (!backup || !/^[0-9a-f]{40,64}$/.test(backup)) {
+      throw new WorktreeCleanupError('O Git criou o stash, mas não foi possível identificar o backup. Consulte git stash list antes de continuar.', 409, true);
+    }
     const status = await readWorktreeStatus(preview.root);
     return { backup, clean: status.files.length === 0 };
   } finally {

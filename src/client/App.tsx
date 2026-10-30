@@ -108,7 +108,9 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   const [roleSelections, setRoleSelections] = useState<Record<string, RoleSelection>>({});
   const setupProjectLoaded = useRef<string | null>(null);
   const { feedback, pendingActions, withFeedback, withPending, reportError, dismissFeedback } = useActionFeedback();
-  const cleanupBusy = pendingActions.includes('Limpeza da worktree');
+  const preparingCleanup = pendingActions.includes('Preparando limpeza');
+  const cleaningWorktree = pendingActions.includes('Limpando worktree');
+  const cleanupBusy = preparingCleanup || cleaningWorktree;
   const [terminalInput, setTerminalInput] = useState('');
   const [panes, setPanes] = useState<ManagedPane[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(() => typeof window !== 'undefined' && window.innerWidth >= 760);
@@ -531,13 +533,17 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     await loadWorkspaceState();
   });
 
-  const handlePreviewCleanup = withPending('Limpeza da worktree', async () => {
+  const handlePreviewCleanup = withPending('Preparando limpeza', async () => {
     if (!projectSettingsId || cleanupBusy) return;
     const projectId = projectSettingsId;
     setCleanupPreview(null);
     setCleanupNotice(null);
     try {
-      const response = await apiFetch(`/api/projects/${projectId}/worktree/preview`, { method: 'POST' });
+      const response = await apiFetch(`/api/projects/${projectId}/worktree/preview`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error ?? 'Não foi possível revisar a limpeza.');
       if (!payload.files.length) {
@@ -549,7 +555,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
     }
   });
 
-  const handleCleanWorktree = withPending('Limpeza da worktree', async () => {
+  const handleCleanWorktree = withPending('Limpando worktree', async () => {
     if (!cleanupPreview || cleanupPreview.projectId !== projectSettingsId || cleanupBusy) return;
     const { projectId, token } = cleanupPreview;
     try {
@@ -1191,7 +1197,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
             <p className="section-intro">Cada papel usa um host e só pode receber um modelo desse host. A lista é lida do agente instalado. Esta configuração tem prioridade sobre a global.</p>
             <p>A instalação das skills e a configuração do repositório criam commits locais na branch atual. Faça commit das alterações ou use Limpar worktree no aviso abaixo para guardá-las em um backup antes de continuar.</p>
             {inspection?.remediationCards.map((card) => <div key={card.kind} className="setup-diagnostic"><strong>{card.title}</strong><p>{card.description}</p><p>{card.remediation}</p>
-              {card.kind === 'dirty_worktree' && <button type="button" disabled={cleanupBusy} onClick={() => void handlePreviewCleanup()}>{cleanupBusy ? 'Preparando limpeza…' : 'Limpar worktree'}</button>}
+              {card.kind === 'dirty_worktree' && <button type="button" disabled={cleanupBusy} onClick={() => void handlePreviewCleanup()}>{preparingCleanup ? 'Preparando limpeza…' : cleaningWorktree ? 'Limpando worktree…' : 'Limpar worktree'}</button>}
             </div>)}
             {cleanupPreview?.projectId === projectSettingsId && <section className="worktree-cleanup-preview" aria-label="Revisar limpeza da worktree">
               <h3>Limpar worktree de {projects.find(project => project.id === projectSettingsId)?.name}?</h3>
@@ -1200,7 +1206,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
               <ul>{cleanupPreview.files.map(file => <li key={file.path}><code>{file.status} {file.originalPath ? `${file.originalPath} → ` : ''}{file.path}</code></li>)}</ul>
               <div className="project-setup-actions">
                 <button type="button" disabled={cleanupBusy} onClick={() => setCleanupPreview(null)}>Cancelar limpeza</button>
-                <button type="button" disabled={cleanupBusy} onClick={() => void handleCleanWorktree()}>{cleanupBusy ? 'Limpando…' : 'Guardar backup e limpar worktree'}</button>
+                <button type="button" disabled={cleanupBusy} onClick={() => void handleCleanWorktree()}>{cleaningWorktree ? 'Limpando…' : 'Guardar backup e limpar worktree'}</button>
               </div>
             </section>}
             {cleanupNotice?.projectId === projectSettingsId && <div className="setup-diagnostic" role={cleanupNotice.error ? 'alert' : 'status'}>
