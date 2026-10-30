@@ -985,7 +985,10 @@ export async function createHarnessServer(
       }
       const token = websocketToken(info.req);
       const loopback = isLoopbackRemote(info.req.socket.remoteAddress);
-      if (token !== '' && !store.isValidAuthToken(token) && !loopback) {
+      // A stale gantry_auth_token must not close the UI socket when pairing is
+      // off. HTTP keeps answering 401 or a minimal health body for a bad bearer;
+      // only a pairing-required upgrade rejects the token itself.
+      if (options.requirePairingForRemote && token !== '' && !store.isValidAuthToken(token) && !loopback) {
         callback(false, 403, 'Forbidden');
         return;
       }

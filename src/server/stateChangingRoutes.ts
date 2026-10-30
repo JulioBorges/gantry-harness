@@ -6,13 +6,6 @@
  * `app.ts` dispatches through `matchesRoute`. `path` is an example the tests
  * attack; `match` is the predicate the handler uses.
  */
-export interface StateChangingRoute {
-  id: string;
-  method: 'POST' | 'PUT' | 'PATCH' | 'DELETE';
-  path: string;
-  match: (pathname: string) => boolean;
-}
-
 function partsOf(pathname: string): string[] {
   return pathname.split('/').filter(Boolean);
 }
@@ -39,14 +32,14 @@ function runAction(action: string): (pathname: string) => boolean {
   };
 }
 
-export const STATE_CHANGING_ROUTES: readonly StateChangingRoute[] = [
+export const STATE_CHANGING_ROUTES = [
   { id: 'pair-verify', method: 'POST', path: '/api/auth/pair/verify', match: exact('/api/auth/pair/verify') },
   { id: 'pair-generate', method: 'POST', path: '/api/auth/pair/generate', match: exact('/api/auth/pair/generate') },
   { id: 'workspace-state', method: 'PUT', path: '/api/workspace/state', match: exact('/api/workspace/state') },
   { id: 'project-create', method: 'POST', path: '/api/projects', match: exact('/api/projects') },
-  { id: 'project-delete', method: 'DELETE', path: '/api/projects/project-id', match: (pathname) => pathname.startsWith('/api/projects/') && partsOf(pathname).length === 3 },
-  { id: 'worktree-preview', method: 'POST', path: '/api/projects/project-id/worktree/preview', match: (pathname) => /^\/api\/projects\/[^/]+\/worktree\/preview$/.test(pathname) },
-  { id: 'worktree-clean', method: 'POST', path: '/api/projects/project-id/worktree/clean', match: (pathname) => /^\/api\/projects\/[^/]+\/worktree\/clean$/.test(pathname) },
+  { id: 'project-delete', method: 'DELETE', path: '/api/projects/project-id', match: (pathname: string) => pathname.startsWith('/api/projects/') && partsOf(pathname).length === 3 },
+  { id: 'worktree-preview', method: 'POST', path: '/api/projects/project-id/worktree/preview', match: (pathname: string) => /^\/api\/projects\/[^/]+\/worktree\/preview$/.test(pathname) },
+  { id: 'worktree-clean', method: 'POST', path: '/api/projects/project-id/worktree/clean', match: (pathname: string) => /^\/api\/projects\/[^/]+\/worktree\/clean$/.test(pathname) },
   { id: 'bootstrap', method: 'POST', path: '/api/projects/project-id/bootstrap', match: projectSuffix('/bootstrap', 4) },
   { id: 'setup-preview', method: 'POST', path: '/api/projects/project-id/setup/preview', match: projectSuffix('/setup/preview', 5) },
   { id: 'setup-apply', method: 'POST', path: '/api/projects/project-id/setup/apply', match: projectSuffix('/setup/apply', 5) },
@@ -69,11 +62,14 @@ export const STATE_CHANGING_ROUTES: readonly StateChangingRoute[] = [
   { id: 'settings-execution', method: 'PUT', path: '/api/settings/execution', match: exact('/api/settings/execution') },
   { id: 'settings-terminal', method: 'PUT', path: '/api/settings/terminal', match: exact('/api/settings/terminal') },
   { id: 'cli-dispatch', method: 'POST', path: '/api/cli/dispatch', match: exact('/api/cli/dispatch') },
-];
+] as const;
+
+export type StateChangingRoute = (typeof STATE_CHANGING_ROUTES)[number];
+export type StateChangingRouteId = StateChangingRoute['id'];
 
 const routesById = new Map(STATE_CHANGING_ROUTES.map((route) => [route.id, route]));
 
-export function matchesRoute(id: string, pathname: string, method: string | undefined): boolean {
+export function matchesRoute(id: StateChangingRouteId, pathname: string, method: string | undefined): boolean {
   const route = routesById.get(id);
   return route !== undefined && route.method === method && route.match(pathname);
 }

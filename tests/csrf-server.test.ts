@@ -600,6 +600,42 @@ describe('server-wide state-change protection', () => {
     const token = server.store.verifyPairingCode(code);
     const paired = await rawHttp(port, 'GET', '/api/health', { Host: host, Authorization: `Bearer ${token}` }, ip);
     expect(JSON.parse(paired.body)).toEqual({ status: 'ok', pid: process.pid, gantryHome });
+
+    const stale = { Host: host, Authorization: 'Bearer gantry_auth_token-stale' };
+    const staleHealth = await rawHttp(port, 'GET', '/api/health', stale, ip);
+    expect(staleHealth.status).toBe(200);
+    expect(JSON.parse(staleHealth.body)).toEqual({ status: 'ok' });
+    const staleProjects = await rawHttp(port, 'GET', '/api/projects', stale, ip);
+    expect(staleProjects.status).toBe(401);
+  });
+
+  it.skipIf(!lanIp)('keeps a WebSocket open for a stale token when pairing is off', async () => {
+    const ip = lanIp!;
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'gantry-csrf-stale-token-'));
+    server = await createHarnessServer({
+      gantryHome: path.join(root, 'home'),
+      host: '0.0.0.0',
+      port: 0,
+    });
+    const port = server.port;
+    const origin = `http://${ip}:${port}`;
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(`ws://${ip}:${port}/?token=${encodeURIComponent('gantry_auth_token-stale')}`, { headers: { Origin: origin } });
+      const timer = setTimeout(() => {
+        ws.terminate();
+        reject(new Error('stale token websocket did not open without pairing'));
+      }, 2000);
+      ws.on('open', () => {
+        clearTimeout(timer);
+        ws.close();
+        resolve();
+      });
+      ws.on('unexpected-response', (_req, res) => {
+        clearTimeout(timer);
+        reject(new Error(`stale token websocket refused with ${res.statusCode}`));
+      });
+      ws.on('error', () => undefined);
+    });
   });
 
   it.skipIf(!lanIp)('refuses a WebSocket that presents an invalid pairing token', async () => {

@@ -4,9 +4,19 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { WebSocket as NodeWebSocket } from 'ws';
 import { App } from '../src/client/App.js';
 import { createHarnessServer, type HarnessServerInstance } from '../src/server/app.js';
 import { nativeFetch } from './setup-app-origin.js';
+
+function lanAddress(): string | undefined {
+  for (const entries of Object.values(os.networkInterfaces())) {
+    for (const entry of entries ?? []) {
+      if (entry.family === 'IPv4' && !entry.internal) return entry.address;
+    }
+  }
+  return undefined;
+}
 
 let server: HarnessServerInstance | undefined;
 let root: string | undefined;
@@ -14,6 +24,7 @@ let previousFetch: typeof fetch | undefined;
 
 afterEach(async () => {
   cleanup();
+  localStorage.clear();
   if (previousFetch) globalThis.fetch = previousFetch;
   if (server) await server.close();
   if (root) fs.rmSync(root, { recursive: true, force: true });
@@ -51,4 +62,27 @@ it('the settings UI sends JSON when generating a pairing code', async () => {
     contentType: 'application/json',
     origin: null,
   });
+});
+
+const lanIp = lanAddress();
+
+it.skipIf(!lanIp)('clears a stale token and returns to pairing when the remote socket is refused', async () => {
+  root = fs.mkdtempSync(path.join(os.tmpdir(), 'gantry-csrf-ui-token-'));
+  const started = await createHarnessServer({
+    gantryHome: path.join(root, 'home'),
+    host: '0.0.0.0',
+    port: 0,
+    requirePairingForRemote: true,
+  });
+  server = started;
+  const previousWebSocket = globalThis.WebSocket;
+  globalThis.WebSocket = NodeWebSocket as unknown as typeof WebSocket;
+  localStorage.setItem('gantry_auth_token', 'gantry_auth_token-stale');
+  try {
+    render(<App apiBaseUrl={`http://${lanIp}:${started.port}`} />);
+    expect(await screen.findByTestId('remote-pairing-screen')).toBeTruthy();
+    expect(localStorage.getItem('gantry_auth_token')).toBeNull();
+  } finally {
+    globalThis.WebSocket = previousWebSocket;
+  }
 });
