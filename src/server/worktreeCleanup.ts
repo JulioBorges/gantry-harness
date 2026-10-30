@@ -103,18 +103,43 @@ export interface WorktreeCleanupResult {
   backup: string;
   clean: boolean;
   verified: boolean;
-  /** Paths still in the worktree after a backup was saved. Relative to the checkout, never absolute. */
-  remaining?: string[];
+  /** Tracked paths still in the worktree. Deleting them leaves the blob only in the index. */
+  keep?: string[];
+  /** Untracked paths that must be moved aside before they can be restored from the stash. */
+  remove?: string[];
+  /** Restores `remove` from the stash's untracked parent without checking out tracked files. */
+  restore?: string;
 }
 
-function remainingWorktreePaths(files: WorktreeFile[]): string[] {
-  const paths: string[] = [];
+function safeRelativePath(filePath: string): string | undefined {
+  if (!filePath || filePath.startsWith('/') || /^[A-Za-z]:[\\/]/.test(filePath)) return undefined;
+  if (filePath.includes('\0') || filePath.includes('\n')) return undefined;
+  if (filePath.split(/[\\/]/).includes('..')) return undefined;
+  return filePath;
+}
+
+function quoteShell(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function recoveryFromStatus(backup: string, files: WorktreeFile[]): Pick<WorktreeCleanupResult, 'keep' | 'remove' | 'restore'> {
+  const keep: string[] = [];
+  const remove: string[] = [];
   for (const file of files) {
-    if (!file.path || file.path.startsWith('/') || /^[A-Za-z]:[\\/]/.test(file.path)) continue;
-    if (file.path.split(/[\\/]/).includes('..')) continue;
-    paths.push(file.path);
+    const relative = safeRelativePath(file.path);
+    if (!relative) continue;
+    if (file.status === '??') remove.push(relative);
+    else keep.push(relative);
   }
-  return paths;
+  keep.sort();
+  remove.sort();
+  return {
+    ...(keep.length > 0 ? { keep } : {}),
+    ...(remove.length > 0 ? {
+      remove,
+      restore: `git restore --source ${quoteShell(`${backup}^3`)} --worktree -- ${remove.map(quoteShell).join(' ')}`,
+    } : {}),
+  };
 }
 
 export async function cleanWorktree(checkout: string, token: unknown): Promise<WorktreeCleanupResult> {
@@ -143,8 +168,7 @@ export async function cleanWorktree(checkout: string, token: unknown): Promise<W
     if (pushError) {
       try {
         const status = await readWorktreeStatus(preview.root);
-        const remaining = remainingWorktreePaths(status.files);
-        return { backup, clean: false, verified: false, ...(remaining.length > 0 ? { remaining } : {}) };
+        return { backup, clean: false, verified: false, ...recoveryFromStatus(backup, status.files) };
       } catch {
         return { backup, clean: false, verified: false };
       }

@@ -94,7 +94,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
   const [runs, setRuns] = useState<HarnessRunRecord[]>([]);
 
   const [cleanupPreview, setCleanupPreview] = useState<(WorktreeCleanupPreview & { projectId: string }) | null>(null);
-  const [cleanupNotice, setCleanupNotice] = useState<{ projectId: string; error: boolean; message: string; backup?: string; remaining?: string[] } | null>(null);
+  const [cleanupNotice, setCleanupNotice] = useState<{ projectId: string; error: boolean; message: string; backup?: string; keep?: string[]; remove?: string[]; restore?: string } | null>(null);
   const [setupDiffPreview, setSetupDiffPreview] = useState<string>('');
   const [projectSettingsId, setProjectSettingsId] = useState<string | null>(null);
   const [setupHostHarness, setSetupHostHarness] = useState<string>('opencode');
@@ -564,18 +564,23 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
       });
       const payload = await response.json();
       const backup = typeof payload.backup === 'string' ? payload.backup : undefined;
-      const remaining = Array.isArray(payload.remaining)
-        ? payload.remaining.filter((entry: unknown): entry is string => typeof entry === 'string' && entry.length > 0 && !entry.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(entry) && !entry.split(/[\\/]/).includes('..'))
+      const relativePaths = (value: unknown) => Array.isArray(value)
+        ? value.filter((entry: unknown): entry is string => typeof entry === 'string' && entry.length > 0 && !entry.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(entry) && !entry.split(/[\\/]/).includes('..'))
         : [];
+      const keep = relativePaths(payload.keep);
+      const remove = relativePaths(payload.remove);
+      const restore = typeof payload.restore === 'string' && !payload.restore.includes(cleanupPreview.root) ? payload.restore : undefined;
       if (!response.ok) {
         setCleanupNotice({ projectId, error: true, backup, message: payload.error ?? 'Não foi possível limpar a worktree.' });
         return;
       }
       const unverified = payload.verified === false;
-      setCleanupNotice({ projectId, error: !payload.clean || unverified, backup, remaining: unverified ? remaining : undefined, message: payload.clean && !unverified
+      setCleanupNotice({ projectId, error: !payload.clean || unverified, backup, keep: unverified ? keep : undefined, remove: unverified ? remove : undefined, restore: unverified ? restore : undefined, message: payload.clean && !unverified
         ? 'Worktree limpa. As alterações foram guardadas no Git stash.'
         : unverified
-          ? 'O backup foi criado, mas o estado da worktree não foi confirmado. Remova ou mova os arquivos que sobraram antes de aplicar o backup.'
+          ? remove.length > 0
+            ? 'O backup foi criado, mas o estado da worktree não foi confirmado. Não apague os arquivos rastreados. Remova ou mova só os arquivos não rastreados e recupere-os com o comando abaixo.'
+            : 'O backup foi criado, mas o estado da worktree não foi confirmado. Não apague os arquivos rastreados; eles continuam na worktree.'
           : 'Backup criado, mas ainda há alterações na worktree. Revise o estado do projeto.' });
       setupProjectLoaded.current = null;
       await loadWorkspaceState();
@@ -1225,8 +1230,16 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
             </section>}
             {cleanupNotice?.projectId === projectSettingsId && <div className="setup-diagnostic" role={cleanupNotice.error ? 'alert' : 'status'}>
               <p>{cleanupNotice.message}</p>
-              {cleanupNotice.remaining && cleanupNotice.remaining.length > 0 && <ul>{cleanupNotice.remaining.map(file => <li key={file}><code>{file}</code></li>)}</ul>}
-              {cleanupNotice.backup && <p>Para recuperar as alterações no terminal: <code>git stash apply --index {cleanupNotice.backup}</code></p>}
+              {cleanupNotice.keep && cleanupNotice.keep.length > 0 && <>
+                <p>Arquivos rastreados que continuam na worktree. Não os apague:</p>
+                <ul>{cleanupNotice.keep.map(file => <li key={file}><code>{file}</code></li>)}</ul>
+              </>}
+              {cleanupNotice.remove && cleanupNotice.remove.length > 0 && <>
+                <p>Arquivos não rastreados para remover ou mover antes da recuperação:</p>
+                <ul>{cleanupNotice.remove.map(file => <li key={file}><code>{file}</code></li>)}</ul>
+              </>}
+              {cleanupNotice.restore && <p>Para recuperar os arquivos não rastreados: <code>{cleanupNotice.restore}</code></p>}
+              {cleanupNotice.backup && !cleanupNotice.restore && <p>Para recuperar as alterações no terminal: <code>git stash apply --index {cleanupNotice.backup}</code></p>}
             </div>}
             <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
               <button

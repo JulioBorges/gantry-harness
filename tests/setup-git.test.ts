@@ -10,9 +10,17 @@ describe('Gantry installation Git lifecycle', () => {
   let root: string;
   let repo: string;
   let home: string;
+  const identityEnv = ['HOME', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM'] as const;
+  let savedEnv: Partial<Record<(typeof identityEnv)[number], string | undefined>> = {};
+  let gitHome = '';
   const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf-8' }).trim();
 
   beforeEach(() => {
+    savedEnv = Object.fromEntries(identityEnv.map(key => [key, process.env[key]]));
+    gitHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gantry-setup-git-home-'));
+    process.env.HOME = gitHome;
+    process.env.GIT_CONFIG_GLOBAL = '/dev/null';
+    process.env.GIT_CONFIG_NOSYSTEM = '1';
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'gantry-setup-git-'));
     repo = path.join(root, 'repo');
     home = path.join(root, 'home');
@@ -38,7 +46,14 @@ policy = json.loads(sys.argv[sys.argv.index('--config') + 1])
 `);
   });
 
-  afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+  afterEach(() => {
+    for (const key of identityEnv) {
+      if (savedEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedEnv[key];
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+    if (gitHome) fs.rmSync(gitHome, { recursive: true, force: true });
+  });
 
   it('commits installed skills and repository configuration so preflight sees a clean worktree', async () => {
     await bootstrapProjectSkills(repo, home);
@@ -104,6 +119,8 @@ policy = json.loads(sys.argv[sys.argv.index('--config') + 1])
       expect((error as GitError).code).toBe('git-identity-unknown');
       expect((error as Error).message).toMatch(/user\.name e user\.email/);
       expect((error as Error).message).toMatch(/registrar a instalação/);
+      expect((error as Error).message).toMatch(/ausente\. Revise/);
+      expect((error as Error).message).not.toMatch(/\.\./);
       expect((error as Error).message).not.toMatch(/inacessível|Author identity unknown/);
       expect((error as Error).message).not.toContain(repo);
       expect(logged.join('\n')).toMatch(/Author identity unknown/);

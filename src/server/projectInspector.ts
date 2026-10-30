@@ -413,7 +413,7 @@ export async function inspectProject(
 async function setupGit(repoRoot: string, args: string[]): Promise<string> {
   try { return await git(repoRoot, ...args); }
   catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
+    const detail = (error instanceof Error ? error.message : String(error)).trim().replace(/\.+$/, '');
     const message = `Não foi possível registrar a instalação do Gantry: ${detail}. Revise os arquivos e faça commit antes de executar o Gantry.`;
     if (error instanceof GitError) throw new GitError(message, error.code);
     throw new Error(message);

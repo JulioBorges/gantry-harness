@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,7 +7,25 @@ import { GIT_FAILED_MESSAGE, GIT_IDENTITY_MESSAGE, GIT_UNAVAILABLE_MESSAGE, GitE
 
 describe('Git failure messages', () => {
   const roots: string[] = [];
-  afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
+  const identityEnv = ['HOME', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM'] as const;
+  let savedEnv: Partial<Record<(typeof identityEnv)[number], string | undefined>> = {};
+  let gitHome = '';
+  beforeEach(() => {
+    savedEnv = Object.fromEntries(identityEnv.map(key => [key, process.env[key]]));
+    gitHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gantry-git-home-'));
+    process.env.HOME = gitHome;
+    process.env.GIT_CONFIG_GLOBAL = '/dev/null';
+    process.env.GIT_CONFIG_NOSYSTEM = '1';
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    for (const key of identityEnv) {
+      if (savedEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedEnv[key];
+    }
+    if (gitHome) fs.rmSync(gitHome, { recursive: true, force: true });
+    for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+  });
 
   function repo(): string {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gantry-git-error-'));

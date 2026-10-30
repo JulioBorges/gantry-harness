@@ -657,9 +657,16 @@ print(json.dumps({'issues': [], 'specs': [], 'frontier': []}))
       const body = await response.json();
       const backup = git(repo, 'rev-parse', 'refs/stash');
       expect(response.status).toBe(200);
-      expect(body).toEqual({ backup, clean: false, verified: false, remaining: ['README.md', 'locked/note.txt'] });
+      expect(body).toEqual({
+        backup,
+        clean: false,
+        verified: false,
+        keep: ['README.md'],
+        remove: ['locked/note.txt'],
+        restore: `git restore --source '${backup}^3' --worktree -- 'locked/note.txt'`,
+      });
       expect(JSON.stringify(body)).not.toContain(repo);
-      expect(body.remaining.every((file: string) => !path.isAbsolute(file))).toBe(true);
+      expect([...body.keep, ...body.remove].every((file: string) => !path.isAbsolute(file))).toBe(true);
       let blocked = '';
       try {
         git(repo, 'stash', 'apply', '--index', backup);
@@ -669,8 +676,10 @@ print(json.dumps({'issues': [], 'specs': [], 'frontier': []}))
       expect(blocked).toMatch(/already exists, no checkout/);
       expect(git(repo, 'rev-parse', 'refs/stash')).toBe(backup);
       fs.chmodSync(locked, 0o755);
-      fs.rmSync(path.join(locked, 'note.txt'));
-      git(repo, 'stash', 'apply', '--index', backup);
+      for (const file of body.remove as string[]) fs.rmSync(path.join(repo, file));
+      execFileSync('sh', ['-c', body.restore], { cwd: repo, stdio: 'pipe' });
+      expect(fs.readFileSync(path.join(repo, 'README.md'), 'utf8')).toBe('Staged\n');
+      expect(git(repo, 'show', ':README.md')).toBe('Staged');
       expect(fs.readFileSync(path.join(locked, 'note.txt'), 'utf8')).toBe('secret\n');
       expect(git(repo, 'diff', '--cached')).toContain('Staged');
       expect(git(repo, 'rev-parse', 'refs/stash')).toBe(backup);
@@ -685,6 +694,59 @@ print(json.dumps({'issues': [], 'specs': [], 'frontier': []}))
     } finally {
       fs.chmodSync(locked, 0o755);
       ws.close();
+    }
+  });
+
+  it('follows the displayed recovery and restores staged, unstaged, and untracked content', async () => {
+    const id = await register(repo);
+    fs.writeFileSync(path.join(repo, 'tracked.txt'), 'Tracked base\n');
+    git(repo, 'add', 'tracked.txt');
+    git(repo, 'commit', '-m', 'Track a second file');
+    fs.writeFileSync(path.join(repo, 'README.md'), 'Staged line\n');
+    git(repo, 'add', 'README.md');
+    fs.writeFileSync(path.join(repo, 'README.md'), 'Staged line\nUnstaged line\n');
+    fs.writeFileSync(path.join(repo, 'tracked.txt'), 'Unstaged only\n');
+    const locked = path.join(repo, 'locked');
+    fs.mkdirSync(locked);
+    fs.writeFileSync(path.join(locked, 'extra.txt'), 'extra\n');
+    fs.writeFileSync(path.join(locked, 'note.txt'), 'note\n');
+    fs.chmodSync(locked, 0o555);
+    const original = {
+      readme: fs.readFileSync(path.join(repo, 'README.md'), 'utf8'),
+      indexReadme: git(repo, 'show', ':README.md'),
+      tracked: fs.readFileSync(path.join(repo, 'tracked.txt'), 'utf8'),
+      extra: fs.readFileSync(path.join(locked, 'extra.txt'), 'utf8'),
+      note: fs.readFileSync(path.join(locked, 'note.txt'), 'utf8'),
+      staged: git(repo, 'diff', '--cached'),
+      unstaged: git(repo, 'diff'),
+      status: git(repo, 'status', '--porcelain'),
+    };
+    try {
+      const preview = await (await request(id, 'preview')).json();
+      const response = await request(id, 'clean', { confirmed: true, token: preview.token });
+      const body = await response.json();
+      const backup = git(repo, 'rev-parse', 'refs/stash');
+      expect(response.status).toBe(200);
+      expect(body.verified).toBe(false);
+      expect(body.keep).toEqual(['README.md', 'tracked.txt']);
+      expect(body.remove).toEqual(['locked/extra.txt', 'locked/note.txt']);
+      expect(body.restore).toBe(`git restore --source '${backup}^3' --worktree -- 'locked/extra.txt' 'locked/note.txt'`);
+      expect(JSON.stringify(body)).not.toContain(repo);
+      fs.chmodSync(locked, 0o755);
+      for (const file of body.keep as string[]) expect(fs.existsSync(path.join(repo, file))).toBe(true);
+      for (const file of body.remove as string[]) fs.rmSync(path.join(repo, file));
+      execFileSync('sh', ['-c', body.restore], { cwd: repo, stdio: 'pipe' });
+      expect(fs.readFileSync(path.join(repo, 'README.md'), 'utf8')).toBe(original.readme);
+      expect(git(repo, 'show', ':README.md')).toBe(original.indexReadme);
+      expect(fs.readFileSync(path.join(repo, 'tracked.txt'), 'utf8')).toBe(original.tracked);
+      expect(fs.readFileSync(path.join(locked, 'extra.txt'), 'utf8')).toBe(original.extra);
+      expect(fs.readFileSync(path.join(locked, 'note.txt'), 'utf8')).toBe(original.note);
+      expect(git(repo, 'diff', '--cached')).toBe(original.staged);
+      expect(git(repo, 'diff')).toBe(original.unstaged);
+      expect(git(repo, 'status', '--porcelain')).toBe(original.status);
+      expect(git(repo, 'rev-parse', 'refs/stash')).toBe(backup);
+    } finally {
+      fs.chmodSync(locked, 0o755);
     }
   });
 
