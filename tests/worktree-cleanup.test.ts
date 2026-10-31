@@ -1109,6 +1109,46 @@ print(json.dumps({'issues': [], 'specs': [], 'frontier': []}))
     }
   });
 
+  it('does not delete a path whose identity changed before rollback', async () => {
+    const id = await register(repo);
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'first\n');
+    fs.writeFileSync(path.join(repo, 'b.txt'), 'second\n');
+    const preview = await (await request(id, 'preview')).json();
+    expect((await request(id, 'clean', { confirmed: true, token: preview.token })).status).toBe(200);
+    const backup = git(repo, 'rev-parse', 'refs/stash');
+    const logged: string[] = [];
+    const logSpy = vi.spyOn(console, 'error').mockImplementation((message?: unknown) => {
+      logged.push(String(message));
+    });
+    setWorktreeRestoreAfterOpen((destination) => {
+      if (path.basename(destination) !== 'b.txt') return;
+      const kept = path.join(repo, 'a.txt');
+      // Hold the original inode so the replacement cannot reuse its number before the check.
+      const held = fs.openSync(kept, 'r');
+      try {
+        fs.rmSync(kept);
+        fs.writeFileSync(kept, 'operator-replaced\n');
+      } finally {
+        fs.closeSync(held);
+      }
+      throw Object.assign(new Error('mid-write'), { code: 'ENOSPC' });
+    });
+    try {
+      const response = await request(id, 'restore', { backup, confirmed: true });
+      const body = await response.json();
+      expect(response.status).toBe(409);
+      expect(JSON.stringify(body)).not.toContain(repo);
+      expect(fs.readFileSync(path.join(repo, 'a.txt'), 'utf8')).toBe('operator-replaced\n');
+      expect(fs.existsSync(path.join(repo, 'b.txt'))).toBe(false);
+      expect(logged.filter(line => line.includes('worktree-cleanup.rollback-mismatch'))).toEqual([
+        JSON.stringify({ event: 'worktree-cleanup.rollback-mismatch', code: 'mismatch', projectId: id }),
+      ]);
+      expect(logged.join('\n')).not.toContain(repo);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
   it('reports git-unavailable when git is not on PATH', async () => {
     const id = await register(repo);
     fs.writeFileSync(path.join(repo, 'u1'), 'original-u1\n');

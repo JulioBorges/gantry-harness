@@ -401,7 +401,31 @@ export async function cleanWorktree(checkout: string, token: unknown, projectId:
   }
 }
 
-function ensureParents(root: string, relative: string, createdDirs: string[]): string {
+interface CreatedNode {
+  path: string;
+  dev: number;
+  ino: number;
+}
+
+function rollbackCreated(nodes: CreatedNode[], remove: (nodePath: string) => void, projectId: string): void {
+  for (const node of [...nodes].reverse()) {
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(node.path);
+    } catch (error) {
+      if (errorCode(error) === 'ENOENT') continue;
+      logCleanupFailure('worktree-cleanup.rollback-mismatch', error, projectId);
+      continue;
+    }
+    if (stat.dev !== node.dev || stat.ino !== node.ino) {
+      logCleanupFailure('worktree-cleanup.rollback-mismatch', { code: 'mismatch' }, projectId);
+      continue;
+    }
+    try { remove(node.path); } catch { /* leave a node this call no longer owns */ }
+  }
+}
+
+function ensureParents(root: string, relative: string, createdDirs: CreatedNode[]): string {
   const realRoot = rootReal(root);
   const parts = relative.split('/');
   let current = realRoot;
@@ -412,13 +436,15 @@ function ensureParents(root: string, relative: string, createdDirs: string[]): s
       stat = fs.lstatSync(next);
     } catch (error) {
       if (errorCode(error) !== 'ENOENT') throw conflictError('', [relative]);
+      let created = false;
       try {
         fs.mkdirSync(next);
-        createdDirs.push(next);
+        created = true;
       } catch (mkdirError) {
         if (errorCode(mkdirError) !== 'EEXIST') throw mkdirError;
       }
       stat = fs.lstatSync(next);
+      if (created) createdDirs.push({ path: next, dev: stat.dev, ino: stat.ino });
     }
     if (stat.isSymbolicLink() || !stat.isDirectory()) throw conflictError('', [relative]);
     const real = fs.realpathSync(next);
@@ -429,15 +455,11 @@ function ensureParents(root: string, relative: string, createdDirs: string[]): s
 }
 
 async function createMissingEntries(root: string, backup: string, entries: RestoreEntry[], projectId: string): Promise<string[]> {
-  const createdFiles: string[] = [];
-  const createdDirs: string[] = [];
+  const createdFiles: CreatedNode[] = [];
+  const createdDirs: CreatedNode[] = [];
   const rollback = () => {
-    for (const file of [...createdFiles].reverse()) {
-      try { fs.unlinkSync(file); } catch { /* the exclusive create is the only thing we remove */ }
-    }
-    for (const dir of [...createdDirs].reverse()) {
-      try { fs.rmdirSync(dir); } catch { /* leave a directory we did not empty */ }
-    }
+    rollbackCreated(createdFiles, nodePath => fs.unlinkSync(nodePath), projectId);
+    rollbackCreated(createdDirs, nodePath => fs.rmdirSync(nodePath), projectId);
   };
   try {
     beforeExclusiveWrite?.(root);
@@ -455,11 +477,13 @@ async function createMissingEntries(root: string, backup: string, entries: Resto
       try {
         if (entry.mode === '120000') {
           fs.symlinkSync(data.toString('utf8'), destination);
-          createdFiles.push(destination);
+          const linked = fs.lstatSync(destination);
+          createdFiles.push({ path: destination, dev: linked.dev, ino: linked.ino });
         } else {
           const mode = entry.mode === '100755' ? 0o755 : 0o644;
           const fd = fs.openSync(destination, 'wx', mode);
-          createdFiles.push(destination);
+          const opened = fs.fstatSync(fd);
+          createdFiles.push({ path: destination, dev: opened.dev, ino: opened.ino });
           try {
             afterExclusiveOpen?.(destination);
             fs.writeSync(fd, data);
