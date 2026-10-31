@@ -7,7 +7,7 @@ import { WebSocket } from 'ws';
 import { createHarnessServer, type HarnessServerInstance } from '../src/server/app.js';
 import { nativeFetch } from './setup-app-origin.js';
 import * as gitModule from '../src/server/git.js';
-import { setWorktreeRestoreAfterOpen, setWorktreeRestoreBeforeWrite } from '../src/server/worktreeCleanup.js';
+import { setWorktreeRestoreAfterOpen, setWorktreeRestoreBeforeOpen, setWorktreeRestoreBeforeWrite } from '../src/server/worktreeCleanup.js';
 
 const runningAsRoot = typeof process.getuid === 'function' && process.getuid() === 0;
 if (runningAsRoot) {
@@ -67,7 +67,7 @@ beforeEach(async () => {
   repo = initRepo('project');
   server = await createHarnessServer({ port: 0, gantryHome: path.join(root, 'home'), homeDir: root, stateRoot: path.join(root, 'state'), profileRoot: path.join(root, 'profiles') });
 });
-afterEach(async () => { setWorktreeRestoreBeforeWrite(undefined); setWorktreeRestoreAfterOpen(undefined); vi.restoreAllMocks(); await server.close(); fs.rmSync(root, { recursive: true, force: true }); });
+afterEach(async () => { setWorktreeRestoreBeforeWrite(undefined); setWorktreeRestoreAfterOpen(undefined); setWorktreeRestoreBeforeOpen(undefined); vi.restoreAllMocks(); await server.close(); fs.rmSync(root, { recursive: true, force: true }); });
 
 describe('Worktree cleanup over HTTP', () => {
   it('previews without writes and backs up staged, unstaged and new files before cleaning', async () => {
@@ -989,6 +989,32 @@ print(json.dumps({'issues': [], 'specs': [], 'frontier': []}))
     expect(fs.readFileSync(path.join(outside, 'marker'), 'utf8')).toBe('safe\n');
     expect(fs.existsSync(path.join(outside, 'x'))).toBe(false);
     expect(fs.lstatSync(path.join(repo, 'd')).isSymbolicLink()).toBe(true);
+  });
+
+  it('does not follow a parent swapped for an outside symlink between the check and the open', async () => {
+    const id = await register(repo);
+    fs.mkdirSync(path.join(repo, 'sub'));
+    fs.writeFileSync(path.join(repo, 'sub', 'a'), 'inside\n');
+    const preview = await (await request(id, 'preview')).json();
+    expect((await request(id, 'clean', { confirmed: true, token: preview.token })).status).toBe(200);
+    const backup = git(repo, 'rev-parse', 'refs/stash');
+    const outside = path.join(root, 'outside');
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, 'marker'), 'safe\n');
+    setWorktreeRestoreBeforeOpen((checkout) => {
+      const sub = path.join(checkout, 'sub');
+      fs.rmSync(sub, { recursive: true, force: true });
+      fs.symlinkSync(outside, sub);
+    });
+    const response = await request(id, 'restore', { backup, confirmed: true });
+    const body = await response.json();
+    expect(response.status).toBe(409);
+    expect(body.conflicts).toEqual(['sub/a']);
+    expect(JSON.stringify(body)).not.toContain(repo);
+    expect(JSON.stringify(body)).not.toContain(outside);
+    expect(fs.readlinkSync(path.join(repo, 'sub'))).toBe(outside);
+    expect(fs.readFileSync(path.join(outside, 'marker'), 'utf8')).toBe('safe\n');
+    expect(fs.existsSync(path.join(outside, 'a'))).toBe(false);
   });
 
   it('treats identical bytes as already restored and a second call as a no-op', async () => {

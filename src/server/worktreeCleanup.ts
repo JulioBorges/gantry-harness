@@ -154,6 +154,8 @@ function errorCode(error: unknown): string | undefined {
 let beforeExclusiveWrite: ((root: string) => void) | undefined;
 /** Runs after an exclusive open is registered and before its bytes are written. Tests use it to fail mid-write. */
 let afterExclusiveOpen: ((destination: string) => void) | undefined;
+/** Runs after the parent is validated and before the exclusive open. Tests use it to swap the parent for a symlink. */
+let beforeExclusiveOpen: ((root: string) => void) | undefined;
 
 export function setWorktreeRestoreBeforeWrite(hook: ((root: string) => void) | undefined): void {
   beforeExclusiveWrite = hook;
@@ -161,6 +163,10 @@ export function setWorktreeRestoreBeforeWrite(hook: ((root: string) => void) | u
 
 export function setWorktreeRestoreAfterOpen(hook: ((destination: string) => void) | undefined): void {
   afterExclusiveOpen = hook;
+}
+
+export function setWorktreeRestoreBeforeOpen(hook: ((root: string) => void) | undefined): void {
+  beforeExclusiveOpen = hook;
 }
 
 function recoveryCommand(source: string, paths: string[]): string {
@@ -407,6 +413,12 @@ interface CreatedNode {
   ino: number;
 }
 
+interface ParentStamp {
+  path: string;
+  dev: number;
+  ino: number;
+}
+
 function rollbackCreated(nodes: CreatedNode[], remove: (nodePath: string) => void, projectId: string): void {
   for (const node of [...nodes].reverse()) {
     let stat: fs.Stats;
@@ -425,9 +437,10 @@ function rollbackCreated(nodes: CreatedNode[], remove: (nodePath: string) => voi
   }
 }
 
-function ensureParents(root: string, relative: string, createdDirs: CreatedNode[]): string {
+function ensureParents(root: string, relative: string, createdDirs: CreatedNode[]): { destination: string; parents: ParentStamp[] } {
   const realRoot = rootReal(root);
   const parts = relative.split('/');
+  const parents: ParentStamp[] = [];
   let current = realRoot;
   for (let index = 0; index < parts.length - 1; index += 1) {
     const next = path.join(current, parts[index]);
@@ -449,14 +462,73 @@ function ensureParents(root: string, relative: string, createdDirs: CreatedNode[
     if (stat.isSymbolicLink() || !stat.isDirectory()) throw conflictError('', [relative]);
     const real = fs.realpathSync(next);
     if (real !== realRoot && !real.startsWith(realRoot + path.sep)) throw conflictError('', [relative]);
+    parents.push({ path: next, dev: stat.dev, ino: stat.ino });
     current = next;
   }
-  return path.join(current, parts[parts.length - 1]);
+  return { destination: path.join(current, parts[parts.length - 1]), parents };
+}
+
+function parentsStillValid(realRoot: string, parents: ParentStamp[]): boolean {
+  for (const parent of parents) {
+    try {
+      const stat = fs.lstatSync(parent.path);
+      if (stat.isSymbolicLink() || !stat.isDirectory()) return false;
+      if (stat.dev !== parent.dev || stat.ino !== parent.ino) return false;
+      const real = fs.realpathSync(parent.path);
+      if (real !== realRoot && !real.startsWith(realRoot + path.sep)) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Removes the file this open created when a parent symlink made it land outside the checkout. */
+function discardExclusiveFile(fd: number, parents: ParentStamp[], name: string): void {
+  let opened: fs.Stats;
+  try {
+    opened = fs.fstatSync(fd);
+  } catch {
+    try { fs.closeSync(fd); } catch { /* already closed */ }
+    return;
+  }
+  const candidates: string[] = [];
+  const parentPath = parents[parents.length - 1]?.path;
+  if (parentPath) {
+    try { candidates.push(path.join(fs.realpathSync(parentPath), name)); } catch { /* parent is already gone */ }
+  }
+  try {
+    const viaFd = fs.readlinkSync(`/proc/self/fd/${fd}`);
+    if (!viaFd.includes(' (deleted)')) candidates.push(viaFd);
+  } catch { /* the platform does not expose the open path */ }
+  for (const candidate of candidates) {
+    try {
+      const stat = fs.lstatSync(candidate);
+      if (stat.isFile() && stat.dev === opened.dev && stat.ino === opened.ino) {
+        fs.unlinkSync(candidate);
+        break;
+      }
+    } catch { /* try the next view of the same file */ }
+  }
+  try { fs.closeSync(fd); } catch { /* already closed */ }
+}
+
+function discardExclusiveSymlink(parents: ParentStamp[], name: string): void {
+  const parentPath = parents[parents.length - 1]?.path;
+  if (!parentPath) return;
+  try {
+    const landed = path.join(fs.realpathSync(parentPath), name);
+    if (fs.lstatSync(landed).isSymbolicLink()) fs.unlinkSync(landed);
+  } catch { /* nothing landed that this call can safely remove */ }
 }
 
 async function createMissingEntries(root: string, backup: string, entries: RestoreEntry[], projectId: string): Promise<string[]> {
+  // Read every blob before creating a path, so no await sits between the parent check and the open.
+  const blobs = new Map<string, Buffer>();
+  for (const entry of entries) blobs.set(entry.path, await readGitBlob(root, entry.oid));
   const createdFiles: CreatedNode[] = [];
   const createdDirs: CreatedNode[] = [];
+  const realRoot = rootReal(root);
   const rollback = () => {
     rollbackCreated(createdFiles, nodePath => fs.unlinkSync(nodePath), projectId);
     rollbackCreated(createdDirs, nodePath => fs.rmdirSync(nodePath), projectId);
@@ -466,34 +538,54 @@ async function createMissingEntries(root: string, backup: string, entries: Resto
     for (const entry of entries) {
       if (walkParents(root, entry.path) === 'conflict') throw conflictError(backup, [entry.path]);
       let destination: string;
+      let parents: ParentStamp[];
       try {
-        destination = ensureParents(root, entry.path, createdDirs);
+        ({ destination, parents } = ensureParents(root, entry.path, createdDirs));
       } catch (error) {
         if (error instanceof WorktreeCleanupError) throw conflictError(backup, [entry.path]);
         if (errorCode(error) === 'EEXIST') throw conflictError(backup, [entry.path]);
         throw restoreWriteFailed(backup, error, projectId);
       }
-      const data = await readGitBlob(root, entry.oid);
+      const data = blobs.get(entry.path) ?? Buffer.alloc(0);
+      const name = path.basename(destination);
+      beforeExclusiveOpen?.(root);
       try {
         if (entry.mode === '120000') {
           fs.symlinkSync(data.toString('utf8'), destination);
+          if (!parentsStillValid(realRoot, parents)) {
+            discardExclusiveSymlink(parents, name);
+            throw conflictError(backup, [entry.path]);
+          }
           const linked = fs.lstatSync(destination);
           createdFiles.push({ path: destination, dev: linked.dev, ino: linked.ino });
         } else {
           const mode = entry.mode === '100755' ? 0o755 : 0o644;
-          const fd = fs.openSync(destination, 'wx', mode);
+          const flags = fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | fs.constants.O_NOFOLLOW;
+          const fd = fs.openSync(destination, flags, mode);
+          if (!parentsStillValid(realRoot, parents)) {
+            discardExclusiveFile(fd, parents, name);
+            throw conflictError(backup, [entry.path]);
+          }
           const opened = fs.fstatSync(fd);
-          createdFiles.push({ path: destination, dev: opened.dev, ino: opened.ino });
+          const parentReal = parents.length > 0 ? fs.realpathSync(parents[parents.length - 1].path) : realRoot;
+          const landed = path.join(parentReal, name);
+          const landedStat = fs.lstatSync(landed);
+          if (!landedStat.isFile() || landedStat.dev !== opened.dev || landedStat.ino !== opened.ino || (landed !== realRoot && !landed.startsWith(realRoot + path.sep))) {
+            discardExclusiveFile(fd, parents, name);
+            throw conflictError(backup, [entry.path]);
+          }
+          createdFiles.push({ path: landed, dev: opened.dev, ino: opened.ino });
           try {
-            afterExclusiveOpen?.(destination);
+            afterExclusiveOpen?.(landed);
             fs.writeSync(fd, data);
+            fs.fchmodSync(fd, mode);
           } finally {
             fs.closeSync(fd);
           }
-          fs.chmodSync(destination, mode);
         }
       } catch (error) {
-        if (errorCode(error) === 'EEXIST') throw conflictError(backup, [entry.path]);
+        if (error instanceof WorktreeCleanupError) throw error;
+        if (errorCode(error) === 'EEXIST' || errorCode(error) === 'ELOOP') throw conflictError(backup, [entry.path]);
         throw restoreWriteFailed(backup, error, projectId);
       }
     }
