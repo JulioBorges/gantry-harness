@@ -7,7 +7,7 @@ import { WebSocket } from 'ws';
 import { createHarnessServer, type HarnessServerInstance } from '../src/server/app.js';
 import { nativeFetch } from './setup-app-origin.js';
 import * as gitModule from '../src/server/git.js';
-import { setWorktreeRestoreAfterOpen, setWorktreeRestoreBeforeOpen, setWorktreeRestoreBeforeWrite } from '../src/server/worktreeCleanup.js';
+import { setWorktreeRestoreAfterMkdir, setWorktreeRestoreAfterOpen, setWorktreeRestoreBeforeOpen, setWorktreeRestoreBeforeWrite } from '../src/server/worktreeCleanup.js';
 
 const runningAsRoot = typeof process.getuid === 'function' && process.getuid() === 0;
 if (runningAsRoot) {
@@ -67,7 +67,15 @@ beforeEach(async () => {
   repo = initRepo('project');
   server = await createHarnessServer({ port: 0, gantryHome: path.join(root, 'home'), homeDir: root, stateRoot: path.join(root, 'state'), profileRoot: path.join(root, 'profiles') });
 });
-afterEach(async () => { setWorktreeRestoreBeforeWrite(undefined); setWorktreeRestoreAfterOpen(undefined); setWorktreeRestoreBeforeOpen(undefined); vi.restoreAllMocks(); await server.close(); fs.rmSync(root, { recursive: true, force: true }); });
+afterEach(async () => {
+  setWorktreeRestoreBeforeWrite(undefined);
+  setWorktreeRestoreAfterOpen(undefined);
+  setWorktreeRestoreBeforeOpen(undefined);
+  setWorktreeRestoreAfterMkdir(undefined);
+  vi.restoreAllMocks();
+  await server.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
 
 describe('Worktree cleanup over HTTP', () => {
   it('previews without writes and backs up staged, unstaged and new files before cleaning', async () => {
@@ -1164,12 +1172,80 @@ print(json.dumps({'issues': [], 'specs': [], 'frontier': []}))
       const body = await response.json();
       expect(response.status).toBe(409);
       expect(JSON.stringify(body)).not.toContain(repo);
+      expect(body.error).toMatch(/preservados/);
       expect(fs.readFileSync(path.join(repo, 'a.txt'), 'utf8')).toBe('operator-replaced\n');
       expect(fs.existsSync(path.join(repo, 'b.txt'))).toBe(false);
       expect(logged.filter(line => line.includes('worktree-cleanup.rollback-mismatch'))).toEqual([
         JSON.stringify({ event: 'worktree-cleanup.rollback-mismatch', code: 'mismatch', projectId: id }),
       ]);
       expect(logged.join('\n')).not.toContain(repo);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('keeps an in-place rewrite of a1 when rollback runs', async () => {
+    const id = await register(repo);
+    fs.writeFileSync(path.join(repo, 'a1'), 'original-a1\n');
+    fs.writeFileSync(path.join(repo, 'b1'), 'original-b1\n');
+    const preview = await (await request(id, 'preview')).json();
+    expect((await request(id, 'clean', { confirmed: true, token: preview.token })).status).toBe(200);
+    const backup = git(repo, 'rev-parse', 'refs/stash');
+    const logged: string[] = [];
+    const logSpy = vi.spyOn(console, 'error').mockImplementation((message?: unknown) => {
+      logged.push(String(message));
+    });
+    setWorktreeRestoreAfterOpen((destination) => {
+      if (path.basename(destination) !== 'b1') return;
+      fs.writeFileSync(path.join(repo, 'a1'), 'operator rewrote a1\n');
+      throw Object.assign(new Error('mid-write'), { code: 'ENOSPC' });
+    });
+    try {
+      const response = await request(id, 'restore', { backup, confirmed: true });
+      const body = await response.json();
+      expect(response.status).toBe(409);
+      expect(body.error).toMatch(/preservados porque mudaram antes do desfazimento/);
+      expect(JSON.stringify(body)).not.toContain(repo);
+      expect(fs.readFileSync(path.join(repo, 'a1'), 'utf8')).toBe('operator rewrote a1\n');
+      expect(fs.existsSync(path.join(repo, 'b1'))).toBe(false);
+      expect(logged.filter(line => line.includes('worktree-cleanup.rollback-mismatch'))).toEqual([
+        JSON.stringify({ event: 'worktree-cleanup.rollback-mismatch', code: 'mismatch', projectId: id }),
+      ]);
+      expect(logged.join('\n')).not.toContain(repo);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('returns 409 when a parent disappears after mkdir', async () => {
+    const id = await register(repo);
+    fs.mkdirSync(path.join(repo, 'nested'));
+    fs.writeFileSync(path.join(repo, 'nested', 'gone.txt'), 'temp\n');
+    const preview = await (await request(id, 'preview')).json();
+    expect((await request(id, 'clean', { confirmed: true, token: preview.token })).status).toBe(200);
+    const backup = git(repo, 'rev-parse', 'refs/stash');
+    fs.rmSync(path.join(repo, 'nested'), { recursive: true, force: true });
+    const logged: string[] = [];
+    const logSpy = vi.spyOn(console, 'error').mockImplementation((message?: unknown) => {
+      logged.push(String(message));
+    });
+    setWorktreeRestoreAfterMkdir((directory) => {
+      fs.rmSync(directory, { recursive: true, force: true });
+    });
+    try {
+      const response = await request(id, 'restore', { backup, confirmed: true });
+      const body = await response.json();
+      expect(response.status).toBe(409);
+      expect(body.error).toBe('Não recuperei o backup. A escrita falhou e os arquivos criados nesta chamada foram desfeitos.');
+      expect(body.conflicts).toBeUndefined();
+      expect(JSON.stringify(body)).not.toContain(repo);
+      expect(JSON.stringify(body)).not.toContain('ENOENT');
+      expect(logged.filter(line => line.includes('worktree-cleanup.restore-failed'))).toEqual([
+        JSON.stringify({ event: 'worktree-cleanup.restore-failed', code: 'ENOENT', projectId: id }),
+      ]);
+      expect(logged.join('\n')).not.toContain(repo);
+      expect(fs.existsSync(path.join(repo, 'nested', 'gone.txt'))).toBe(false);
+      expect(fs.existsSync(path.join(repo, 'nested'))).toBe(false);
     } finally {
       logSpy.mockRestore();
     }

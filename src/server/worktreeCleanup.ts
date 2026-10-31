@@ -169,6 +169,13 @@ export function setWorktreeRestoreBeforeOpen(hook: ((root: string) => void) | un
   beforeExclusiveOpen = hook;
 }
 
+/** Runs after a restore mkdir and before the directory is lstat'd again. Tests use it to remove that directory. */
+let afterRestoreMkdir: ((directory: string) => void) | undefined;
+
+export function setWorktreeRestoreAfterMkdir(hook: ((directory: string) => void) | undefined): void {
+  afterRestoreMkdir = hook;
+}
+
 function recoveryCommand(source: string, paths: string[]): string {
   return `git restore --source ${quoteShell(source)} --worktree -- ${paths.map(quoteShell).join(' ')}`;
 }
@@ -411,6 +418,8 @@ interface CreatedNode {
   path: string;
   dev: number;
   ino: number;
+  size: number;
+  kind: 'file' | 'dir';
 }
 
 interface ParentStamp {
@@ -419,7 +428,8 @@ interface ParentStamp {
   ino: number;
 }
 
-function rollbackCreated(nodes: CreatedNode[], remove: (nodePath: string) => void, projectId: string): void {
+function rollbackCreated(nodes: CreatedNode[], remove: (nodePath: string) => void, projectId: string): boolean {
+  let preserved = false;
   for (const node of [...nodes].reverse()) {
     let stat: fs.Stats;
     try {
@@ -427,17 +437,46 @@ function rollbackCreated(nodes: CreatedNode[], remove: (nodePath: string) => voi
     } catch (error) {
       if (errorCode(error) === 'ENOENT') continue;
       logCleanupFailure('worktree-cleanup.rollback-mismatch', error, projectId);
+      preserved = true;
       continue;
     }
-    if (stat.dev !== node.dev || stat.ino !== node.ino) {
+    const sameIdentity = stat.dev === node.dev && stat.ino === node.ino && (node.kind === 'dir' || stat.size === node.size);
+    if (!sameIdentity) {
       logCleanupFailure('worktree-cleanup.rollback-mismatch', { code: 'mismatch' }, projectId);
+      preserved = true;
       continue;
     }
-    try { remove(node.path); } catch { /* leave a node this call no longer owns */ }
+    if (node.kind === 'dir') {
+      let names: string[] | undefined;
+      try { names = fs.readdirSync(node.path); } catch (error) {
+        logCleanupFailure('worktree-cleanup.rollback-mismatch', error, projectId);
+        preserved = true;
+        continue;
+      }
+      if (names.length > 0) {
+        logCleanupFailure('worktree-cleanup.rollback-mismatch', { code: 'not-empty' }, projectId);
+        preserved = true;
+        continue;
+      }
+    }
+    try { remove(node.path); } catch {
+      logCleanupFailure('worktree-cleanup.rollback-mismatch', { code: 'mismatch' }, projectId);
+      preserved = true;
+    }
+  }
+  return preserved;
+}
+
+function ensureParents(root: string, relative: string, createdDirs: CreatedNode[], backup: string, projectId: string): { destination: string; parents: ParentStamp[] } {
+  try {
+    return createMissingParents(root, relative, createdDirs);
+  } catch (error) {
+    if (error instanceof WorktreeCleanupError) throw error;
+    throw restoreWriteFailed(backup, error, projectId);
   }
 }
 
-function ensureParents(root: string, relative: string, createdDirs: CreatedNode[]): { destination: string; parents: ParentStamp[] } {
+function createMissingParents(root: string, relative: string, createdDirs: CreatedNode[]): { destination: string; parents: ParentStamp[] } {
   const realRoot = rootReal(root);
   const parts = relative.split('/');
   const parents: ParentStamp[] = [];
@@ -448,16 +487,17 @@ function ensureParents(root: string, relative: string, createdDirs: CreatedNode[
     try {
       stat = fs.lstatSync(next);
     } catch (error) {
-      if (errorCode(error) !== 'ENOENT') throw conflictError('', [relative]);
+      if (errorCode(error) !== 'ENOENT') throw error;
       let created = false;
       try {
         fs.mkdirSync(next);
         created = true;
+        afterRestoreMkdir?.(next);
       } catch (mkdirError) {
         if (errorCode(mkdirError) !== 'EEXIST') throw mkdirError;
       }
       stat = fs.lstatSync(next);
-      if (created) createdDirs.push({ path: next, dev: stat.dev, ino: stat.ino });
+      if (created) createdDirs.push({ path: next, dev: stat.dev, ino: stat.ino, size: stat.size, kind: 'dir' });
     }
     if (stat.isSymbolicLink() || !stat.isDirectory()) throw conflictError('', [relative]);
     const real = fs.realpathSync(next);
@@ -530,8 +570,9 @@ async function createMissingEntries(root: string, backup: string, entries: Resto
   const createdDirs: CreatedNode[] = [];
   const realRoot = rootReal(root);
   const rollback = () => {
-    rollbackCreated(createdFiles, nodePath => fs.unlinkSync(nodePath), projectId);
-    rollbackCreated(createdDirs, nodePath => fs.rmdirSync(nodePath), projectId);
+    const filesPreserved = rollbackCreated(createdFiles, nodePath => fs.unlinkSync(nodePath), projectId);
+    const dirsPreserved = rollbackCreated(createdDirs, nodePath => fs.rmdirSync(nodePath), projectId);
+    return filesPreserved || dirsPreserved;
   };
   try {
     beforeExclusiveWrite?.(root);
@@ -540,8 +581,9 @@ async function createMissingEntries(root: string, backup: string, entries: Resto
       let destination: string;
       let parents: ParentStamp[];
       try {
-        ({ destination, parents } = ensureParents(root, entry.path, createdDirs));
+        ({ destination, parents } = ensureParents(root, entry.path, createdDirs, backup, projectId));
       } catch (error) {
+        if (error instanceof WorktreeCleanupError && error.message === RESTORE_WRITE_FAILED) throw error;
         if (error instanceof WorktreeCleanupError) throw conflictError(backup, [entry.path]);
         if (errorCode(error) === 'EEXIST') throw conflictError(backup, [entry.path]);
         throw restoreWriteFailed(backup, error, projectId);
@@ -557,7 +599,7 @@ async function createMissingEntries(root: string, backup: string, entries: Resto
             throw conflictError(backup, [entry.path]);
           }
           const linked = fs.lstatSync(destination);
-          createdFiles.push({ path: destination, dev: linked.dev, ino: linked.ino });
+          createdFiles.push({ path: destination, dev: linked.dev, ino: linked.ino, size: linked.size, kind: 'file' });
         } else {
           const mode = entry.mode === '100755' ? 0o755 : 0o644;
           const flags = fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | fs.constants.O_NOFOLLOW;
@@ -574,10 +616,12 @@ async function createMissingEntries(root: string, backup: string, entries: Resto
             discardExclusiveFile(fd, parents, name);
             throw conflictError(backup, [entry.path]);
           }
-          createdFiles.push({ path: landed, dev: opened.dev, ino: opened.ino });
+          const created: CreatedNode = { path: landed, dev: opened.dev, ino: opened.ino, size: opened.size, kind: 'file' };
+          createdFiles.push(created);
           try {
             afterExclusiveOpen?.(landed);
             fs.writeSync(fd, data);
+            created.size = fs.fstatSync(fd).size;
             fs.fchmodSync(fd, mode);
           } finally {
             fs.closeSync(fd);
@@ -590,8 +634,16 @@ async function createMissingEntries(root: string, backup: string, entries: Resto
       }
     }
   } catch (error) {
-    rollback();
-    throw error;
+    const preserved = rollback();
+    if (!preserved) throw error;
+    const reported = error instanceof WorktreeCleanupError ? error : restoreWriteFailed(backup, error, projectId);
+    throw new WorktreeCleanupError(
+      `${reported.message} Alguns itens foram preservados porque mudaram antes do desfazimento.`,
+      409,
+      false,
+      reported.backup ?? backup,
+      reported.conflicts,
+    );
   }
   return entries.map(entry => entry.path);
 }
