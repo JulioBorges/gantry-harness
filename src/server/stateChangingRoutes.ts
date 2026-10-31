@@ -40,6 +40,7 @@ export const STATE_CHANGING_ROUTES = [
   { id: 'project-delete', method: 'DELETE', path: '/api/projects/project-id', match: (pathname: string) => pathname.startsWith('/api/projects/') && partsOf(pathname).length === 3 },
   { id: 'worktree-preview', method: 'POST', path: '/api/projects/project-id/worktree/preview', match: (pathname: string) => /^\/api\/projects\/[^/]+\/worktree\/preview$/.test(pathname) },
   { id: 'worktree-clean', method: 'POST', path: '/api/projects/project-id/worktree/clean', match: (pathname: string) => /^\/api\/projects\/[^/]+\/worktree\/clean$/.test(pathname) },
+  { id: 'worktree-restore', method: 'POST', path: '/api/projects/project-id/worktree/restore', match: (pathname: string) => /^\/api\/projects\/[^/]+\/worktree\/restore$/.test(pathname) },
   { id: 'bootstrap', method: 'POST', path: '/api/projects/project-id/bootstrap', match: projectSuffix('/bootstrap', 4) },
   { id: 'setup-preview', method: 'POST', path: '/api/projects/project-id/setup/preview', match: projectSuffix('/setup/preview', 5) },
   { id: 'setup-apply', method: 'POST', path: '/api/projects/project-id/setup/apply', match: projectSuffix('/setup/apply', 5) },

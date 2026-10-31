@@ -24,7 +24,7 @@ import { RunSupervisor, RunSupervisorError } from './runSupervisor.js';
 import { GitError } from './git.js';
 import { evaluateIncomingStateChange, HOST_REJECTION, isAppHost, isAppOrigin, isLoopbackRemote, isStateChangingMethod, singleHeader } from './stateChangeGuard.js';
 import { matchesRoute } from './stateChangingRoutes.js';
-import { cleanWorktree, previewWorktreeCleanup, WorktreeCleanupError } from './worktreeCleanup.js';
+import { applyWorktreeRestore, cleanWorktree, previewWorktreeCleanup, WorktreeCleanupError } from './worktreeCleanup.js';
 import { ProjectTreeError, readProjectTree } from './projectTree.js';
 
 export interface HarnessServerOptions {
@@ -416,8 +416,8 @@ export async function createHarnessServer(
         }
       }
 
-      const cleanupRoute = pathname.match(/^\/api\/projects\/([^/]+)\/worktree\/(preview|clean)$/);
-      if (cleanupRoute && (matchesRoute('worktree-preview', pathname, req.method) || matchesRoute('worktree-clean', pathname, req.method))) {
+      const cleanupRoute = pathname.match(/^\/api\/projects\/([^/]+)\/worktree\/(preview|clean|restore)$/);
+      if (cleanupRoute && (matchesRoute('worktree-preview', pathname, req.method) || matchesRoute('worktree-clean', pathname, req.method) || matchesRoute('worktree-restore', pathname, req.method))) {
         const project = store.getProject(cleanupRoute[1]);
         if (!project) {
           await drainRequest(req);
@@ -428,10 +428,15 @@ export async function createHarnessServer(
           if (cleanupRoute[2] === 'preview') {
             await drainRequest(req);
             sendJson(res, 200, await runSupervisor.withProjectQuiesced(project, () => previewWorktreeCleanup(project.path)));
+          } else if (cleanupRoute[2] === 'restore') {
+            const body = await readJsonBody(req);
+            const result = await runSupervisor.withProjectQuiesced(project, () => applyWorktreeRestore(project.path, body.backup, body.confirmed, project.id));
+            if (result.restored.length > 0) broadcast({ type: 'project.worktree.cleaned', projectId: project.id });
+            sendJson(res, 200, result);
           } else {
             const body = await readJsonBody(req);
             if (body.confirmed !== true) throw new WorktreeCleanupError('Confirme a limpeza após revisar os arquivos.', 400);
-            const result = await runSupervisor.withProjectQuiesced(project, () => cleanWorktree(project.path, body.token));
+            const result = await runSupervisor.withProjectQuiesced(project, () => cleanWorktree(project.path, body.token, project.id));
             broadcast({ type: 'project.worktree.cleaned', projectId: project.id });
             sendJson(res, 200, result);
           }
@@ -441,7 +446,11 @@ export async function createHarnessServer(
           }
           if (error instanceof RunSupervisorError) sendJson(res, error.statusCode, { error: error.message, code: error.code });
           else if (error instanceof WorktreeCleanupError) {
-            sendJson(res, error.statusCode, { error: error.message, ...(error.backup ? { backup: error.backup } : {}) });
+            sendJson(res, error.statusCode, {
+              error: error.message,
+              ...(error.backup ? { backup: error.backup } : {}),
+              ...(error.conflicts?.length ? { conflicts: error.conflicts } : {}),
+            });
           }
           else throw error;
         }

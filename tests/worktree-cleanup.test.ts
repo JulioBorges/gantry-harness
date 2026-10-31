@@ -7,6 +7,7 @@ import { WebSocket } from 'ws';
 import { createHarnessServer, type HarnessServerInstance } from '../src/server/app.js';
 import { nativeFetch } from './setup-app-origin.js';
 import * as gitModule from '../src/server/git.js';
+import { setWorktreeRestoreAfterMkdir, setWorktreeRestoreAfterOpen, setWorktreeRestoreBeforeOpen, setWorktreeRestoreBeforeWrite } from '../src/server/worktreeCleanup.js';
 
 const runningAsRoot = typeof process.getuid === 'function' && process.getuid() === 0;
 if (runningAsRoot) {
@@ -45,7 +46,7 @@ async function register(dir: string) {
   expect(response.ok).toBe(true);
   return (await response.json()).project.id as string;
 }
-function request(id: string, action: 'preview' | 'clean', body: object = {}) {
+function request(id: string, action: 'preview' | 'clean' | 'restore', body: object = {}) {
   return fetch(`http://127.0.0.1:${server.port}/api/projects/${id}/worktree/${action}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Origin: `http://127.0.0.1:${server.port}` },
@@ -66,7 +67,15 @@ beforeEach(async () => {
   repo = initRepo('project');
   server = await createHarnessServer({ port: 0, gantryHome: path.join(root, 'home'), homeDir: root, stateRoot: path.join(root, 'state'), profileRoot: path.join(root, 'profiles') });
 });
-afterEach(async () => { vi.restoreAllMocks(); await server.close(); fs.rmSync(root, { recursive: true, force: true }); });
+afterEach(async () => {
+  setWorktreeRestoreBeforeWrite(undefined);
+  setWorktreeRestoreAfterOpen(undefined);
+  setWorktreeRestoreBeforeOpen(undefined);
+  setWorktreeRestoreAfterMkdir(undefined);
+  vi.restoreAllMocks();
+  await server.close();
+  fs.rmSync(root, { recursive: true, force: true });
+});
 
 describe('Worktree cleanup over HTTP', () => {
   it('previews without writes and backs up staged, unstaged and new files before cleaning', async () => {
@@ -747,8 +756,555 @@ print(json.dumps({'issues': [], 'specs': [], 'frontier': []}))
       expect(gitBytes('diff', '--cached')).toEqual(original.staged);
       expect(gitBytes('diff')).toEqual(original.unstaged);
       expect(git(repo, 'rev-parse', 'refs/stash')).toBe(backup);
+      const restored = {
+        files: Object.fromEntries(files.map(file => [file, read(file)])),
+        staged: gitBytes('diff', '--cached'),
+        unstaged: gitBytes('diff'),
+        status: git(repo, 'status', '--porcelain'),
+      };
+      let blocked = '';
+      try {
+        git(repo, 'stash', 'apply', '--index', backup);
+      } catch (error) {
+        blocked = String((error as { stderr?: string }).stderr ?? error);
+      }
+      expect(blocked).toMatch(/would be overwritten|already exists/);
+      expect(git(repo, 'rev-parse', 'refs/stash')).toBe(backup);
+      for (const file of files) expect(read(file)).toEqual(restored.files[file]);
+      expect(gitBytes('diff', '--cached')).toEqual(restored.staged);
+      expect(gitBytes('diff')).toEqual(restored.unstaged);
+      expect(git(repo, 'status', '--porcelain')).toBe(restored.status);
     } finally {
       fs.chmodSync(locked, 0o755);
+    }
+  });
+
+  // Root ignores directory modes, so `reset --hard` does not fail on 0555 and this partial stash cannot be reproduced.
+  it.skipIf(runningAsRoot)('lists tracked files a 0555 directory made reset restore to HEAD and the exact restore command', async () => {
+    const id = await register(repo);
+    fs.writeFileSync(path.join(repo, 'a'), 'base-a\n');
+    fs.mkdirSync(path.join(repo, 'locked'));
+    fs.writeFileSync(path.join(repo, 'locked', 't'), 'base-t\n');
+    git(repo, 'add', 'a', 'locked/t');
+    git(repo, 'commit', '-m', 'Track neighbors');
+    fs.writeFileSync(path.join(repo, 'a'), 'changed-a\n');
+    fs.writeFileSync(path.join(repo, 'locked', 't'), 'changed-t\n');
+    const locked = path.join(repo, 'locked');
+    fs.chmodSync(locked, 0o555);
+    const read = (file: string) => fs.readFileSync(path.join(repo, file));
+    try {
+      const preview = await (await request(id, 'preview')).json();
+      const response = await request(id, 'clean', { confirmed: true, token: preview.token });
+      const body = await response.json();
+      const backup = git(repo, 'rev-parse', 'refs/stash');
+      expect(response.status).toBe(200);
+      expect(body).toMatchObject({
+        backup,
+        clean: false,
+        verified: false,
+        keep: ['locked/t'],
+        reverted: ['a'],
+      });
+      expect(body.restoreTracked).toBe(`git restore --source '${backup}' --worktree -- 'a'`);
+      expect(body.restoreTracked).not.toMatch(/locked\/t|README\.md/);
+      expect(JSON.stringify(body)).not.toContain(repo);
+      expect(read('a').toString()).toBe('base-a\n');
+      expect(read('locked/t').toString()).toBe('changed-t\n');
+      execFileSync('sh', ['-c', body.restoreTracked], { cwd: repo, stdio: 'pipe' });
+      expect(read('a')).toEqual(Buffer.from('changed-a\n'));
+      expect(read('locked/t')).toEqual(Buffer.from('changed-t\n'));
+      const restored = {
+        a: read('a'),
+        t: read('locked/t'),
+        status: git(repo, 'status', '--porcelain'),
+        staged: execFileSync('git', ['-c', 'commit.gpgsign=false', '-c', 'core.fsmonitor=false', 'diff', '--cached'], { cwd: repo }),
+        unstaged: execFileSync('git', ['-c', 'commit.gpgsign=false', '-c', 'core.fsmonitor=false', 'diff'], { cwd: repo }),
+      };
+      let blocked = '';
+      try {
+        git(repo, 'stash', 'apply', '--index', backup);
+      } catch (error) {
+        blocked = String((error as { stderr?: string }).stderr ?? error);
+      }
+      expect(blocked).toMatch(/would be overwritten|already exists/);
+      expect(read('a')).toEqual(restored.a);
+      expect(read('locked/t')).toEqual(restored.t);
+      expect(git(repo, 'status', '--porcelain')).toBe(restored.status);
+      expect(execFileSync('git', ['-c', 'commit.gpgsign=false', '-c', 'core.fsmonitor=false', 'diff', '--cached'], { cwd: repo })).toEqual(restored.staged);
+      expect(execFileSync('git', ['-c', 'commit.gpgsign=false', '-c', 'core.fsmonitor=false', 'diff'], { cwd: repo })).toEqual(restored.unstaged);
+      expect(git(repo, 'rev-parse', 'refs/stash')).toBe(backup);
+    } finally {
+      fs.chmodSync(locked, 0o755);
+    }
+  });
+
+  it('refuses to restore over a file created after the backup and leaves both files untouched', async () => {
+    const id = await register(repo);
+    fs.writeFileSync(path.join(repo, 'u1'), 'original-u1\n');
+    fs.writeFileSync(path.join(repo, 'u2'), 'original-u2\n');
+    const preview = await (await request(id, 'preview')).json();
+    const cleaned = await request(id, 'clean', { confirmed: true, token: preview.token });
+    const cleanedBody = await cleaned.json();
+    expect(cleaned.status).toBe(200);
+    const backup = git(repo, 'rev-parse', 'refs/stash');
+    expect(cleanedBody.backup).toBe(backup);
+    expect(fs.existsSync(path.join(repo, 'u1'))).toBe(false);
+    expect(fs.existsSync(path.join(repo, 'u2'))).toBe(false);
+    fs.writeFileSync(path.join(repo, 'u1'), 'created-later\n');
+    const refused = await request(id, 'restore', { backup, confirmed: true });
+    const body = await refused.json();
+    expect(refused.status).toBe(409);
+    expect(body.conflicts).toEqual(['u1']);
+    expect(body.backup).toBe(backup);
+    expect(body.error).toMatch(/Não recuperei o backup/);
+    expect(JSON.stringify(body)).not.toContain(repo);
+    expect(fs.readFileSync(path.join(repo, 'u1'), 'utf8')).toBe('created-later\n');
+    expect(fs.existsSync(path.join(repo, 'u2'))).toBe(false);
+    expect(git(repo, 'rev-parse', 'refs/stash')).toBe(backup);
+  });
+
+  it('asks for confirmation before restoring missing untracked files and then restores them', async () => {
+    const id = await register(repo);
+    fs.writeFileSync(path.join(repo, 'u1'), 'original-u1\n');
+    const preview = await (await request(id, 'preview')).json();
+    const cleaned = await request(id, 'clean', { confirmed: true, token: preview.token });
+    expect(cleaned.status).toBe(200);
+    const backup = git(repo, 'rev-parse', 'refs/stash');
+    const unconfirmed = await request(id, 'restore', { backup, confirmed: false });
+    expect(unconfirmed.status).toBe(400);
+    expect(fs.existsSync(path.join(repo, 'u1'))).toBe(false);
+    const restored = await request(id, 'restore', { backup, confirmed: true });
+    const body = await restored.json();
+    expect(restored.status).toBe(200);
+    expect(body).toEqual({ backup, restored: ['u1'] });
+    expect(fs.readFileSync(path.join(repo, 'u1'), 'utf8')).toBe('original-u1\n');
+  });
+
+  it('logs a recovery listing failure without the checkout path and still returns the backup', async () => {
+    const id = await register(repo);
+    fs.writeFileSync(path.join(repo, 'README.md'), 'Dirty\n');
+    fs.writeFileSync(path.join(repo, 'extra.txt'), 'Untracked\n');
+    const preview = await (await request(id, 'preview')).json();
+    const logged: string[] = [];
+    const logSpy = vi.spyOn(console, 'error').mockImplementation((message?: unknown) => {
+      logged.push(String(message));
+    });
+    const originalGit = gitModule.git;
+    const gitSpy = vi.spyOn(gitModule, 'git').mockImplementation((cwd: string, ...args: string[]) => {
+      if (args[0] === 'stash' && args[1] === 'push') {
+        return originalGit(cwd, ...args).then(() => Promise.reject(new gitModule.GitError(gitModule.GIT_FAILED_MESSAGE, 'git-failed')));
+      }
+      if (args[0] === 'ls-tree') return Promise.reject(new gitModule.GitError(gitModule.GIT_FAILED_MESSAGE, 'git-failed'));
+      return originalGit(cwd, ...args);
+    });
+    try {
+      const response = await request(id, 'clean', { confirmed: true, token: preview.token });
+      const body = await response.json();
+      const backup = git(repo, 'rev-parse', 'refs/stash');
+      expect(response.status).toBe(200);
+      expect(body.backup).toBe(backup);
+      expect(body.clean).toBe(false);
+      expect(body.verified).toBe(false);
+      expect(body.restore).toBeUndefined();
+      expect(body.restoreTracked).toBe(`git restore --source '${backup}' --worktree -- 'README.md'`);
+      const structured = logged.filter(line => line.includes('worktree-cleanup.untracked-list-failed'));
+      expect(structured).toEqual([JSON.stringify({ event: 'worktree-cleanup.untracked-list-failed', code: 'git-failed', projectId: id })]);
+      expect(logged.some(line => line.includes('worktree-cleanup.tracked-list-failed'))).toBe(false);
+      expect(structured.join('\n')).not.toContain(repo);
+      expect(JSON.stringify(body)).not.toContain(repo);
+      expect(gitSpy).toHaveBeenCalled();
+      expect(logSpy).toHaveBeenCalled();
+    } finally {
+      gitSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
+
+  it.skipIf(runningAsRoot)('keeps a staged file in the tracked restore command after a partial reset', async () => {
+    const id = await register(repo);
+    fs.writeFileSync(path.join(repo, 'a'), 'base-a\n');
+    fs.mkdirSync(path.join(repo, 'locked'));
+    fs.writeFileSync(path.join(repo, 'locked', 't'), 'base-t\n');
+    git(repo, 'add', 'a', 'locked/t');
+    git(repo, 'commit', '-m', 'Track staged neighbors');
+    fs.writeFileSync(path.join(repo, 'a'), 'staged-a\n');
+    git(repo, 'add', 'a');
+    fs.writeFileSync(path.join(repo, 'locked', 't'), 'changed-t\n');
+    const locked = path.join(repo, 'locked');
+    fs.chmodSync(locked, 0o555);
+    try {
+      const preview = await (await request(id, 'preview')).json();
+      const response = await request(id, 'clean', { confirmed: true, token: preview.token });
+      const body = await response.json();
+      const backup = git(repo, 'rev-parse', 'refs/stash');
+      expect(response.status).toBe(200);
+      expect(body.keep).toEqual(['a', 'locked/t']);
+      expect(body.reverted).toEqual(['a']);
+      expect(body.restoreTracked).toBe(`git restore --source '${backup}' --worktree -- 'a'`);
+      expect(fs.readFileSync(path.join(repo, 'a'), 'utf8')).toBe('base-a\n');
+      expect(git(repo, 'show', ':a')).toBe('staged-a');
+      execFileSync('sh', ['-c', body.restoreTracked], { cwd: repo, stdio: 'pipe' });
+      expect(fs.readFileSync(path.join(repo, 'a'), 'utf8')).toBe('staged-a\n');
+      expect(git(repo, 'show', ':a')).toBe('staged-a');
+      expect(fs.readFileSync(path.join(locked, 't'), 'utf8')).toBe('changed-t\n');
+    } finally {
+      fs.chmodSync(locked, 0o755);
+    }
+  });
+
+  it('refuses the restore when a file appears before the exclusive create and rolls back only this call', async () => {
+    const id = await register(repo);
+    fs.mkdirSync(path.join(repo, 'nested'));
+    fs.writeFileSync(path.join(repo, 'nested', 'u1'), 'one\n');
+    fs.writeFileSync(path.join(repo, 'u2'), 'two\n');
+    const preview = await (await request(id, 'preview')).json();
+    expect((await request(id, 'clean', { confirmed: true, token: preview.token })).status).toBe(200);
+    const backup = git(repo, 'rev-parse', 'refs/stash');
+    const nestedBefore = fs.existsSync(path.join(repo, 'nested'));
+    setWorktreeRestoreBeforeWrite((checkout) => {
+      fs.writeFileSync(path.join(checkout, 'u2'), 'operator\n');
+    });
+    const response = await request(id, 'restore', { backup, confirmed: true });
+    const body = await response.json();
+    expect(response.status).toBe(409);
+    expect(body.conflicts).toEqual(['u2']);
+    expect(body.backup).toBe(backup);
+    expect(fs.readFileSync(path.join(repo, 'u2'), 'utf8')).toBe('operator\n');
+    expect(fs.existsSync(path.join(repo, 'nested', 'u1'))).toBe(false);
+    if (!nestedBefore) expect(fs.existsSync(path.join(repo, 'nested'))).toBe(false);
+    expect(git(repo, 'rev-parse', 'refs/stash')).toBe(backup);
+  });
+
+  it('refuses a parent symlink that points outside the repository', async () => {
+    const id = await register(repo);
+    fs.mkdirSync(path.join(repo, 'd'));
+    fs.writeFileSync(path.join(repo, 'd', 'x'), 'inside\n');
+    const preview = await (await request(id, 'preview')).json();
+    expect((await request(id, 'clean', { confirmed: true, token: preview.token })).status).toBe(200);
+    const backup = git(repo, 'rev-parse', 'refs/stash');
+    const outside = path.join(root, 'outside');
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, 'marker'), 'safe\n');
+    setWorktreeRestoreBeforeWrite((checkout) => {
+      fs.rmSync(path.join(checkout, 'd'), { recursive: true, force: true });
+      fs.symlinkSync(outside, path.join(checkout, 'd'));
+    });
+    const response = await request(id, 'restore', { backup, confirmed: true });
+    const body = await response.json();
+    expect(response.status).toBe(409);
+    expect(body.conflicts).toEqual(['d/x']);
+    expect(fs.readlinkSync(path.join(repo, 'd'))).toBe(outside);
+    expect(fs.readFileSync(path.join(outside, 'marker'), 'utf8')).toBe('safe\n');
+    expect(fs.existsSync(path.join(outside, 'x'))).toBe(false);
+    expect(fs.lstatSync(path.join(repo, 'd')).isSymbolicLink()).toBe(true);
+  });
+
+  it('does not follow a parent swapped for an outside symlink between the check and the open', async () => {
+    const id = await register(repo);
+    fs.mkdirSync(path.join(repo, 'sub'));
+    fs.writeFileSync(path.join(repo, 'sub', 'a'), 'inside\n');
+    const preview = await (await request(id, 'preview')).json();
+    expect((await request(id, 'clean', { confirmed: true, token: preview.token })).status).toBe(200);
+    const backup = git(repo, 'rev-parse', 'refs/stash');
+    const outside = path.join(root, 'outside');
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, 'marker'), 'safe\n');
+    setWorktreeRestoreBeforeOpen((checkout) => {
+      const sub = path.join(checkout, 'sub');
+      fs.rmSync(sub, { recursive: true, force: true });
+      fs.symlinkSync(outside, sub);
+    });
+    const response = await request(id, 'restore', { backup, confirmed: true });
+    const body = await response.json();
+    expect(response.status).toBe(409);
+    expect(body.conflicts).toEqual(['sub/a']);
+    expect(JSON.stringify(body)).not.toContain(repo);
+    expect(JSON.stringify(body)).not.toContain(outside);
+    expect(fs.readlinkSync(path.join(repo, 'sub'))).toBe(outside);
+    expect(fs.readFileSync(path.join(outside, 'marker'), 'utf8')).toBe('safe\n');
+    expect(fs.existsSync(path.join(outside, 'a'))).toBe(false);
+  });
+
+  it('does not replace a symlink at the destination path', async () => {
+    const id = await register(repo);
+    fs.writeFileSync(path.join(repo, 'link'), 'blob\n');
+    const preview = await (await request(id, 'preview')).json();
+    expect((await request(id, 'clean', { confirmed: true, token: preview.token })).status).toBe(200);
+    const backup = git(repo, 'rev-parse', 'refs/stash');
+    fs.symlinkSync('README.md', path.join(repo, 'link'));
+    const response = await request(id, 'restore', { backup, confirmed: true });
+    const body = await response.json();
+    expect(response.status).toBe(409);
+    expect(body.conflicts).toEqual(['link']);
+    expect(fs.readlinkSync(path.join(repo, 'link'))).toBe('README.md');
+    expect(fs.readFileSync(path.join(repo, 'README.md'), 'utf8')).toBe('Original\n');
+    expect(JSON.stringify(body)).not.toContain(repo);
+  });
+
+  it('does not follow a parent symlink that points inside the repository', async () => {
+    const id = await register(repo);
+    fs.mkdirSync(path.join(repo, 'd'));
+    fs.writeFileSync(path.join(repo, 'd', 'x'), 'inside\n');
+    const preview = await (await request(id, 'preview')).json();
+    expect((await request(id, 'clean', { confirmed: true, token: preview.token })).status).toBe(200);
+    const backup = git(repo, 'rev-parse', 'refs/stash');
+    const inside = path.join(repo, 'inside');
+    fs.mkdirSync(inside);
+    fs.rmSync(path.join(repo, 'd'), { recursive: true, force: true });
+    fs.symlinkSync('inside', path.join(repo, 'd'));
+    const response = await request(id, 'restore', { backup, confirmed: true });
+    const body = await response.json();
+    expect(response.status).toBe(409);
+    expect(body.conflicts).toEqual(['d/x']);
+    expect(fs.readlinkSync(path.join(repo, 'd'))).toBe('inside');
+    expect(fs.existsSync(path.join(inside, 'x'))).toBe(false);
+    expect(JSON.stringify(body)).not.toContain(repo);
+  });
+
+  it('treats identical bytes as already restored and a second call as a no-op', async () => {
+    const id = await register(repo);
+    fs.writeFileSync(path.join(repo, 'u1'), 'original-u1\n');
+    const preview = await (await request(id, 'preview')).json();
+    expect((await request(id, 'clean', { confirmed: true, token: preview.token })).status).toBe(200);
+    const backup = git(repo, 'rev-parse', 'refs/stash');
+    fs.writeFileSync(path.join(repo, 'u1'), 'original-u1\n');
+    const identical = await request(id, 'restore', { backup, confirmed: true });
+    expect(identical.status).toBe(200);
+    expect(await identical.json()).toEqual({ backup, restored: [] });
+    expect(fs.readFileSync(path.join(repo, 'u1'), 'utf8')).toBe('original-u1\n');
+    fs.rmSync(path.join(repo, 'u1'));
+    const restored = await request(id, 'restore', { backup, confirmed: true });
+    expect(restored.status).toBe(200);
+    expect(await restored.json()).toEqual({ backup, restored: ['u1'] });
+    const again = await request(id, 'restore', { backup, confirmed: true });
+    expect(again.status).toBe(200);
+    expect(await again.json()).toEqual({ backup, restored: [] });
+    expect(fs.readFileSync(path.join(repo, 'u1'), 'utf8')).toBe('original-u1\n');
+  });
+
+  it('rejects a missing or invalid backup hash with 400 and an unknown hash with 409', async () => {
+    const id = await register(repo);
+    for (const body of [{ confirmed: true }, { backup: '', confirmed: true }, { backup: 'not-a-hash', confirmed: true }, { backup: '../secret', confirmed: true }]) {
+      const response = await request(id, 'restore', body);
+      const payload = await response.json();
+      expect(response.status).toBe(400);
+      expect(payload.backup).toBeUndefined();
+      expect(payload.conflicts).toBeUndefined();
+      expect(JSON.stringify(payload)).not.toContain(repo);
+    }
+    const unknown = await request(id, 'restore', { backup: 'b'.repeat(40), confirmed: true });
+    const unknownBody = await unknown.json();
+    expect(unknown.status).toBe(409);
+    expect(unknownBody.backup).toBe('b'.repeat(40));
+    expect(unknownBody.error).toMatch(/não é uma limpeza/i);
+  });
+
+  it('restores a quoted name and an executable bit without a shell', async () => {
+    const id = await register(repo);
+    const quoted = 'say "hi" there.txt';
+    fs.writeFileSync(path.join(repo, quoted), 'quoted\n');
+    fs.writeFileSync(path.join(repo, 'run.sh'), '#!/bin/sh\n');
+    fs.chmodSync(path.join(repo, 'run.sh'), 0o755);
+    const preview = await (await request(id, 'preview')).json();
+    expect((await request(id, 'clean', { confirmed: true, token: preview.token })).status).toBe(200);
+    const backup = git(repo, 'rev-parse', 'refs/stash');
+    const response = await request(id, 'restore', { backup, confirmed: true });
+    const body = await response.json();
+    expect(response.status).toBe(200);
+    expect(body.restored).toEqual(['run.sh', quoted].sort());
+    expect(fs.readFileSync(path.join(repo, quoted), 'utf8')).toBe('quoted\n');
+    expect(fs.readFileSync(path.join(repo, 'run.sh'), 'utf8')).toBe('#!/bin/sh\n');
+    expect(fs.statSync(path.join(repo, 'run.sh')).mode & 0o777).toBe(0o755);
+  });
+
+  it.skipIf(runningAsRoot)('refuses a non-exclusive write error without the absolute path and rolls the call back', async () => {
+    const id = await register(repo);
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'first\n');
+    fs.mkdirSync(path.join(repo, 'locked'));
+    fs.writeFileSync(path.join(repo, 'locked', 'z.txt'), 'secret\n');
+    const preview = await (await request(id, 'preview')).json();
+    expect((await request(id, 'clean', { confirmed: true, token: preview.token })).status).toBe(200);
+    const backup = git(repo, 'rev-parse', 'refs/stash');
+    const locked = path.join(repo, 'locked');
+    fs.mkdirSync(locked, { recursive: true });
+    fs.chmodSync(locked, 0o555);
+    const logged: string[] = [];
+    const logSpy = vi.spyOn(console, 'error').mockImplementation((message?: unknown) => {
+      logged.push(String(message));
+    });
+    try {
+      const response = await request(id, 'restore', { backup, confirmed: true });
+      const body = await response.json();
+      expect(response.status).toBe(409);
+      expect(body.error).toBe('Não recuperei o backup. A escrita falhou e os arquivos criados nesta chamada foram desfeitos.');
+      expect(body.conflicts).toBeUndefined();
+      expect(JSON.stringify(body)).not.toContain(repo);
+      expect(JSON.stringify(body)).not.toContain('EACCES');
+      const structured = logged.filter(line => line.includes('worktree-cleanup.restore-failed'));
+      expect(structured).toEqual([JSON.stringify({ event: 'worktree-cleanup.restore-failed', code: 'EACCES', projectId: id })]);
+      expect(structured.join('\n')).not.toContain(repo);
+      expect(fs.existsSync(path.join(repo, 'a.txt'))).toBe(false);
+      expect(fs.existsSync(path.join(locked, 'z.txt'))).toBe(false);
+    } finally {
+      logSpy.mockRestore();
+      fs.chmodSync(locked, 0o755);
+    }
+  });
+
+  it('removes a partial file when the write fails after the exclusive open', async () => {
+    const id = await register(repo);
+    fs.writeFileSync(path.join(repo, 'partial.txt'), 'full-bytes\n');
+    const preview = await (await request(id, 'preview')).json();
+    expect((await request(id, 'clean', { confirmed: true, token: preview.token })).status).toBe(200);
+    const backup = git(repo, 'rev-parse', 'refs/stash');
+    const logged: string[] = [];
+    const logSpy = vi.spyOn(console, 'error').mockImplementation((message?: unknown) => {
+      logged.push(String(message));
+    });
+    setWorktreeRestoreAfterOpen(() => {
+      throw Object.assign(new Error('mid-write'), { code: 'ENOSPC' });
+    });
+    try {
+      const response = await request(id, 'restore', { backup, confirmed: true });
+      const body = await response.json();
+      expect(response.status).toBe(409);
+      expect(body.error).toBe('Não recuperei o backup. A escrita falhou e os arquivos criados nesta chamada foram desfeitos.');
+      expect(JSON.stringify(body)).not.toContain(repo);
+      expect(logged.filter(line => line.includes('worktree-cleanup.restore-failed'))).toEqual([
+        JSON.stringify({ event: 'worktree-cleanup.restore-failed', code: 'ENOSPC', projectId: id }),
+      ]);
+      expect(fs.existsSync(path.join(repo, 'partial.txt'))).toBe(false);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('does not delete a path whose identity changed before rollback', async () => {
+    const id = await register(repo);
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'first\n');
+    fs.writeFileSync(path.join(repo, 'b.txt'), 'second\n');
+    const preview = await (await request(id, 'preview')).json();
+    expect((await request(id, 'clean', { confirmed: true, token: preview.token })).status).toBe(200);
+    const backup = git(repo, 'rev-parse', 'refs/stash');
+    const logged: string[] = [];
+    const logSpy = vi.spyOn(console, 'error').mockImplementation((message?: unknown) => {
+      logged.push(String(message));
+    });
+    setWorktreeRestoreAfterOpen((destination) => {
+      if (path.basename(destination) !== 'b.txt') return;
+      const kept = path.join(repo, 'a.txt');
+      // Hold the original inode so the replacement cannot reuse its number before the check.
+      const held = fs.openSync(kept, 'r');
+      try {
+        fs.rmSync(kept);
+        fs.writeFileSync(kept, 'operator-replaced\n');
+      } finally {
+        fs.closeSync(held);
+      }
+      throw Object.assign(new Error('mid-write'), { code: 'ENOSPC' });
+    });
+    try {
+      const response = await request(id, 'restore', { backup, confirmed: true });
+      const body = await response.json();
+      expect(response.status).toBe(409);
+      expect(JSON.stringify(body)).not.toContain(repo);
+      expect(body.error).toMatch(/preservados/);
+      expect(fs.readFileSync(path.join(repo, 'a.txt'), 'utf8')).toBe('operator-replaced\n');
+      expect(fs.existsSync(path.join(repo, 'b.txt'))).toBe(false);
+      expect(logged.filter(line => line.includes('worktree-cleanup.rollback-mismatch'))).toEqual([
+        JSON.stringify({ event: 'worktree-cleanup.rollback-mismatch', code: 'mismatch', projectId: id }),
+      ]);
+      expect(logged.join('\n')).not.toContain(repo);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('keeps an in-place rewrite of a1 when rollback runs', async () => {
+    const id = await register(repo);
+    fs.writeFileSync(path.join(repo, 'a1'), 'original-a1\n');
+    fs.writeFileSync(path.join(repo, 'b1'), 'original-b1\n');
+    const preview = await (await request(id, 'preview')).json();
+    expect((await request(id, 'clean', { confirmed: true, token: preview.token })).status).toBe(200);
+    const backup = git(repo, 'rev-parse', 'refs/stash');
+    const logged: string[] = [];
+    const logSpy = vi.spyOn(console, 'error').mockImplementation((message?: unknown) => {
+      logged.push(String(message));
+    });
+    setWorktreeRestoreAfterOpen((destination) => {
+      if (path.basename(destination) !== 'b1') return;
+      fs.writeFileSync(path.join(repo, 'a1'), 'operator rewrote a1\n');
+      throw Object.assign(new Error('mid-write'), { code: 'ENOSPC' });
+    });
+    try {
+      const response = await request(id, 'restore', { backup, confirmed: true });
+      const body = await response.json();
+      expect(response.status).toBe(409);
+      expect(body.error).toMatch(/preservados porque mudaram antes do desfazimento/);
+      expect(JSON.stringify(body)).not.toContain(repo);
+      expect(fs.readFileSync(path.join(repo, 'a1'), 'utf8')).toBe('operator rewrote a1\n');
+      expect(fs.existsSync(path.join(repo, 'b1'))).toBe(false);
+      expect(logged.filter(line => line.includes('worktree-cleanup.rollback-mismatch'))).toEqual([
+        JSON.stringify({ event: 'worktree-cleanup.rollback-mismatch', code: 'mismatch', projectId: id }),
+      ]);
+      expect(logged.join('\n')).not.toContain(repo);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('returns 409 when a parent disappears after mkdir', async () => {
+    const id = await register(repo);
+    fs.mkdirSync(path.join(repo, 'nested'));
+    fs.writeFileSync(path.join(repo, 'nested', 'gone.txt'), 'temp\n');
+    const preview = await (await request(id, 'preview')).json();
+    expect((await request(id, 'clean', { confirmed: true, token: preview.token })).status).toBe(200);
+    const backup = git(repo, 'rev-parse', 'refs/stash');
+    fs.rmSync(path.join(repo, 'nested'), { recursive: true, force: true });
+    const logged: string[] = [];
+    const logSpy = vi.spyOn(console, 'error').mockImplementation((message?: unknown) => {
+      logged.push(String(message));
+    });
+    setWorktreeRestoreAfterMkdir((directory) => {
+      fs.rmSync(directory, { recursive: true, force: true });
+    });
+    try {
+      const response = await request(id, 'restore', { backup, confirmed: true });
+      const body = await response.json();
+      expect(response.status).toBe(409);
+      expect(body.error).toBe('Não recuperei o backup. A escrita falhou e os arquivos criados nesta chamada foram desfeitos.');
+      expect(body.conflicts).toBeUndefined();
+      expect(JSON.stringify(body)).not.toContain(repo);
+      expect(JSON.stringify(body)).not.toContain('ENOENT');
+      expect(logged.filter(line => line.includes('worktree-cleanup.restore-failed'))).toEqual([
+        JSON.stringify({ event: 'worktree-cleanup.restore-failed', code: 'ENOENT', projectId: id }),
+      ]);
+      expect(logged.join('\n')).not.toContain(repo);
+      expect(fs.existsSync(path.join(repo, 'nested', 'gone.txt'))).toBe(false);
+      expect(fs.existsSync(path.join(repo, 'nested'))).toBe(false);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('reports git-unavailable when git is not on PATH', async () => {
+    const id = await register(repo);
+    fs.writeFileSync(path.join(repo, 'u1'), 'original-u1\n');
+    const preview = await (await request(id, 'preview')).json();
+    expect((await request(id, 'clean', { confirmed: true, token: preview.token })).status).toBe(200);
+    const backup = git(repo, 'rev-parse', 'refs/stash');
+    const savedPath = process.env.PATH;
+    process.env.PATH = path.join(root, 'no-git');
+    try {
+      const response = await request(id, 'restore', { backup, confirmed: true });
+      const body = await response.json();
+      expect(response.status).toBe(503);
+      expect(body.code).toBe('git-unavailable');
+      expect(body.error).toBe(gitModule.GIT_UNAVAILABLE_MESSAGE);
+      expect(JSON.stringify(body)).not.toContain(repo);
+      expect(fs.existsSync(path.join(repo, 'u1'))).toBe(false);
+    } finally {
+      process.env.PATH = savedPath;
     }
   });
 
