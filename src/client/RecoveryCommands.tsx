@@ -1,13 +1,13 @@
 import React from 'react';
 import { parsePosixCommand, recoveryCommandLines } from '../shellQuote.js';
 
-export function RecoveryCommands({ platform, argv, command }: {
+function RecoveryCommand({ platform, argv, command }: {
   platform: string;
   argv?: string[];
   command?: string;
 }): React.ReactElement {
-  // Fora do Windows o texto POSIX já vem citado pelo servidor. Reformatá-lo
-  // tiraria aspas de caminhos seguros e divergiria desse comando.
+  // `command` is the server POSIX string (restore today, restoreTracked later).
+  // Outside Windows it stays as received. Rebuilding it would drop quotes the server already chose.
   if (platform !== 'win32' && command && !argv) {
     return <span className="recovery-command" data-shell="posix" data-testid="recovery-command-posix"><code>{command}</code></span>;
   }
@@ -24,4 +24,19 @@ export function RecoveryCommands({ platform, argv, command }: {
       {lines.length > 1 ? `${line.label}: ` : null}<code>{line.command}</code>
     </span>)}
   </>;
+}
+
+export function RecoveryCommands({ platform, argv, command, restoreTracked }: {
+  platform: string;
+  argv?: string[];
+  command?: string;
+  restoreTracked?: string;
+}): React.ReactElement {
+  if (!argv && (command || restoreTracked)) {
+    return <>
+      {command ? <RecoveryCommand platform={platform} command={command} /> : null}
+      {restoreTracked ? <RecoveryCommand platform={platform} command={restoreTracked} /> : null}
+    </>;
+  }
+  return <RecoveryCommand platform={platform} argv={argv} command={command} />;
 }

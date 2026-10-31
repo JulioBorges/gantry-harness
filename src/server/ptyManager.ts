@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import type { TerminalShell } from '../types.js';
 import { resolveTerminalShell } from './terminalSettings.js';
 import path from 'node:path';
-import { findExecutable, resolveSkillDir, runCommand, runGantryScript } from './commandRunner.js';
+import { git } from './git.js';
+import { findExecutable, resolveSkillDir, runGantryScript } from './commandRunner.js';
 
 export interface StructuredTurnBlock {
   id: string;
@@ -330,8 +331,7 @@ export async function readArtifactAndDiff(
   const content = fs.readFileSync(resolved, 'utf-8');
   let diff = '';
   if (includeDiff) {
-    const diffRes = await runCommand(['git', 'diff', 'HEAD', '--', relPath], { cwd: root });
-    diff = diffRes.stdout;
+    diff = await git(root, 'diff', 'HEAD', '--', relPath);
   }
   return {
     path: relPath,

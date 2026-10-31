@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createHarnessServer, type HarnessServerInstance } from '../src/server/app.js';
-import { GIT_FAILED_MESSAGE, GIT_IDENTITY_MESSAGE, GIT_NOT_FOUND_MESSAGE, GIT_UNAVAILABLE_MESSAGE, GitError, git, withGitEnvironment } from '../src/server/git.js';
+import { GIT_COMMITTER_IDENTITY_MESSAGE, GIT_FAILED_MESSAGE, GIT_IDENTITY_MESSAGE, GIT_NOT_FOUND_MESSAGE, GIT_UNAVAILABLE_MESSAGE, GitError, git, withGitEnvironment } from '../src/server/git.js';
 import { gitIdentityEnv, withIsolatedGitEnv } from './gitTestEnv.js';
 
 describe('Git failure messages', () => {
@@ -107,11 +107,12 @@ describe('Git failure messages', () => {
     }), () => git(root, 'commit', '-m', 'Needs a committer')).then(() => null, (caught: unknown) => caught);
     expect(error).toBeInstanceOf(GitError);
     expect((error as GitError).code).toBe('git-identity-unknown');
-    expect((error as Error).message).toBe(GIT_IDENTITY_MESSAGE);
+    expect((error as Error).message).toBe(GIT_COMMITTER_IDENTITY_MESSAGE);
+    expect((error as Error).message).toMatch(/identidade do committer/);
+    expect((error as Error).message).not.toMatch(/identidade do autor/);
     expect((error as Error).message).not.toMatch(/Committer identity unknown|auto-detect|ubuntu@/);
     expect((error as Error).message).not.toContain(root);
     expect(logged.join('\n')).toMatch(/Committer identity unknown/);
-    expect((error as Error).message).toMatch(/autor ou do committer/);
   });
 
   it('classifies ENOENT with the PATH stored by withGitEnvironment', async () => {
@@ -189,6 +190,88 @@ describe('Git failure messages', () => {
       expect(logged.join('\n')).toContain(root);
     } finally {
       process.env.PATH = savedPath;
+      await server.close();
+    }
+  });
+
+  it('returns git-not-found for inspect and project registration when Git is not on PATH', async () => {
+    const existing = repo();
+    const created = repo();
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gantry-git-missing-home-'));
+    roots.push(home);
+    const server: HarnessServerInstance = await createHarnessServer({
+      port: 0,
+      gantryHome: path.join(home, 'gantry'),
+      homeDir: home,
+      stateRoot: path.join(home, 'state'),
+      profileRoot: path.join(home, 'profiles'),
+    });
+    const savedPath = process.env.PATH;
+    try {
+      const registered = await fetch(`http://127.0.0.1:${server.port}/api/projects`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: existing }),
+      });
+      expect(registered.ok).toBe(true);
+      const id = (await registered.json()).project.id as string;
+      process.env.PATH = '';
+      const inspect = await fetch(`http://127.0.0.1:${server.port}/api/projects/${id}/inspect`);
+      const inspectBody = await inspect.json();
+      const inspectEncoded = JSON.stringify(inspectBody);
+      expect(inspect.status).toBe(503);
+      expect(inspectBody.code).toBe('git-not-found');
+      expect(inspectBody.error).toBe(GIT_NOT_FOUND_MESSAGE);
+      expect(inspectEncoded).not.toMatch(/ENOENT|spawn/);
+      expect(inspectEncoded).not.toContain(existing);
+
+      const response = await fetch(`http://127.0.0.1:${server.port}/api/projects`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: created }),
+      });
+      const body = await response.json();
+      const encoded = JSON.stringify(body);
+      expect(response.status).toBe(503);
+      expect(body.code).toBe('git-not-found');
+      expect(body.error).toBe(GIT_NOT_FOUND_MESSAGE);
+      expect(encoded).not.toMatch(/ENOENT|spawn/);
+      expect(encoded).not.toContain(created);
+    } finally {
+      process.env.PATH = savedPath;
+      await server.close();
+    }
+  });
+
+  it('uses the fixed unavailable phrase when the project directory is gone', async () => {
+    const root = repo();
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gantry-git-missing-home-'));
+    roots.push(home);
+    const server: HarnessServerInstance = await createHarnessServer({
+      port: 0,
+      gantryHome: path.join(home, 'gantry'),
+      homeDir: home,
+      stateRoot: path.join(home, 'state'),
+      profileRoot: path.join(home, 'profiles'),
+    });
+    try {
+      const registered = await fetch(`http://127.0.0.1:${server.port}/api/projects`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: root }),
+      });
+      expect(registered.ok).toBe(true);
+      const id = (await registered.json()).project.id as string;
+      fs.rmSync(root, { recursive: true, force: true });
+      const response = await fetch(`http://127.0.0.1:${server.port}/api/projects/${id}/inspect`);
+      const body = await response.json();
+      const encoded = JSON.stringify(body);
+      expect(response.status).toBe(503);
+      expect(body.code).toBe('git-unavailable');
+      expect(body.error).toBe(GIT_UNAVAILABLE_MESSAGE);
+      expect(encoded).not.toContain(root);
+      expect(encoded).not.toMatch(/ENOENT|spawn/);
+    } finally {
       await server.close();
     }
   });
