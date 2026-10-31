@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { findExecutable, resolveSkillDir, runCommand, runGantryScript } from './commandRunner.js';
-import { GitError, git, readWorktreeStatus } from './git.js';
+import { GitError, git, gitPlainFolder, gitWhen, readWorktreeStatus } from './git.js';
 import type { LiveBadgeState, RegisteredProject } from '../types.js';
 
 export interface SpecSummary {
@@ -283,7 +283,7 @@ export async function inspectProject(
   const { issueBadges, activeRolesByIssue } = deriveRunLogStates(options.stateRoot, project.unitId);
 
   const worktrees: WorktreeSummary[] = [];
-  const wtRes = await runCommand(['git', 'worktree', 'list', '--porcelain'], { cwd: repoRoot });
+  const wtRes = await gitWhen(repoRoot, ['worktree', 'list', '--porcelain'], gitPlainFolder);
   if (wtRes.exitCode === 0) {
     const blocks = wtRes.stdout.trim().split(/\n\n+/);
     for (const block of blocks) {
@@ -344,16 +344,14 @@ export async function inspectProject(
     }
   }
 
-  const ignoreRes = await runCommand(['git', 'check-ignore', '.gantry/config.json'], {
-    cwd: repoRoot,
-  });
+  const ignoreRes = await gitWhen(repoRoot, ['check-ignore', '.gantry/config.json'], (result) => result.exitCode === 1 || gitPlainFolder(result));
   const policyIgnored = ignoreRes.exitCode === 0;
 
   // Plain folders are valid workspace projects; only Git checkouts have a worktree status.
   const status = wtRes.exitCode === 0 ? await readWorktreeStatus(repoRoot) : { files: [] };
   const dirtyFiles = status.files.map(file => `${file.status} ${file.path}`.trim());
   const dirtyWorkingTree = dirtyFiles.length > 0;
-  const tracked = await runCommand(['git', 'ls-files'], { cwd: repoRoot });
+  const tracked = await gitWhen(repoRoot, ['ls-files'], gitPlainFolder);
   const trackedFiles = tracked.exitCode === 0
     ? tracked.stdout.split('\n').filter((filename) => filename && !filename.startsWith('.')).slice(0, 40)
     : [];
@@ -451,12 +449,9 @@ export async function bootstrapProjectSkills(
   }
 
   await requireCleanSetupTree(resolvedRepo);
-  const ignored = await runCommand(['git', 'check-ignore', '--no-index', '--', '.agents/skills/gantry/SKILL.md'], { cwd: resolvedRepo });
+  const ignored = await gitWhen(resolvedRepo, ['check-ignore', '--no-index', '--', '.agents/skills/gantry/SKILL.md'], (result) => result.exitCode === 1);
   if (ignored.exitCode === 0) {
     throw new Error('As skills do Gantry estão ignoradas pelo Git. Ajuste as regras de ignore para .agents/skills/gantry antes de instalar.');
-  }
-  if (ignored.exitCode !== 1) {
-    throw new Error(`Não foi possível verificar as regras de ignore: ${ignored.stderr.trim()}`);
   }
   fs.mkdirSync(path.dirname(targetDir), { recursive: true });
   fs.cpSync(fs.realpathSync(globalSkillDir), targetDir, {
