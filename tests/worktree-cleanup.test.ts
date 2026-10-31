@@ -7,7 +7,7 @@ import { WebSocket } from 'ws';
 import { createHarnessServer, type HarnessServerInstance } from '../src/server/app.js';
 import { nativeFetch } from './setup-app-origin.js';
 import * as gitModule from '../src/server/git.js';
-import { setWorktreeRestoreBeforeWrite } from '../src/server/worktreeCleanup.js';
+import { setWorktreeRestoreAfterOpen, setWorktreeRestoreBeforeWrite } from '../src/server/worktreeCleanup.js';
 
 const runningAsRoot = typeof process.getuid === 'function' && process.getuid() === 0;
 if (runningAsRoot) {
@@ -67,7 +67,7 @@ beforeEach(async () => {
   repo = initRepo('project');
   server = await createHarnessServer({ port: 0, gantryHome: path.join(root, 'home'), homeDir: root, stateRoot: path.join(root, 'state'), profileRoot: path.join(root, 'profiles') });
 });
-afterEach(async () => { setWorktreeRestoreBeforeWrite(undefined); vi.restoreAllMocks(); await server.close(); fs.rmSync(root, { recursive: true, force: true }); });
+afterEach(async () => { setWorktreeRestoreBeforeWrite(undefined); setWorktreeRestoreAfterOpen(undefined); vi.restoreAllMocks(); await server.close(); fs.rmSync(root, { recursive: true, force: true }); });
 
 describe('Worktree cleanup over HTTP', () => {
   it('previews without writes and backs up staged, unstaged and new files before cleaning', async () => {
@@ -1078,6 +1078,34 @@ print(json.dumps({'issues': [], 'specs': [], 'frontier': []}))
     } finally {
       logSpy.mockRestore();
       fs.chmodSync(locked, 0o755);
+    }
+  });
+
+  it('removes a partial file when the write fails after the exclusive open', async () => {
+    const id = await register(repo);
+    fs.writeFileSync(path.join(repo, 'partial.txt'), 'full-bytes\n');
+    const preview = await (await request(id, 'preview')).json();
+    expect((await request(id, 'clean', { confirmed: true, token: preview.token })).status).toBe(200);
+    const backup = git(repo, 'rev-parse', 'refs/stash');
+    const logged: string[] = [];
+    const logSpy = vi.spyOn(console, 'error').mockImplementation((message?: unknown) => {
+      logged.push(String(message));
+    });
+    setWorktreeRestoreAfterOpen(() => {
+      throw Object.assign(new Error('mid-write'), { code: 'ENOSPC' });
+    });
+    try {
+      const response = await request(id, 'restore', { backup, confirmed: true });
+      const body = await response.json();
+      expect(response.status).toBe(409);
+      expect(body.error).toBe('Não recuperei o backup. A escrita falhou e os arquivos criados nesta chamada foram desfeitos.');
+      expect(JSON.stringify(body)).not.toContain(repo);
+      expect(logged.filter(line => line.includes('worktree-cleanup.restore-failed'))).toEqual([
+        JSON.stringify({ event: 'worktree-cleanup.restore-failed', code: 'ENOSPC', projectId: id }),
+      ]);
+      expect(fs.existsSync(path.join(repo, 'partial.txt'))).toBe(false);
+    } finally {
+      logSpy.mockRestore();
     }
   });
 

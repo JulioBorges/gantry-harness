@@ -152,9 +152,15 @@ function errorCode(error: unknown): string | undefined {
 
 /** Runs after the restore plan is accepted and immediately before exclusive creates. Tests use it to simulate a race. */
 let beforeExclusiveWrite: ((root: string) => void) | undefined;
+/** Runs after an exclusive open is registered and before its bytes are written. Tests use it to fail mid-write. */
+let afterExclusiveOpen: ((destination: string) => void) | undefined;
 
 export function setWorktreeRestoreBeforeWrite(hook: ((root: string) => void) | undefined): void {
   beforeExclusiveWrite = hook;
+}
+
+export function setWorktreeRestoreAfterOpen(hook: ((destination: string) => void) | undefined): void {
+  afterExclusiveOpen = hook;
 }
 
 function recoveryCommand(source: string, paths: string[]): string {
@@ -447,17 +453,25 @@ async function createMissingEntries(root: string, backup: string, entries: Resto
       }
       const data = await readGitBlob(root, entry.oid);
       try {
-        if (entry.mode === '120000') fs.symlinkSync(data.toString('utf8'), destination);
-        else {
+        if (entry.mode === '120000') {
+          fs.symlinkSync(data.toString('utf8'), destination);
+          createdFiles.push(destination);
+        } else {
           const mode = entry.mode === '100755' ? 0o755 : 0o644;
-          fs.writeFileSync(destination, data, { flag: 'wx', mode });
+          const fd = fs.openSync(destination, 'wx', mode);
+          createdFiles.push(destination);
+          try {
+            afterExclusiveOpen?.(destination);
+            fs.writeSync(fd, data);
+          } finally {
+            fs.closeSync(fd);
+          }
           fs.chmodSync(destination, mode);
         }
       } catch (error) {
         if (errorCode(error) === 'EEXIST') throw conflictError(backup, [entry.path]);
         throw restoreWriteFailed(backup, error, projectId);
       }
-      createdFiles.push(destination);
     }
   } catch (error) {
     rollback();
