@@ -111,6 +111,27 @@ describe('Git failure messages', () => {
     expect((error as Error).message).not.toMatch(/Committer identity unknown|auto-detect|ubuntu@/);
     expect((error as Error).message).not.toContain(root);
     expect(logged.join('\n')).toMatch(/Committer identity unknown/);
+    expect((error as Error).message).toMatch(/autor ou do committer/);
+  });
+
+  it('classifies ENOENT with the PATH stored by withGitEnvironment', async () => {
+    const root = repo();
+    const savedPath = process.env.PATH ?? '';
+    const missing = path.join(os.tmpdir(), `gantry-als-path-${Date.now()}`);
+    try {
+      process.env.PATH = '';
+      const missingDirectory = await withGitEnvironment({ ...process.env, PATH: savedPath }, () => git(missing, 'status')).then(() => null, (caught: unknown) => caught);
+      expect(missingDirectory).toBeInstanceOf(GitError);
+      expect((missingDirectory as GitError).code).toBe('git-unavailable');
+
+      process.env.PATH = savedPath;
+      const missingBinary = await withGitEnvironment({ ...process.env, PATH: '' }, () => git(root, 'status')).then(() => null, (caught: unknown) => caught);
+      expect(missingBinary).toBeInstanceOf(GitError);
+      expect((missingBinary as GitError).code).toBe('git-not-found');
+      expect((missingBinary as Error).message).toBe(GIT_NOT_FOUND_MESSAGE);
+    } finally {
+      process.env.PATH = savedPath;
+    }
   });
 
   it('hints at the cause of an ordinary Git failure and keeps stderr in the server log', async () => {

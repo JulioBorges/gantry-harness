@@ -14,10 +14,17 @@ function gitCommandOptions(root: string): { cwd: string; env?: NodeJS.ProcessEnv
   return { cwd: root, env: stored, inheritEnv: false };
 }
 
+/** PATH visto pelo `git` desta chamada. Fora de `withGitEnvironment`, o do processo. */
+function gitSearchPath(): string | undefined {
+  const stored = gitEnvironment.getStore();
+  if (!stored) return undefined;
+  return stored.PATH ?? '';
+}
+
 export const GIT_UNAVAILABLE_MESSAGE = 'Não foi possível executar o Git: o repositório não está acessível.';
 export const GIT_NOT_FOUND_MESSAGE = 'Não foi possível executar o Git: o Git não está instalado ou não foi encontrado.';
 export const GIT_FAILED_MESSAGE = 'Não foi possível executar o Git. Outro processo Git, um hook ou as permissões do repositório podem ter impedido a operação. Consulte o log do servidor.';
-export const GIT_IDENTITY_MESSAGE = 'Defina user.name e user.email do repositório antes de continuar. O Git recusou a operação porque a identidade do autor está ausente.';
+export const GIT_IDENTITY_MESSAGE = 'Defina user.name e user.email do repositório antes de continuar. O Git recusou a operação porque a identidade do autor ou do committer está ausente.';
 
 export class GitError extends Error {
   constructor(message = GIT_UNAVAILABLE_MESSAGE, public readonly code = 'git-unavailable') {
@@ -47,7 +54,7 @@ function gitFailure(exitCode: number, stderr: string, stdout: string): GitError 
 
 function throwSpawnFailure(root: string, args: string[], error: unknown): never {
   const code = errorCode(error);
-  if (code === 'ENOENT' && findExecutable('git') === null) {
+  if (code === 'ENOENT' && findExecutable('git', gitSearchPath()) === null) {
     logGitFailure(root, args, { code });
     throw new GitError(GIT_NOT_FOUND_MESSAGE, 'git-not-found');
   }

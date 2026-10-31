@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-export function findExecutable(binary: string): string | null {
-  for (const directory of (process.env.PATH ?? '').split(path.delimiter)) {
+export function findExecutable(binary: string, pathEnv: string | undefined = process.env.PATH): string | null {
+  for (const directory of (pathEnv ?? '').split(path.delimiter)) {
     const extensions = process.platform === 'win32' ? (path.extname(binary) ? [''] : (process.env.PATHEXT || '.EXE;.CMD;.BAT').split(';')) : [''];
     for (const extension of extensions) {
     const candidate = path.join(directory, binary + extension);

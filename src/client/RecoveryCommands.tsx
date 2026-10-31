@@ -6,6 +6,11 @@ export function RecoveryCommands({ platform, argv, command }: {
   argv?: string[];
   command?: string;
 }): React.ReactElement {
+  // Fora do Windows o texto POSIX já vem citado pelo servidor. Reformatá-lo
+  // tiraria aspas de caminhos seguros e divergiria desse comando.
+  if (platform !== 'win32' && command && !argv) {
+    return <span className="recovery-command" data-shell="posix" data-testid="recovery-command-posix"><code>{command}</code></span>;
+  }
   const parsed = argv ?? (command ? parsePosixCommand(command) : null);
   if (!parsed) {
     return <>

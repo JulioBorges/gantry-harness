@@ -35,8 +35,31 @@ export function quoteArg(shell: RecoveryShell, value: string, module = false): s
   return quoteCmd(value, module);
 }
 
+/** Um token POSIX só precisa de aspas quando o shell o expandiria. */
+export function posixNeedsQuotes(value: string): boolean {
+  return !/^[A-Za-z0-9_@%+=:,./-]+$/.test(value);
+}
+
+function formatPosix(argv: string[]): string {
+  return argv.map((arg) => posixNeedsQuotes(arg) ? quotePosix(arg) : arg).join(' ');
+}
+
+/**
+ * No PowerShell uma string no início da linha é expressão, não comando.
+ * O executável fica sem aspas quando é um nome simples; caso contrário a linha começa com `& `.
+ */
+function formatPowerShell(argv: string[]): string {
+  const [command, ...args] = argv;
+  const head = command !== undefined && /^[A-Za-z_][A-Za-z0-9_.-]*$/.test(command)
+    ? command
+    : `& ${quotePowerShell(command ?? '')}`;
+  return [head, ...args.map((arg) => quotePowerShell(arg))].join(' ');
+}
+
 export function formatCommand(shell: RecoveryShell, argv: string[]): string {
-  return argv.map((arg, index) => quoteArg(shell, arg, shell === 'cmd' && index === 0)).join(' ');
+  if (shell === 'posix') return formatPosix(argv);
+  if (shell === 'powershell') return formatPowerShell(argv);
+  return argv.map((arg, index) => quoteCmd(arg, index === 0)).join(' ');
 }
 
 export interface RecoveryCommandLine {

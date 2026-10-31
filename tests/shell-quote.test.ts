@@ -1,4 +1,7 @@
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { formatCommand, parsePosixCommand, quoteCmd, quotePosix, quotePowerShell, recoveryCommandLines } from '../src/shellQuote.js';
 
@@ -80,6 +83,49 @@ describe('shell quoting for recovery commands', () => {
 
   it('shows one POSIX command outside Windows', () => {
     const lines = recoveryCommandLines('linux', ['git', 'stash', 'apply', '--index', 'abc']);
-    expect(lines).toEqual([{ shell: 'posix', label: 'shell', command: formatCommand('posix', ['git', 'stash', 'apply', '--index', 'abc']) }]);
+    expect(lines).toEqual([{ shell: 'posix', label: 'shell', command: 'git stash apply --index abc' }]);
+  });
+
+  it('quotes a POSIX token only when the shell would expand it', () => {
+    const hash = 'abc123def456abc123def456abc123def456abc1';
+    expect(formatCommand('posix', ['git', 'stash', 'apply', '--index', hash])).toBe(`git stash apply --index ${hash}`);
+    expect(formatCommand('posix', ['git', 'restore', '--source', `${hash}^3`, '--worktree', '--', 'a b', "it's", '-lead'])).toBe(
+      `git restore --source '${hash}^3' --worktree -- 'a b' 'it'\\''s' -lead`,
+    );
+  });
+
+  it('starts a PowerShell command with the bare git executable or the call operator', () => {
+    const hash = 'abc123def456abc123def456abc123def456abc1';
+    expect(formatCommand('powershell', ['git', 'stash', 'apply', '--index', hash])).toBe(`git 'stash' 'apply' '--index' '${hash}'`);
+    expect(formatCommand('powershell', ['/opt/git bin/git', 'status'])).toBe(`& '/opt/git bin/git' 'status'`);
+    expect(formatCommand('cmd', ['git', 'stash', 'apply', '--index', hash, 'a b', "it's"])).toBe(`git stash apply "--index" ${hash} "a b" it's`);
+  });
+
+  it('runs the generated PowerShell command in pwsh when it is installed', () => {
+    const located = spawnSync('sh', ['-c', 'command -v pwsh'], { encoding: 'utf8' });
+    const pwsh = located.stdout.trim();
+    if (located.status !== 0 || !pwsh) {
+      console.warn('pwsh ausente no PATH; teste de execução do comando PowerShell pulado.');
+      return;
+    }
+    const hash = 'abc123def456abc123def456abc123def456abc1';
+    const stash = formatCommand('powershell', ['git', 'stash', 'apply', '--index', hash]);
+    const version = spawnSync(pwsh, ['-NoProfile', '-NonInteractive', '-Command', formatCommand('powershell', ['git', '--version'])], { encoding: 'utf8' });
+    expect(version.status).toBe(0);
+    expect(version.stdout).toMatch(/git version/);
+    const applied = spawnSync(pwsh, ['-NoProfile', '-NonInteractive', '-Command', stash], { encoding: 'utf8' });
+    expect(`${applied.stdout}\n${applied.stderr}`).not.toMatch(/ParserError/);
+    expect(applied.error).toBeUndefined();
+
+    const python = spawnSync('sh', ['-c', 'command -v python3'], { encoding: 'utf8' }).stdout.trim();
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'gantry-pwsh-'));
+    const spaced = path.join(directory, 'py bin');
+    fs.symlinkSync(python, spaced);
+    const code = 'import json,sys; print(json.dumps(sys.argv[1:]))';
+    const command = formatCommand('powershell', [spaced, '-c', code, ...samples]);
+    expect(command.startsWith('& ')).toBe(true);
+    const echoed = spawnSync(pwsh, ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8' });
+    expect(echoed.status, echoed.stderr).toBe(0);
+    expect(JSON.parse(echoed.stdout)).toEqual([...samples]);
   });
 });
