@@ -209,6 +209,13 @@ function conflictError(backup: string, conflicts: string[]): WorktreeCleanupErro
   );
 }
 
+const RESTORE_WRITE_FAILED = 'Não recuperei o backup. A escrita falhou e os arquivos criados nesta chamada foram desfeitos.';
+
+function restoreWriteFailed(backup: string, error: unknown, projectId: string): WorktreeCleanupError {
+  logCleanupFailure('worktree-cleanup.restore-failed', error, projectId);
+  return new WorktreeCleanupError(RESTORE_WRITE_FAILED, 409, false, backup);
+}
+
 async function diskState(root: string, relative: string, projectId: string): Promise<{ kind: 'missing' | 'occupied'; hash?: string; link?: string }> {
   const parents = walkParents(root, relative);
   if (parents === 'conflict') return { kind: 'occupied' };
@@ -415,7 +422,7 @@ function ensureParents(root: string, relative: string, createdDirs: string[]): s
   return path.join(current, parts[parts.length - 1]);
 }
 
-async function createMissingEntries(root: string, backup: string, entries: RestoreEntry[]): Promise<string[]> {
+async function createMissingEntries(root: string, backup: string, entries: RestoreEntry[], projectId: string): Promise<string[]> {
   const createdFiles: string[] = [];
   const createdDirs: string[] = [];
   const rollback = () => {
@@ -436,7 +443,7 @@ async function createMissingEntries(root: string, backup: string, entries: Resto
       } catch (error) {
         if (error instanceof WorktreeCleanupError) throw conflictError(backup, [entry.path]);
         if (errorCode(error) === 'EEXIST') throw conflictError(backup, [entry.path]);
-        throw error;
+        throw restoreWriteFailed(backup, error, projectId);
       }
       const data = await readGitBlob(root, entry.oid);
       try {
@@ -448,7 +455,7 @@ async function createMissingEntries(root: string, backup: string, entries: Resto
         }
       } catch (error) {
         if (errorCode(error) === 'EEXIST') throw conflictError(backup, [entry.path]);
-        throw error;
+        throw restoreWriteFailed(backup, error, projectId);
       }
       createdFiles.push(destination);
     }
@@ -478,7 +485,7 @@ export async function applyWorktreeRestore(checkout: string, backup: unknown, co
     if (again.conflicts.length > 0 || !samePaths) {
       throw new WorktreeCleanupError('Os arquivos mudaram antes da recuperação. Nada foi escrito.', 409, false, backup, again.conflicts);
     }
-    const restored = await createMissingEntries(root, backup, again.missing);
+    const restored = await createMissingEntries(root, backup, again.missing, projectId);
     return { backup, restored };
   });
 }

@@ -1047,6 +1047,40 @@ print(json.dumps({'issues': [], 'specs': [], 'frontier': []}))
     expect(fs.statSync(path.join(repo, 'run.sh')).mode & 0o777).toBe(0o755);
   });
 
+  it.skipIf(runningAsRoot)('refuses a non-exclusive write error without the absolute path and rolls the call back', async () => {
+    const id = await register(repo);
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'first\n');
+    fs.mkdirSync(path.join(repo, 'locked'));
+    fs.writeFileSync(path.join(repo, 'locked', 'z.txt'), 'secret\n');
+    const preview = await (await request(id, 'preview')).json();
+    expect((await request(id, 'clean', { confirmed: true, token: preview.token })).status).toBe(200);
+    const backup = git(repo, 'rev-parse', 'refs/stash');
+    const locked = path.join(repo, 'locked');
+    fs.mkdirSync(locked, { recursive: true });
+    fs.chmodSync(locked, 0o555);
+    const logged: string[] = [];
+    const logSpy = vi.spyOn(console, 'error').mockImplementation((message?: unknown) => {
+      logged.push(String(message));
+    });
+    try {
+      const response = await request(id, 'restore', { backup, confirmed: true });
+      const body = await response.json();
+      expect(response.status).toBe(409);
+      expect(body.error).toBe('Não recuperei o backup. A escrita falhou e os arquivos criados nesta chamada foram desfeitos.');
+      expect(body.conflicts).toBeUndefined();
+      expect(JSON.stringify(body)).not.toContain(repo);
+      expect(JSON.stringify(body)).not.toContain('EACCES');
+      const structured = logged.filter(line => line.includes('worktree-cleanup.restore-failed'));
+      expect(structured).toEqual([JSON.stringify({ event: 'worktree-cleanup.restore-failed', code: 'EACCES', projectId: id })]);
+      expect(structured.join('\n')).not.toContain(repo);
+      expect(fs.existsSync(path.join(repo, 'a.txt'))).toBe(false);
+      expect(fs.existsSync(path.join(locked, 'z.txt'))).toBe(false);
+    } finally {
+      logSpy.mockRestore();
+      fs.chmodSync(locked, 0o755);
+    }
+  });
+
   it('reports git-unavailable when git is not on PATH', async () => {
     const id = await register(repo);
     fs.writeFileSync(path.join(repo, 'u1'), 'original-u1\n');
