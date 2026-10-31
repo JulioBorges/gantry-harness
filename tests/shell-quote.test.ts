@@ -101,19 +101,16 @@ describe('shell quoting for recovery commands', () => {
     expect(formatCommand('cmd', ['git', 'stash', 'apply', '--index', hash, 'a b', "it's"])).toBe(`git stash apply "--index" ${hash} "a b" it's`);
   });
 
-  it('runs the generated PowerShell command in pwsh when it is installed', () => {
-    const located = spawnSync('sh', ['-c', 'command -v pwsh'], { encoding: 'utf8' });
-    const pwsh = located.stdout.trim();
-    if (located.status !== 0 || !pwsh) {
-      console.warn('pwsh ausente no PATH; teste de execução do comando PowerShell pulado.');
-      return;
-    }
+  const pwsh = spawnSync('sh', ['-c', 'command -v pwsh'], { encoding: 'utf8' });
+  const pwshBin = pwsh.status === 0 ? pwsh.stdout.trim() : '';
+
+  it.skipIf(!pwshBin)('runs the generated PowerShell command in pwsh when it is installed', () => {
     const hash = 'abc123def456abc123def456abc123def456abc1';
     const stash = formatCommand('powershell', ['git', 'stash', 'apply', '--index', hash]);
-    const version = spawnSync(pwsh, ['-NoProfile', '-NonInteractive', '-Command', formatCommand('powershell', ['git', '--version'])], { encoding: 'utf8' });
+    const version = spawnSync(pwshBin, ['-NoProfile', '-NonInteractive', '-Command', formatCommand('powershell', ['git', '--version'])], { encoding: 'utf8' });
     expect(version.status).toBe(0);
     expect(version.stdout).toMatch(/git version/);
-    const applied = spawnSync(pwsh, ['-NoProfile', '-NonInteractive', '-Command', stash], { encoding: 'utf8' });
+    const applied = spawnSync(pwshBin, ['-NoProfile', '-NonInteractive', '-Command', stash], { encoding: 'utf8' });
     expect(`${applied.stdout}\n${applied.stderr}`).not.toMatch(/ParserError/);
     expect(applied.error).toBeUndefined();
 
@@ -124,7 +121,7 @@ describe('shell quoting for recovery commands', () => {
     const code = 'import json,sys; print(json.dumps(sys.argv[1:]))';
     const command = formatCommand('powershell', [spaced, '-c', code, ...samples]);
     expect(command.startsWith('& ')).toBe(true);
-    const echoed = spawnSync(pwsh, ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8' });
+    const echoed = spawnSync(pwshBin, ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8' });
     expect(echoed.status, echoed.stderr).toBe(0);
     expect(JSON.parse(echoed.stdout)).toEqual([...samples]);
   });

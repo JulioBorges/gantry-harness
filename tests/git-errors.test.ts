@@ -275,4 +275,81 @@ describe('Git failure messages', () => {
       await server.close();
     }
   });
+
+  async function openServer(): Promise<HarnessServerInstance> {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gantry-git-missing-home-'));
+    roots.push(home);
+    return createHarnessServer({
+      port: 0,
+      gantryHome: path.join(home, 'gantry'),
+      homeDir: home,
+      stateRoot: path.join(home, 'state'),
+      profileRoot: path.join(home, 'profiles'),
+    });
+  }
+
+  async function registerProject(server: HarnessServerInstance, projectPath: string): Promise<string> {
+    const registered = await fetch(`http://127.0.0.1:${server.port}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: projectPath }),
+    });
+    expect(registered.ok).toBe(true);
+    return (await registered.json()).project.id as string;
+  }
+
+  it('returns an empty diff for an artifact outside a Git repository', async () => {
+    const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'gantry-plain-artifact-'));
+    roots.push(folder);
+    fs.writeFileSync(path.join(folder, 'note.txt'), 'hello\n');
+    const server = await openServer();
+    try {
+      const id = await registerProject(server, folder);
+      const response = await fetch(`http://127.0.0.1:${server.port}/api/projects/${id}/artifacts?path=note.txt&diff=true`);
+      const body = await response.json();
+      expect(response.status).toBe(200);
+      expect(body.diff).toBe('');
+      expect(body.content).toBe('hello\n');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('returns an empty diff for an artifact in a repository with no commit', async () => {
+    const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'gantry-unborn-artifact-'));
+    roots.push(folder);
+    execFileSync('git', ['init', '-b', 'main'], { cwd: folder });
+    fs.writeFileSync(path.join(folder, 'note.txt'), 'hello\n');
+    const server = await openServer();
+    try {
+      const id = await registerProject(server, folder);
+      const response = await fetch(`http://127.0.0.1:${server.port}/api/projects/${id}/artifacts?path=note.txt&diff=true`);
+      const body = await response.json();
+      expect(response.status).toBe(200);
+      expect(body.diff).toBe('');
+      expect(body.content).toBe('hello\n');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('still reports git-not-found when an artifact diff cannot find Git', async () => {
+    const folder = repo();
+    fs.writeFileSync(path.join(folder, 'note.txt'), 'hello\n');
+    const server = await openServer();
+    const savedPath = process.env.PATH;
+    try {
+      const id = await registerProject(server, folder);
+      process.env.PATH = '';
+      const response = await fetch(`http://127.0.0.1:${server.port}/api/projects/${id}/artifacts?path=note.txt&diff=true`);
+      const body = await response.json();
+      expect(response.status).toBe(503);
+      expect(body.code).toBe('git-not-found');
+      expect(body.error).toBe(GIT_NOT_FOUND_MESSAGE);
+      expect(JSON.stringify(body)).not.toMatch(/ENOENT|spawn/);
+    } finally {
+      process.env.PATH = savedPath;
+      await server.close();
+    }
+  });
 });

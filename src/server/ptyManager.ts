@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import type { TerminalShell } from '../types.js';
 import { resolveTerminalShell } from './terminalSettings.js';
 import path from 'node:path';
-import { git } from './git.js';
+import { gitWhen } from './git.js';
 import { findExecutable, resolveSkillDir, runGantryScript } from './commandRunner.js';
 
 export interface StructuredTurnBlock {
@@ -331,7 +331,12 @@ export async function readArtifactAndDiff(
   const content = fs.readFileSync(resolved, 'utf-8');
   let diff = '';
   if (includeDiff) {
-    diff = await git(root, 'diff', 'HEAD', '--', relPath);
+    const result = await gitWhen(root, ['diff', 'HEAD', '--', relPath], (command) => {
+      const text = `${command.stderr}\n${command.stdout}`;
+      return command.exitCode === 129
+        || /not a git repository|could not access 'HEAD'|bad revision|ambiguous argument 'HEAD'/i.test(text);
+    });
+    diff = result.exitCode === 0 ? result.stdout : '';
   }
   return {
     path: relPath,
