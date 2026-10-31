@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -105,14 +105,28 @@ describe('shell quoting for recovery commands', () => {
   const pwshBin = pwsh.status === 0 ? pwsh.stdout.trim() : '';
 
   it.skipIf(!pwshBin)('runs the generated PowerShell command in pwsh when it is installed', () => {
-    const hash = 'abc123def456abc123def456abc123def456abc1';
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'gantry-pwsh-stash-'));
+    const file = path.join(repo, 'README.md');
+    execFileSync('git', ['init', '-b', 'main'], { cwd: repo });
+    execFileSync('git', ['config', 'user.name', 'Pwsh stash'], { cwd: repo });
+    execFileSync('git', ['config', 'user.email', 'pwsh-stash@example.test'], { cwd: repo });
+    fs.writeFileSync(file, 'base\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: repo });
+    execFileSync('git', ['commit', '-m', 'base'], { cwd: repo });
+    fs.writeFileSync(file, 'changed\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: repo });
+    execFileSync('git', ['stash', 'push', '--message', 'pwsh-apply'], { cwd: repo });
+    const hash = execFileSync('git', ['rev-parse', 'refs/stash'], { cwd: repo, encoding: 'utf8' }).trim();
+    expect(fs.readFileSync(file, 'utf8')).toBe('base\n');
     const stash = formatCommand('powershell', ['git', 'stash', 'apply', '--index', hash]);
     const version = spawnSync(pwshBin, ['-NoProfile', '-NonInteractive', '-Command', formatCommand('powershell', ['git', '--version'])], { encoding: 'utf8' });
     expect(version.status).toBe(0);
     expect(version.stdout).toMatch(/git version/);
-    const applied = spawnSync(pwshBin, ['-NoProfile', '-NonInteractive', '-Command', stash], { encoding: 'utf8' });
+    const applied = spawnSync(pwshBin, ['-NoProfile', '-NonInteractive', '-Command', stash], { cwd: repo, encoding: 'utf8' });
+    expect(applied.status, `${applied.stdout}\n${applied.stderr}`).toBe(0);
     expect(`${applied.stdout}\n${applied.stderr}`).not.toMatch(/ParserError/);
-    expect(applied.error).toBeUndefined();
+    expect(fs.readFileSync(file, 'utf8')).toBe('changed\n');
+    expect(execFileSync('git', ['diff', '--cached', '--', 'README.md'], { cwd: repo, encoding: 'utf8' })).toContain('+changed');
 
     const python = spawnSync('sh', ['-c', 'command -v python3'], { encoding: 'utf8' }).stdout.trim();
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'gantry-pwsh-'));

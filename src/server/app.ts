@@ -6,7 +6,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { fileURLToPath, URL as NodeURL } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
-import type { ExecutionSettings } from '../types.js';
+import type { ExecutionSettings, RegisteredProject } from '../types.js';
 import { HarnessStateStore } from './stateStore.js';
 import { resolveSkillDir, runGantryScript } from './commandRunner.js';
 import { readBoard } from './gantryCli.js';
@@ -362,13 +362,32 @@ export async function createHarnessServer(
           return;
         }
         const unitId = await resolveUnitId(repoPath);
+        const existing = store.getProjectByPath(repoPath);
+        const now = new Date().toISOString();
+        const draft: RegisteredProject = existing ?? {
+          id: 'pending',
+          name: body.name ? String(body.name) : path.basename(repoPath),
+          path: repoPath,
+          unitId,
+          badgeState: 'idle',
+          lifecycleState: 'idle',
+          createdAt: now,
+          updatedAt: now,
+        };
+        const inspection = await inspectProject(draft, { stateRoot, profileRoot });
         const result = store.upsertProject({
           path: repoPath,
           name: body.name ? String(body.name) : undefined,
           unitId,
         });
-        await runSupervisor.refreshProject(result.project);
-        const inspection = await inspectProject(result.project, { stateRoot, profileRoot });
+        try {
+          await runSupervisor.refreshProject(result.project);
+        } catch (error) {
+          if (!existing) store.removeProject(result.project.id);
+          throw error;
+        }
+        inspection.projectId = result.project.id;
+        inspection.unitId = result.project.unitId;
         broadcast({ type: 'project.registered', project: result.project, inspection });
         sendJson(res, 200, { ...result, inspection });
         return;

@@ -237,6 +237,10 @@ describe('Git failure messages', () => {
       expect(body.error).toBe(GIT_NOT_FOUND_MESSAGE);
       expect(encoded).not.toMatch(/ENOENT|spawn/);
       expect(encoded).not.toContain(created);
+      const listed = await fetch(`http://127.0.0.1:${server.port}/api/projects`);
+      const projects = (await listed.json()).projects as Array<{ path: string }>;
+      expect(projects.map((project) => project.path)).not.toContain(created);
+      expect(server.store.listProjects().map((project) => project.path)).not.toContain(created);
     } finally {
       process.env.PATH = savedPath;
       await server.close();
@@ -298,36 +302,65 @@ describe('Git failure messages', () => {
     return (await registered.json()).project.id as string;
   }
 
-  it('returns an empty diff for an artifact outside a Git repository', async () => {
+  it('returns an empty diff for changed content outside a Git repository', async () => {
     const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'gantry-plain-artifact-'));
     roots.push(folder);
-    fs.writeFileSync(path.join(folder, 'note.txt'), 'hello\n');
+    const file = path.join(folder, 'notas.md');
+    fs.writeFileSync(file, '# notas\n');
+    fs.writeFileSync(file, '# notas\nchange\n');
     const server = await openServer();
     try {
       const id = await registerProject(server, folder);
-      const response = await fetch(`http://127.0.0.1:${server.port}/api/projects/${id}/artifacts?path=note.txt&diff=true`);
+      const response = await fetch(`http://127.0.0.1:${server.port}/api/projects/${id}/artifacts?path=${encodeURIComponent('notas.md')}&diff=true`);
       const body = await response.json();
       expect(response.status).toBe(200);
+      expect(body.content).toBe('# notas\nchange\n');
       expect(body.diff).toBe('');
-      expect(body.content).toBe('hello\n');
     } finally {
       await server.close();
     }
   });
 
-  it('returns an empty diff for an artifact in a repository with no commit', async () => {
+  it('returns an empty diff for changed content in a repository with no commit', async () => {
     const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'gantry-unborn-artifact-'));
     roots.push(folder);
     execFileSync('git', ['init', '-b', 'main'], { cwd: folder });
-    fs.writeFileSync(path.join(folder, 'note.txt'), 'hello\n');
+    const file = path.join(folder, 'notas.md');
+    fs.writeFileSync(file, '# notas\n');
+    fs.writeFileSync(file, '# notas\nchange\n');
     const server = await openServer();
     try {
       const id = await registerProject(server, folder);
-      const response = await fetch(`http://127.0.0.1:${server.port}/api/projects/${id}/artifacts?path=note.txt&diff=true`);
+      const response = await fetch(`http://127.0.0.1:${server.port}/api/projects/${id}/artifacts?path=${encodeURIComponent('notas.md')}&diff=true`);
       const body = await response.json();
       expect(response.status).toBe(200);
+      expect(body.content).toBe('# notas\nchange\n');
       expect(body.diff).toBe('');
-      expect(body.content).toBe('hello\n');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('does not keep a project whose registration fails with a Git conflict', async () => {
+    const folder = repo();
+    fs.writeFileSync(path.join(folder, 'README.md'), 'Hello\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: folder });
+    execFileSync('git', ['commit', '-m', 'base'], { cwd: folder });
+    fs.writeFileSync(path.join(folder, '.git', 'refs', 'heads', 'main'), 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n');
+    const server = await openServer();
+    try {
+      const response = await fetch(`http://127.0.0.1:${server.port}/api/projects`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: folder }),
+      });
+      const body = await response.json();
+      expect(response.status).toBe(409);
+      expect(body.code).toBe('git-failed');
+      const listed = await fetch(`http://127.0.0.1:${server.port}/api/projects`);
+      const projects = (await listed.json()).projects as Array<{ path: string }>;
+      expect(projects.map((project) => project.path)).not.toContain(folder);
+      expect(server.store.listProjects().map((project) => project.path)).not.toContain(folder);
     } finally {
       await server.close();
     }
