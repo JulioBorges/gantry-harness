@@ -1025,6 +1025,42 @@ print(json.dumps({'issues': [], 'specs': [], 'frontier': []}))
     expect(fs.existsSync(path.join(outside, 'a'))).toBe(false);
   });
 
+  it('does not replace a symlink at the destination path', async () => {
+    const id = await register(repo);
+    fs.writeFileSync(path.join(repo, 'link'), 'blob\n');
+    const preview = await (await request(id, 'preview')).json();
+    expect((await request(id, 'clean', { confirmed: true, token: preview.token })).status).toBe(200);
+    const backup = git(repo, 'rev-parse', 'refs/stash');
+    fs.symlinkSync('README.md', path.join(repo, 'link'));
+    const response = await request(id, 'restore', { backup, confirmed: true });
+    const body = await response.json();
+    expect(response.status).toBe(409);
+    expect(body.conflicts).toEqual(['link']);
+    expect(fs.readlinkSync(path.join(repo, 'link'))).toBe('README.md');
+    expect(fs.readFileSync(path.join(repo, 'README.md'), 'utf8')).toBe('Original\n');
+    expect(JSON.stringify(body)).not.toContain(repo);
+  });
+
+  it('does not follow a parent symlink that points inside the repository', async () => {
+    const id = await register(repo);
+    fs.mkdirSync(path.join(repo, 'd'));
+    fs.writeFileSync(path.join(repo, 'd', 'x'), 'inside\n');
+    const preview = await (await request(id, 'preview')).json();
+    expect((await request(id, 'clean', { confirmed: true, token: preview.token })).status).toBe(200);
+    const backup = git(repo, 'rev-parse', 'refs/stash');
+    const inside = path.join(repo, 'inside');
+    fs.mkdirSync(inside);
+    fs.rmSync(path.join(repo, 'd'), { recursive: true, force: true });
+    fs.symlinkSync('inside', path.join(repo, 'd'));
+    const response = await request(id, 'restore', { backup, confirmed: true });
+    const body = await response.json();
+    expect(response.status).toBe(409);
+    expect(body.conflicts).toEqual(['d/x']);
+    expect(fs.readlinkSync(path.join(repo, 'd'))).toBe('inside');
+    expect(fs.existsSync(path.join(inside, 'x'))).toBe(false);
+    expect(JSON.stringify(body)).not.toContain(repo);
+  });
+
   it('treats identical bytes as already restored and a second call as a no-op', async () => {
     const id = await register(repo);
     fs.writeFileSync(path.join(repo, 'u1'), 'original-u1\n');
