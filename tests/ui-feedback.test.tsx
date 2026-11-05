@@ -6,14 +6,14 @@ import { App } from '../src/client/App.js';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-function mockWorkspace(chat?: () => Promise<Response>) {
+function mockWorkspace(chat?: () => Promise<Response>, options?: { platform?: string }) {
   vi.stubGlobal('queryLocalFonts', vi.fn(async () => [{ family: 'Fira Code' }, { family: 'Menlo' }]));
   const state = {
     projects: [{ id: 'project', name: 'My project', path: '/tmp/project', badgeState: 'idle' }],
     layout: { activeProjectId: 'project', activeSessionId: 'session' },
     sessions: [{ id: 'session', title: 'Main' }], messages: [],
     terminalSettings: { fontFamily: 'monospace', fontSize: 15, shell: 'system' },
-    terminalEnvironment: { platform: 'linux', platformLabel: 'Linux', shells: [{ id: 'system', label: 'Padrão do sistema', available: true }, { id: 'bash', label: 'Bash', available: true }, { id: 'sh', label: 'Sh', available: false }] },
+    terminalEnvironment: { platform: options?.platform ?? 'linux', platformLabel: options?.platform === 'win32' ? 'Windows' : 'Linux', shells: [{ id: 'system', label: 'Padrão do sistema', available: true }, { id: 'bash', label: 'Bash', available: true }, { id: 'sh', label: 'Sh', available: false }] },
     settings: { mode: 'cli', activeProvider: 'cli', cliHarness: 'claude', providers: { cli: { model: 'saved-model' } } },
     connection: { mode: 'cli', host: 'codex', model: null, source: 'repository', ready: true, detail: 'CLI encontrado.' },
   };
@@ -161,4 +161,64 @@ it('keeps terminal settings errors and the unsaved draft inside the modal', asyn
   const dialog = screen.getByRole('dialog', { name: 'Configurações' });
   await waitFor(() => expect(within(dialog).getByRole('alert').textContent).toContain('Shell não encontrado'));
   expect((screen.getByLabelText('Tamanho da fonte (px)') as HTMLInputElement).value).toBe('18');
+});
+
+it('shows a bootstrap error inside the open project settings dialog', async () => {
+  const fetchMock = mockWorkspace();
+  const fallback = fetchMock.getMockImplementation()!;
+  fetchMock.mockImplementation(async (url, init) => String(url).endsWith('/bootstrap') && init?.method === 'POST'
+    ? Response.json({ error: 'Não foi possível registrar a instalação do Gantry: identidade ausente. Revise os arquivos e faça commit antes de executar o Gantry.', code: 'git-identity-unknown' }, { status: 409 })
+    : fallback(url, init));
+  render(<App />);
+  await screen.findAllByText('My project');
+  fireEvent.click(screen.getByTestId('project-settings-project'));
+  const dialog = screen.getByRole('dialog', { name: 'Configurações de My project' });
+  fireEvent.click(within(dialog).getByTestId('bootstrap-skills-btn'));
+  const alert = await within(dialog).findByRole('alert');
+  expect(alert.textContent).toContain('identidade ausente');
+  expect(dialog.contains(alert)).toBe(true);
+  expect(screen.getByRole('dialog', { name: 'Configurações de My project' })).toBeTruthy();
+});
+
+it('quotes recovery commands for cmd and PowerShell on Windows', async () => {
+  const fetchMock = mockWorkspace(undefined, { platform: 'win32' });
+  const fallback = fetchMock.getMockImplementation()!;
+  const hash = 'abc123def456abc123def456abc123def456abc1';
+  const restore = `git restore --source '${hash}^3' --worktree -- 'a b' 'it'\\''s' 'say "hi"' '100%' 'a^b' 'a&b' 'a\`b' '$home' '-lead'`;
+  fetchMock.mockImplementation(async (url, init) => {
+    const route = String(url);
+    if (route.endsWith('/inspect')) return Response.json({ specs: [], issues: [], worktrees: [], remediationCards: [{ kind: 'dirty_worktree', title: 'Worktree suja', description: 'Há alterações.', remediation: 'Limpe.' }], policy: { execution: { hostHarness: 'codex' } }, operatorProfile: {}, skillPack: { found: true }, hasTrackedPolicy: true });
+    if (route.endsWith('/worktree/preview') && init?.method === 'POST') return Response.json({ root: '/tmp/project', token: 't'.repeat(64), files: [{ path: 'a b', status: '??' }], backups: [{ hash, subject: 'gantry-harness-cleanup-old' }] });
+    if (route.endsWith('/worktree/clean') && init?.method === 'POST') return Response.json({ backup: hash, clean: false, verified: false, keep: ['README.md'], restore });
+    return fallback(url, init);
+  });
+  render(<App />);
+  await screen.findAllByText('My project');
+  fireEvent.click(screen.getByTestId('project-settings-project'));
+  const dialog = screen.getByRole('dialog', { name: 'Configurações de My project' });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Limpar worktree' }));
+  const preview = await within(dialog).findByRole('region', { name: 'Revisar limpeza da worktree' });
+  expect(within(preview).getByTestId('recovery-command-powershell').textContent).toContain(`'${hash}'`);
+  expect(within(preview).getByTestId('recovery-command-cmd').textContent).toContain(hash);
+  expect(within(preview).queryByText(`git stash apply --index ${hash}`)).toBeNull();
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Guardar backup e limpar worktree' }));
+  await within(dialog).findByText(/não foi confirmado/i);
+  const powershell = await within(dialog).findAllByTestId('recovery-command-powershell');
+  const cmd = within(dialog).getAllByTestId('recovery-command-cmd');
+  const shown = powershell.map(node => node.textContent).join('\n');
+  const shownCmd = cmd.map(node => node.textContent).join('\n');
+  expect(shown).toContain("'a b'");
+  expect(shown).toContain("'it''s'");
+  expect(shown).toContain(`'say "hi"'`);
+  expect(shown).toContain("'100%'");
+  expect(shown).toContain("'a^b'");
+  expect(shown).toContain("'a&b'");
+  expect(shown).toContain("'a`b'");
+  expect(shown).toContain("'$home'");
+  expect(shown).toContain("'-lead'");
+  expect(shownCmd).toContain('"a b"');
+  expect(shownCmd).toContain('"-lead"');
+  expect(shownCmd).toContain('"a^b"');
+  expect(shownCmd).toContain('"a&b"');
+  expect(shownCmd).not.toContain("git restore --source '");
 });

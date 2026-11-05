@@ -45,6 +45,9 @@ let browser;
 try {
   fs.mkdirSync(evidenceDir, { recursive: true });
   execFileSync(path.join(root, 'node_modules/.bin/vite'), ['build'], { cwd: root, stdio: 'inherit' });
+  process.env.HOME = fs.mkdtempSync(path.join(tmp, 'git-home-'));
+  process.env.GIT_CONFIG_GLOBAL = '/dev/null';
+  process.env.GIT_CONFIG_NOSYSTEM = '1';
   const packedName = 'packed-repo-com-nome-muito-longo-para-identificar-o-projeto';
   const packed = initRepo(packedName);
   const cliPath = path.join(packed, '.agents/skills/gantry/scripts/cli.py');
@@ -226,6 +229,15 @@ try {
     await page.screenshot({ path: path.join(evidenceDir, `cleanup-result-${viewport.width}.png`) });
 
     await page.getByRole('button', { name: 'Fechar configurações do projeto' }).click();
+    await openNavigation();
+    await sidebar.getByTestId(`project-settings-${lastProject.id}`).click();
+    const bootstrapDialog = page.getByRole('dialog', { name: `Configurações de ${lastProject.name}`, exact: true });
+    await bootstrapDialog.getByTestId('bootstrap-skills-btn').click();
+    await expect(bootstrapDialog.getByRole('alert')).toBeVisible();
+    await expect(bootstrapDialog.getByRole('alert')).toContainText('Global Gantry skill pack not found');
+    await page.screenshot({ path: path.join(evidenceDir, `bootstrap-error-${viewport.width}.png`) });
+    await bootstrapDialog.getByRole('button', { name: 'Fechar configurações do projeto' }).click();
+    await page.locator('.action-feedback.error').getByRole('button', { name: 'Fechar aviso' }).click({ force: true });
     await expect(page.getByTestId('pack-missing')).toContainText('Gantry');
     for (const action of ['run', 'plan', 'approve']) await expect(page.getByTestId(`${action}-affordance`)).toBeDisabled();
     await openNavigation();

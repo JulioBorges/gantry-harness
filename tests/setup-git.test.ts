@@ -3,24 +3,19 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { GitError } from '../src/server/git.js';
+import { GIT_FAILED_MESSAGE, GitError, withGitEnvironment } from '../src/server/git.js';
 import { applyRepositorySetup, bootstrapProjectSkills } from '../src/server/projectInspector.js';
+import { gitIdentityEnv, withIsolatedGitEnv } from './gitTestEnv.js';
 
 describe('Gantry installation Git lifecycle', () => {
   let root: string;
   let repo: string;
   let home: string;
-  const identityEnv = ['HOME', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM'] as const;
-  let savedEnv: Partial<Record<(typeof identityEnv)[number], string | undefined>> = {};
-  let gitHome = '';
+  let restoreEnv = () => {};
   const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf-8' }).trim();
 
   beforeEach(() => {
-    savedEnv = Object.fromEntries(identityEnv.map(key => [key, process.env[key]]));
-    gitHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gantry-setup-git-home-'));
-    process.env.HOME = gitHome;
-    process.env.GIT_CONFIG_GLOBAL = '/dev/null';
-    process.env.GIT_CONFIG_NOSYSTEM = '1';
+    restoreEnv = withIsolatedGitEnv();
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'gantry-setup-git-'));
     repo = path.join(root, 'repo');
     home = path.join(root, 'home');
@@ -47,12 +42,8 @@ policy = json.loads(sys.argv[sys.argv.index('--config') + 1])
   });
 
   afterEach(() => {
-    for (const key of identityEnv) {
-      if (savedEnv[key] === undefined) delete process.env[key];
-      else process.env[key] = savedEnv[key];
-    }
+    restoreEnv();
     fs.rmSync(root, { recursive: true, force: true });
-    if (gitHome) fs.rmSync(gitHome, { recursive: true, force: true });
   });
 
   it('commits installed skills and repository configuration so preflight sees a clean worktree', async () => {
@@ -102,6 +93,8 @@ policy = json.loads(sys.argv[sys.argv.index('--config') + 1])
     expect(error).toBeInstanceOf(GitError);
     expect((error as GitError).code).toBe('git-failed');
     expect((error as Error).message).toMatch(/registrar a instalação/);
+    expect((error as Error).message).toMatch(/hook/);
+    expect((error as Error).message).toMatch(/log do servidor/);
     expect((error as Error).message).not.toMatch(/inacessível/);
     expect((error as Error).message).not.toContain(repo);
     expect(git('rev-parse', 'HEAD')).toBe(head);
@@ -114,7 +107,12 @@ policy = json.loads(sys.argv[sys.argv.index('--config') + 1])
     const logged: string[] = [];
     const logSpy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { logged.push(args.map(String).join(' ')); });
     try {
-      const error = await bootstrapProjectSkills(repo, home).then(() => null, (caught: unknown) => caught);
+      const error = await withGitEnvironment(gitIdentityEnv({
+        GIT_AUTHOR_NAME: undefined,
+        GIT_AUTHOR_EMAIL: undefined,
+        GIT_COMMITTER_NAME: undefined,
+        GIT_COMMITTER_EMAIL: undefined,
+      }), () => bootstrapProjectSkills(repo, home)).then(() => null, (caught: unknown) => caught);
       expect(error).toBeInstanceOf(GitError);
       expect((error as GitError).code).toBe('git-identity-unknown');
       expect((error as Error).message).toMatch(/user\.name e user\.email/);
@@ -124,6 +122,53 @@ policy = json.loads(sys.argv[sys.argv.index('--config') + 1])
       expect((error as Error).message).not.toMatch(/inacessível|Author identity unknown/);
       expect((error as Error).message).not.toContain(repo);
       expect(logged.join('\n')).toMatch(/Author identity unknown/);
+      expect(fs.existsSync(path.join(repo, '.agents'))).toBe(false);
+    } finally { logSpy.mockRestore(); }
+  });
+
+  it('reports a missing committer identity before writing installation files', async () => {
+    git('config', '--unset', 'user.name');
+    git('config', '--unset', 'user.email');
+    fs.writeFileSync(path.join(process.env.HOME ?? '', '.gitconfig'), '[user]\n\tname = Global Operator\n\temail = global@example.test\n');
+    const logged: string[] = [];
+    const logSpy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { logged.push(args.map(String).join(' ')); });
+    try {
+      const error = await withGitEnvironment(gitIdentityEnv({
+        GIT_AUTHOR_NAME: 'Author Only',
+        GIT_AUTHOR_EMAIL: 'author@example.test',
+        GIT_COMMITTER_NAME: undefined,
+        GIT_COMMITTER_EMAIL: undefined,
+      }), () => bootstrapProjectSkills(repo, home)).then(() => null, (caught: unknown) => caught);
+      expect(error).toBeInstanceOf(GitError);
+      expect((error as GitError).code).toBe('git-identity-unknown');
+      expect((error as Error).message).toMatch(/user\.name e user\.email/);
+      expect((error as Error).message).toMatch(/ausente\. Revise/);
+      expect((error as Error).message).toMatch(/identidade do committer/);
+      expect((error as Error).message).not.toMatch(/identidade do autor/);
+      expect((error as Error).message).not.toMatch(/\.\./);
+      expect((error as Error).message).not.toMatch(/Committer identity unknown|auto-detect|inacessível/);
+      expect((error as Error).message).not.toContain(repo);
+      expect(logged.join('\n')).toMatch(/Committer identity unknown/);
+      expect(fs.existsSync(path.join(repo, '.agents'))).toBe(false);
+    } finally { logSpy.mockRestore(); }
+  });
+
+  it('does not copy check-ignore stderr when the ignore check fails', async () => {
+    const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+    const bin = path.join(root, 'bin');
+    fs.mkdirSync(bin);
+    const wrapper = path.join(bin, 'git');
+    fs.writeFileSync(wrapper, `#!/bin/sh\nif [ "$1" = check-ignore ]; then echo 'leak /secret/ignore-path' >&2; exit 2; fi\nexec ${JSON.stringify(realGit)} "$@"\n`);
+    fs.chmodSync(wrapper, 0o755);
+    const logged: string[] = [];
+    const logSpy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { logged.push(args.map(String).join(' ')); });
+    try {
+      const error = await withGitEnvironment({ ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}` }, () => bootstrapProjectSkills(repo, home)).then(() => null, (caught: unknown) => caught);
+      expect(error).toBeInstanceOf(GitError);
+      expect((error as GitError).code).toBe('git-failed');
+      expect((error as Error).message).toBe(GIT_FAILED_MESSAGE);
+      expect((error as Error).message).not.toMatch(/leak|secret|ignore-path/);
+      expect(logged.join('\n')).toMatch(/leak \/secret\/ignore-path/);
       expect(fs.existsSync(path.join(repo, '.agents'))).toBe(false);
     } finally { logSpy.mockRestore(); }
   });

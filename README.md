@@ -30,6 +30,8 @@ Installing/updating Gantry skills and saving repository configuration create loc
 
 When project settings reports uncommitted changes, **Limpar worktree** previews the affected files. **Guardar backup e limpar worktree** saves staged, unstaged and new files in Git stash, then refreshes the project. Ignored files remain on disk; the result shows the backup hash and its recovery command. Canceling preserves the checkout. Changes after the preview require another review; finish running or paused Runs before cleaning.
 
+Git failures returned by the API use a fixed sentence and a `code`. The body does not include stderr or a filesystem path. `503` `git-not-found` means the `git` binary is not on `PATH`. `503` `git-unavailable` means the repository is not accessible. `409` `git-identity-unknown` means `user.name` and `user.email` are missing for the author, or, in a separate sentence, for the committer. `409` `git-failed` covers the other Git errors; the server log keeps the raw stderr.
+
 ## Build packages
 
 ```sh

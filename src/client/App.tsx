@@ -8,6 +8,7 @@ import type { Terminal } from '@xterm/xterm';
 import type { FitAddon } from '@xterm/addon-fit';
 import type { WorktreeCleanupPreview } from '../server/worktreeCleanup.js';
 import type { TerminalSettings, TerminalEnvironment } from '../types.js';
+import { RecoveryCommands } from './RecoveryCommands.js';
 import { SettingsDialog, type SettingsTab } from './SettingsDialog.js';
 import { SystemFontSelect } from './SystemFontSelect.js';
 import { BoardView } from './BoardView.js';
@@ -1240,6 +1241,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
         {projectSettingsId && <div className="dialog-backdrop" onClick={(event) => { if (event.target === event.currentTarget) setProjectSettingsId(null); }}>
           <section className="project-dialog settings-dialog project-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="project-settings-title">
             <div className="settings-dialog-header"><h2 id="project-settings-title">Configurações de {projects.find((project) => project.id === projectSettingsId)?.name ?? 'projeto'}</h2><button aria-label="Fechar configurações do projeto" onClick={() => setProjectSettingsId(null)}>×</button></div>
+            {feedback && !pendingActions.length && <p className={`settings-notice ${feedback.kind}`} role={feedback.kind === 'error' ? 'alert' : 'status'} data-testid="project-settings-feedback">{feedback.message}</p>}
             {activeProjectId === projectSettingsId ? (
 <div className="settings-dialog-content project-settings-content" data-testid="setup-panel">
             <h2>Preparar o projeto para execução</h2>
@@ -1255,7 +1257,7 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
               <ul>{cleanupPreview.files.map(file => <li key={file.path}><code>{file.status} {file.originalPath ? `${file.originalPath} → ` : ''}{file.path}</code></li>)}</ul>
               {cleanupPreview.backups.length > 0 && <>
                 <p>Backups já criados por Limpar worktree neste repositório:</p>
-                <ul>{cleanupPreview.backups.map(backup => <li key={backup.hash}><code>{backup.subject}</code> <code>git stash apply --index {backup.hash}</code></li>)}</ul>
+                <ul>{cleanupPreview.backups.map(backup => <li key={backup.hash}><code>{backup.subject}</code> <RecoveryCommands platform={terminalEnvironment?.platform ?? 'linux'} argv={['git', 'stash', 'apply', '--index', backup.hash]} /></li>)}</ul>
               </>}
               <div className="project-setup-actions">
                 <button type="button" disabled={cleanupBusy} onClick={() => setCleanupPreview(null)}>Cancelar limpeza</button>
@@ -1268,8 +1270,8 @@ export function App({ apiBaseUrl = '' }: AppProps): React.ReactElement {
                 <p>Arquivos rastreados que continuam na worktree. Não os apague:</p>
                 <ul>{cleanupNotice.keep.map(file => <li key={file}><code>{file}</code></li>)}</ul>
               </>}
-              {cleanupNotice.restore && <p>Para repor os arquivos não rastreados que o Git já retirou do disco, sem alterar os rastreados: <code>{cleanupNotice.restore}</code></p>}
-              {cleanupNotice.backup && <p>Para reaplicar as alterações rastreadas quando elas já não estiverem na worktree: <code>git stash apply --index {cleanupNotice.backup}</code>. Enquanto esses arquivos ainda estiverem no disco, não use este comando: o Git recusa a operação, e apagá-los antes deixa o conteúdo só no índice.</p>}
+              {cleanupNotice.restore && <p>Para repor os arquivos não rastreados que o Git já retirou do disco, sem alterar os rastreados: <RecoveryCommands platform={terminalEnvironment?.platform ?? 'linux'} command={cleanupNotice.restore} /></p>}
+              {cleanupNotice.backup && <p>Para reaplicar as alterações rastreadas quando elas já não estiverem na worktree: <RecoveryCommands platform={terminalEnvironment?.platform ?? 'linux'} argv={['git', 'stash', 'apply', '--index', cleanupNotice.backup]} />. Enquanto esses arquivos ainda estiverem no disco, não use este comando: o Git recusa a operação, e apagá-los antes deixa o conteúdo só no índice.</p>}
             </div>}
             <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
               <button
